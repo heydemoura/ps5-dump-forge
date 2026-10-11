@@ -1,7 +1,7 @@
-// LZ4: ampr_emu asset packs for a title that uses AMPR. Two scenarios: Trace (Patch or Unpatch
-// the source itself: a folder in place by one request, an .exfat/.ffpkg by a job that rebuilds
-// it and replaces it once verified) and Pack/Unpack (an LZ4 packed folder or plain image from
-// traces, a profile or a guess; Unpack for a packed source). Jobs join the shared list below.
+// LZ4: ampr_emu asset packs for a title that uses AMPR. Two scenarios: Pack/Unpack (an LZ4
+// packed folder or plain image from traces, a profile or a guess; Unpack for a packed source;
+// the default) and Trace (Patch or Unpatch the source itself: a folder in place by one request,
+// an .exfat/.ffpkg by a job that rebuilds it and replaces it once verified). Jobs join the shared list below.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -47,7 +47,7 @@ import {
 } from "./target";
 
 type Scenario = "trace" | "pack";
-const SCENARIOS: Scenario[] = ["trace", "pack"];
+const SCENARIOS: Scenario[] = ["pack", "trace"];
 const SCENARIO_LABEL: Record<Scenario, string> = { trace: "Trace", pack: "Pack/Unpack" };
 
 /** What Trace does to the source. */
@@ -97,14 +97,9 @@ function scenarioWhy(s: Scenario, lz4: Lz4Facts | null): string | null {
   return null;
 }
 
-/** The scenario a new source starts on. A packed one starts on Pack (Unpack). The desktop app
- * has a traced source's files at hand, so it starts on Pack; the web build on Trace, which
- * offers them as a zip. A read-only image starts on Pack: Trace can't change it. */
-function defaultScenario(lz4: Lz4Facts | null, kind: string): Scenario | null {
-  const writable = kind === "folder" || WRITABLE_IMAGES.includes(kind as Format);
-  const order: Scenario[] =
-    lz4?.packed || !writable || (!web && lz4?.journal_bytes != null) ? ["pack", "trace"] : ["trace", "pack"];
-  return order.find((s) => scenarioWhy(s, lz4) === null) ?? null;
+/** The scenario a new source starts on: Pack/Unpack whenever it is usable, else Trace. */
+function defaultScenario(lz4: Lz4Facts | null): Scenario | null {
+  return SCENARIOS.find((s) => scenarioWhy(s, lz4) === null) ?? null;
 }
 
 /** Pack's targets, in picker order: the LZ4 packed folder, then the plain images it packs
@@ -136,8 +131,8 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const [act, setAct] = useState<TraceAct | null>(null);
   /** Unpack's target. */
   const [format, setFormat] = useState<Format>("folder");
-  /** Pack's target: the LZ4 packed folder or an image. */
-  const [packFormat, setPackFormat] = useState<Format>("lz4");
+  /** Pack's target: an image (default .ffpkg) or the LZ4 packed folder. */
+  const [packFormat, setPackFormat] = useState<Format>("ffpkg");
   const [fullVerify, setFullVerify] = useState(false);
   /** The free space a traced image gets, 64 MiB to 1 GiB; kept across sources. */
   const [traceMib, setTraceMib] = useState(DEFAULT_TRACE_MIB);
@@ -167,7 +162,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     !source ? "choose a source first" : !ins ? "the source isn't read yet" : scenarioWhy(s, lz4);
   const usable = SCENARIOS.filter((s) => why(s) === null);
   const scenario: Scenario | null =
-    chosen && usable.includes(chosen) ? chosen : ins ? defaultScenario(lz4, kind) : null;
+    chosen && usable.includes(chosen) ? chosen : ins ? defaultScenario(lz4) : null;
   const packed = !!lz4?.packed;
   const traceAct: TraceAct = act ?? (lz4?.runtime === "forge_trace" ? "unpatch" : "patch");
   const writableImage = sourceIsImage && WRITABLE_IMAGES.includes(kind as Format);
@@ -195,7 +190,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       const facts = found.lz4 ?? null;
       const target = packTarget(facts, packFormat);
       if (facts?.packed) setFormat(target);
-      if (defaultScenario(facts, found.kind) === "pack") out.reset(path, target);
+      if (defaultScenario(facts) === "pack") out.reset(path, target);
     } catch (e) {
       if (seq === sourceSeq.current) setInsError(errorText(e));
     } finally {
@@ -219,7 +214,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     if (again && source !== null) void inspectSource(source, false);
   }, [props.jobs, source]);
 
-  // Inspect deleted this source (or the folder holding it): forget it, and any late answer.
+  // Inspect or the Library deleted this source (or the folder holding it): forget it, and any late answer.
   useEffect(
     () =>
       onDeleted((gone) => {

@@ -517,9 +517,13 @@ fn cover(tree: &mut dyn SourceTree) -> Option<String> {
     if size == 0 || size > MAX_COVER {
         return None;
     }
-    let png = tree.read(PATH).ok()?;
+    png_data_url(&tree.read(PATH).ok()?)
+}
+
+/// PNG bytes as a data URL; `None` when they do not start with the PNG signature.
+pub(crate) fn png_data_url(png: &[u8]) -> Option<String> {
     png.starts_with(b"\x89PNG")
-        .then(|| format!("data:image/png;base64,{}", base64(&png)))
+        .then(|| format!("data:image/png;base64,{}", base64(png)))
 }
 
 /// Standard base64 with padding (RFC 4648 §4).

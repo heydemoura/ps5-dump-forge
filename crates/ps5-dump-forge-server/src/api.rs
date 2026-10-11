@@ -90,6 +90,18 @@ impl Drop for Inspecting<'_> {
     }
 }
 
+/// A JSON object whose optional `root` is a string (else 400).
+fn optional_root(body: &[u8]) -> Result<Option<PathBuf>, Response> {
+    match parse::<serde_json::Value>(body)? {
+        serde_json::Value::Object(o) => match o.get("root") {
+            None => Ok(None),
+            Some(serde_json::Value::String(s)) => Ok(Some(PathBuf::from(s))),
+            Some(_) => Err(Response::error(400, "bad request: root must be a string")),
+        },
+        _ => Err(Response::error(400, "bad request: expected a JSON object")),
+    }
+}
+
 #[derive(Deserialize)]
 struct PathArg {
     path: PathBuf,
@@ -245,6 +257,8 @@ impl Server {
             (false, "lz4_traces") => self.lz4_traces(&head.query),
             (true, "list_dir") => self.list_dir(body),
             (true, "delete_path") => self.delete_path(body),
+            (true, "library_scan") => self.library_scan(body),
+            (true, "library_cover") => self.library_cover(body),
             #[cfg(target_env = "ps5")]
             (true, "debug_bench") if crate::debug::ENABLED => {
                 #[derive(Deserialize)]
@@ -325,6 +339,37 @@ impl Server {
         readable(&arg.path)?;
         let found = self.capped(|| ps5_dump_forge_core::inspect(&arg.path))?;
         Ok(Response::json(&found))
+    }
+
+    fn refuse_if_stopping(&self) -> Result<(), Response> {
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err(Response::error(409, "PS5 Dump Forge is stopping"));
+        }
+        Ok(())
+    }
+
+    /// The Library scan: the body's `root`, or on the PS5 the configured current roots. Capped
+    /// like an inspection, and refused once stopping.
+    // ponytail: the request deadline covers receiving the request, not core's work.
+    fn library_scan(&self, body: &[u8]) -> Reply {
+        let root = optional_root(body)?;
+        self.refuse_if_stopping()?;
+        if root.is_none() && self.opts.platform == Platform::Host {
+            return Err(Response::error(400, "choose a folder to scan"));
+        }
+        let found = self.capped(|| match &root {
+            Some(r) => ps5_dump_forge_core::scan_library_folder(r),
+            None => ps5_dump_forge_core::scan_library(&self.roots.library()),
+        })?;
+        Ok(Response::json(&found))
+    }
+
+    /// One Library cover, capped like an inspection, and refused once stopping.
+    fn library_cover(&self, body: &[u8]) -> Reply {
+        let arg: PathArg = parse(body)?;
+        self.refuse_if_stopping()?;
+        let cover = self.capped(|| ps5_dump_forge_core::library_cover(&arg.path))?;
+        Ok(Response::json(&cover))
     }
 
     /// Runs a core call that reads a source, at most [`MAX_INSPECTIONS`] at once; the rest
@@ -657,6 +702,139 @@ mod tests {
         server.running.store(MAX_JOBS, Ordering::SeqCst);
         let request = json!({ "request": { "source": tmp, "format": "exfat", "output": "/x" } });
         assert_eq!(post(&server, "start_job", request).status, 429);
+    }
+
+    fn library_server(root: &Path) -> Arc<Server> {
+        let opts = Options::new(0, vec![root.to_path_buf()], Platform::Host, |_: &str| {});
+        Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap())
+    }
+
+    /// Scan and cover: shapes, the configured roots, malformed bodies, the 2-at-once cap,
+    /// stopping, a missing cover (`null`) and an unreadable source (core's message, 500).
+    #[test]
+    fn library() {
+        // Under the build folder, not the temp dir: a macOS temp dir is a refused system folder.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("forge-api-lib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("plain")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let server = library_server(&root);
+
+        // A computer has no automatic scan: no root is a 400; a system folder is refused.
+        let r = post(&server, "library_scan", json!({}));
+        assert_eq!(
+            (r.status, r.text().contains("choose a folder to scan")),
+            (400, true)
+        );
+        // FreeBSD (the PS5) has no system-folder list.
+        if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
+            let r = post(&server, "library_scan", json!({ "root": "/" }));
+            assert_eq!(r.status, 500, "{}", r.text());
+            assert!(r.text().contains("system folder"), "{}", r.text());
+        }
+
+        let r = post(&server, "library_scan", json!({ "root": root }));
+        assert_eq!(r.status, 200, "{}", r.text());
+        let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
+        assert_eq!(v["roots"], json!([root]));
+        assert_eq!(v["entries"], json!([]));
+        assert_eq!(
+            (&v["truncated"], &v["warnings"]),
+            (&json!(false), &json!([]))
+        );
+
+        // Another root; a non-string root is a 400.
+        let other = root.join("other");
+        std::fs::create_dir_all(other.join("game/sce_sys")).unwrap();
+        std::fs::write(other.join("game/eboot.bin"), b"x").unwrap();
+        std::fs::write(
+            other.join("game/sce_sys/param.json"),
+            br#"{"titleId":"PPSA00001","contentVersion":"01.000.000"}"#,
+        )
+        .unwrap();
+        let r = post(&server, "library_scan", json!({ "root": other }));
+        assert_eq!(r.status, 200, "{}", r.text());
+        let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
+        assert_eq!(v["roots"], json!([other]));
+        assert_eq!(v["entries"][0]["title_id"], json!("PPSA00001"), "{v}");
+        assert_eq!(v["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            post(&server, "library_scan", json!({ "root": 5 })).status,
+            400
+        );
+
+        // A folder with no icon: `null`. A missing path: core's error.
+        let r = post(
+            &server,
+            "library_cover",
+            json!({ "path": root.join("plain") }),
+        );
+        assert_eq!((r.status, r.text()), (200, "null".to_string()));
+        let gone = root.join("gone.ffpkg");
+        let r = post(&server, "library_cover", json!({ "path": gone }));
+        assert_eq!(r.status, 500);
+        let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
+        assert!(
+            v["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "{}",
+            r.text()
+        );
+
+        // Bodies: not an object; no path.
+        assert_eq!(post(&server, "library_scan", json!("x")).status, 400);
+        assert_eq!(post(&server, "library_scan", json!([])).status, 400);
+        assert_eq!(post(&server, "library_cover", json!({})).status, 400);
+        assert_eq!(
+            post(&server, "library_cover", json!({ "path": 1 })).status,
+            400
+        );
+
+        server.inspecting.store(MAX_INSPECTIONS, Ordering::SeqCst);
+        for (route, body) in [
+            ("library_scan", json!({ "root": root })),
+            ("library_cover", json!({ "path": root })),
+        ] {
+            let r = post(&server, route, body);
+            assert_eq!((r.status, r.retry_after), (429, Some(1)), "{route}");
+        }
+        server.inspecting.store(0, Ordering::SeqCst);
+
+        assert!(server.stop());
+        for (route, body) in [
+            ("library_scan", json!({ "root": root })),
+            ("library_cover", json!({ "path": root })),
+        ] {
+            let r = post(&server, route, body);
+            assert_eq!(r.status, 409, "{route}");
+            assert!(r.text().contains("stopping"), "{}", r.text());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The PS5's automatic scan (FreeBSD only: the filesystem classifier): a pinned root posted
+    /// with `{}` lists its game.
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn library_scan_on_the_ps5_uses_the_roots() {
+        let root = std::env::temp_dir().join(format!("forge-api-ps5-lib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("game/sce_sys")).unwrap();
+        std::fs::write(root.join("game/eboot.bin"), b"x").unwrap();
+        std::fs::write(
+            root.join("game/sce_sys/param.json"),
+            br#"{"titleId":"PPSA00001","contentVersion":"01.000.000"}"#,
+        )
+        .unwrap();
+        let root = root.canonicalize().unwrap();
+        let opts = Options::new(0, vec![root.clone()], Platform::Ps5, |_: &str| {});
+        let server = Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap());
+        let r = post(&server, "library_scan", json!({}));
+        assert_eq!(r.status, 200, "{}", r.text());
+        let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
+        assert_eq!(v["entries"][0]["title_id"], json!("PPSA00001"), "{v}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// No patch or unpatch while a job is queued or running, or once stopping.

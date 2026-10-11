@@ -106,7 +106,6 @@ stability, speed or arm64/PS5 behaviour. Hardware gates:
   floor (e.g. build in an ubuntu:22.04 container on a newer runner) or raise it and say so in README.
 
 ## App
-- [ ] **Library**: a planned feature.
 - [ ] Batch queue screen, History.
 - [ ] Inspect: a **Verify** action for an existing image or package (core has no standalone verify API yet).
 - [ ] Leftover `.part` files: offer deletion (today list-only on Inspect), limited to this app's
@@ -178,6 +177,11 @@ real restart. Results in [ps5/README.md](ps5/README.md).
   before a hardware run that touches the FreeBSD paths.
 - [ ] **Forced drive-removal VM test**: `mdconfig -d -u <unit> -o force` during a small write, last and under a
   timeout (U7's decision is unit-tested and its `statfs` lookup VM-tested; the removal run is not written).
+- [ ] **Library, native and on hardware** (checked on macOS only; Linux, Windows and the PS5 are open): a computer
+  chooses a folder (nothing scans before; the root and system folders show the error screen, an external
+  drive's root scans); on the PS5 the first open scans `/data` and the currently mounted USB/external roots, with no picker;
+  `/mnt/shadowmnt` adds no duplicate mounted-folder entries; the loader appears within the content; Inspect and Convert
+  handoffs work; confirmed deletion uses the existing backend protections; Refresh recognizes drive changes; Stop stays usable.
 - [ ] **Verification switch on Windows and Linux**: drive the desktop UI once on each (via CI) with the "Full
   verification" switch on and off.
 - [ ] Hardware, not yet recorded: reload restoring a running job in the PS5 browser, the Stop button (the

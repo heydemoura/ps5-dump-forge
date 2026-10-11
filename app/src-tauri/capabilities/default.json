@@ -9,6 +9,8 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "allow-inspect",
+    "allow-library-scan",
+    "allow-library-cover",
     "allow-default-output",
     "allow-generated-output",
     "allow-start-job",

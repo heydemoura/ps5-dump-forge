@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ps5_dump_forge_core::{
-    ConvertRequest, Event, Format, Inspection, JobId, Jobs, Lz4Patch, Lz4PlanProfile,
+    ConvertRequest, Event, Format, Inspection, JobId, Jobs, LibraryScan, Lz4Patch, Lz4PlanProfile,
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -107,6 +107,25 @@ fn err(e: anyhow::Error) -> String {
 async fn inspect(app: AppHandle, path: PathBuf) -> Result<Inspection, String> {
     blocking(app, move |_, _| {
         ps5_dump_forge_core::inspect(&path).map_err(err)
+    })
+    .await
+}
+
+/// The Library: game dumps under the folder the user chose, on any filesystem. Reads only.
+/// System and well-known folders are refused.
+#[tauri::command]
+async fn library_scan(app: AppHandle, root: PathBuf) -> Result<LibraryScan, String> {
+    blocking(app, move |_, _| {
+        ps5_dump_forge_core::scan_library_folder(&root).map_err(err)
+    })
+    .await
+}
+
+/// One Library card's cover: a PNG data URL, or `None`.
+#[tauri::command]
+async fn library_cover(app: AppHandle, path: PathBuf) -> Result<Option<String>, String> {
+    blocking(app, move |_, _| {
+        ps5_dump_forge_core::library_cover(&path).map_err(err)
     })
     .await
 }
@@ -744,6 +763,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             inspect,
+            library_scan,
+            library_cover,
             default_output,
             generated_output,
             start_job,

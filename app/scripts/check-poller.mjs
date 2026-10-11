@@ -116,6 +116,30 @@ session({ separator: "/" });
 assert.deepEqual(await c.serverSession(), { separator: "/", address: null });
 console.log("session: separator and address; no address from an older server or one without its IP");
 
+// The platform is the server's word only; unknown retries the session, then rejects.
+const NO_PLATFORM = "Can't determine whether PS5 Dump Forge is running on a PS5. Refresh to try again.";
+const fresh = await import("../src/http-client.ts?platform");
+const sess = (body) => (globalThis.fetch = async () => new Response(JSON.stringify(body), { status: 200 }));
+let calls = 0;
+globalThis.fetch = async () => {
+  calls++;
+  throw new TypeError("offline");
+};
+await assert.rejects(fresh.serverPlatform(), (e) => e === NO_PLATFORM);
+assert.equal(calls, 1, "one lookup per call");
+sess({ separator: "/", platform: "invalid" });
+await assert.rejects(fresh.serverPlatform(), (e) => e === NO_PLATFORM);
+sess({ separator: "/", platform: "ps5" });
+assert.equal(await fresh.serverPlatform(), "ps5");
+globalThis.fetch = async () => assert.fail("cached");
+assert.equal(await fresh.serverPlatform(), "ps5");
+const host = await import("../src/http-client.ts?host");
+sess({ separator: "/" });
+await assert.rejects(host.serverPlatform(), (e) => e === NO_PLATFORM);
+sess({ separator: "/", platform: "host" });
+assert.equal(await host.serverPlatform(), "host");
+console.log("platform: host, ps5 cached; missing, invalid or failed lookup rejects");
+
 // The job bar (src/jobs.ts): never back, short of full until the job succeeds, even when
 // core's estimate is met before its last pass (R1's plateau, fixed in core; this only guards).
 const step = (jobs, stage, done, total, at = 0) => jobsReducer(jobs, { type: "progress", e: { kind: "progress", job: 1, stage, done, total }, at });

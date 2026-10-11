@@ -7,7 +7,7 @@ gradient notice bar) and the app icon (near-black navy with a blue edge and an o
 ## Principles
 
 - **Dark only.** `color-scheme: dark`. There is no light theme; adding one means a second token set.
-- **One hero.** The game card (`.card.hero`) is the only card with a glow, and the glow takes its
+- **One hero.** The game card (`.card.hero`) is the only card with a glow (Library cards have none), and the glow takes its
   colours from the game's cover (`glow.ts`).
 - **Pills for controls.** Buttons, inputs, tags and segmented controls are fully rounded (999px).
   Cards are 16px, inset tiles 12px.
@@ -40,6 +40,7 @@ gradient notice bar) and the app icon (near-black navy with a blue edge and an o
 | `--focus` | `#9db6ff` | 2px focus ring on every control (`:focus-visible`) |
 | `--mono` | `ui-monospace, SFMono-Regular, Menlo` | Paths, file names, IDs, param.json, logs |
 | `--tab-lz4` / `--strap` / `--strap-hi` | `#1c1c26` / yellow 12% / 20% | The LZ4 screen tab's ground and straps (unselected `--lz4-ink` 9.2:1, selected `--lz4-ink-hi` 6.4:1 on a strap) |
+| `--library-ink` / `-ink-hi` / `-line` | `#a8ed8b` / `#c4f6aa` / green 50% | Library green: its header icon and the selected view button (ink-hi + `--library-line` ring); the tab itself is plain |
 | `--lz4-ink` / `-ink-hi` / `-soft` | `#ffd84d` / `#ffe27a` / `#e3c766` | LZ4 yellow text: the tab, its scenario and action pickers, Choose source…, How LZ4 works, LZ4 job tags |
 | `--lz4-tint` / `-tint-hi` / `-line` | yellow 14% / 22%, ring 50% | Their tint, hover and ring (`--lz4-ink` on tint 9.3:1 over `--card`, 10.2:1 over `--inset`; unselected `--lz4-soft` 11.4:1; disabled `--muted` 6.9:1) |
 | `--neon-*` | lime, magenta, cyan at 12%; ring lime 38%; ink `#d6e875` | A traced source's `LZ4 (AMPR)` tile (`.tile.neon`) |
@@ -105,12 +106,17 @@ Two columns start at 880px wide. Inspect splits 5:7 from 1100px.
   default browser by the fixed-URL `open_repo` command (a link would open inside the app's window).
   The version is in the title ("PS5 Dump Forge v…": the desktop window's title, and the page title the
   PS5 browser shows in its title bar), not in the header.
-- **Segmented control** (`.seg`, `.seg-opt`, `.on`): used for the screen tabs (Convert, Inspect | LZ4 |
+  Narrow (< 900px): two rows, logo + address + actions over the tabs full width (`--top` 98px);
+  the tab bar scrolls inside itself, never the page; "Stop PS5 Dump Forge" shrinks to its icon
+  (the label stays as visually hidden text). At ≤ 420px the tab padding, gap and side padding tighten so all five tabs fit at 360px with no scroll (14px labels kept). No horizontal page scroll down to 360px. Offline (the "Offline, retrying…" tag) at 900-1049px: Stop is icon-only too, so the address keeps room.
+- **Segmented control** (`.seg`, `.seg-opt`, `.on`): used for the screen tabs (Convert, Inspect | LZ4 | Library |
   About: one tablist, the `.tab-sep` dividers drawn only, the arrow keys move through every tab), the
   Inspect sub-tabs, the format picker (`.seg.formats`) and the LZ4 tab's scenario and Trace action pickers.
   The LZ4 screen tab (`.seg-opt.tab-lz4`) is a grey pill (`--tab-lz4`) with four evenly spaced yellow
   `--strap` straps running from the top-right to the bottom-left (static) and `--lz4-ink` text; selected, it takes
   `--raise-hi`, brighter straps (`--strap-hi`), `--lz4-ink-hi`, bold and a `--lz4-line` ring. The focus ring is the usual one.
+  The Library tab is a plain pill like Convert, Inspect and About, with the books `library` icon (16px) before its text
+  (no green, no straps). Green stays inside the Library screen: its header icon and the selected view button.
   - In the format picker the selected segment fills with its format tint.
   - Unselected segments are plain muted text, without dots.
   - Native radios or `role="tab"` sit underneath, so the keyboard works.
@@ -165,11 +171,10 @@ Two columns start at 880px wide. Inspect splits 5:7 from 1100px.
   one kind), then the usual picker; Convert's and Inspect's empty cards are unchanged. The card head holds
   a red `.small.help-btn` **How LZ4 works** (any time, no source needed). First the scenario picker, a full-width
   `.seg.formats` in LZ4 yellow (`.lz4-y`: unselected `--lz4-soft`, chosen tint and ring, disabled plain
-  `--muted`) without icons: **Trace** and **Pack/Unpack**. A scenario that doesn't apply is disabled with the reason
+  `--muted`) without icons: **Pack/Unpack** (first, the default) and **Trace**. A scenario that doesn't apply is disabled with the reason
   in its tooltip and read out, and one muted line under the picker lists it ("Not for this source:
   Trace (the source is LZ4 packed: unpack it first (Pack))"); a title that neither uses AMPR nor is
-  packed gets one `.note-line.warn` instead. A new source starts on Pack when it is packed, is a
-  read-only image, or (desktop app only) carries a journal; otherwise on Trace. Under the picker
+  packed gets one `.note-line.warn` instead. A new source starts on Pack/Unpack whenever it applies, else on Trace. Under the picker
   the scenario's one-liner, then:
   - **Trace** (an AMPR title, not packed): a read-only image (`.ffpfs`, `.ffpfsc`, `.fpkg`) gets one
     `.note-line.warn` (read-only on the console; convert it to `.ffpkg` or `.exfat` first) and
@@ -209,7 +214,7 @@ Two columns start at 880px wide. Inspect splits 5:7 from 1100px.
     Profile choice (Choose… / Clear); a profile and traces exclude each other. A muted line says
     where the rules come from (profile, chosen traces, this source's traces, else a built-in guess).
     Under the box a "Target" label and the format picker (`FormatPicker`, `.seg.formats`) with
-    **LZ4 packed folder** (default) | **.ffpkg** | **.exfat** | **.ffpfs** (no `.ffpfsc` or `.fpkg`: a UI
+    **LZ4 packed folder** | **.ffpkg** (default) | **.exfat** | **.ffpfs** (no `.ffpfsc` or `.fpkg`: a UI
     limit, the CLI keeps `.ffpfsc`; the folder converts to any format in Convert),
     the chosen format's one-liner (`FORMAT_INFO`), and for an image a muted line: "Packs into the image directly: no temporary folder; the packed
     files are read twice." The request is `lz4: "pack"` with that `format` (the folder as `folder`).
@@ -277,6 +282,31 @@ Two columns start at 880px wide. Inspect splits 5:7 from 1100px.
     a muted line (for good, no Trash or undo, may stop part way), and just two buttons: **No** (focused
     first) and **Yes, delete** (`.danger`). No typed confirmation. After it, a muted "Deleted <path>"
     under the empty Source card; Convert and LZ4 drop that source too.
+
+- **Library tab** (`Library.tsx`, `.library`): one card. Head: the green library icon and "Library" with the
+  count, and right (`.library-ctl`, wraps; under 900px the gaps tighten): on a computer the chosen folder (muted `PathLine`), **Refresh**,
+  **Choose folder…** (folder icon, switches folders), then the Card / List buttons (`.library-views`, icon-only, `aria-pressed`,
+  selected = green as above); none of them before a folder is chosen or before the platform is known. The PS5 build has only Refresh and the view buttons. Under it the scrolling well (`.library-well`,
+  `--inset`, 14px padding, 160px minimum, `max-height` to the viewport, focusable with the usual ring,
+  `aria-label` "Game dumps"): the list scrolls inside it, never the page.
+  - **Cards** (`.library-cards`): a grid of `minmax(240px, 1fr)` columns, 16px gaps; each card (`--card`, 14px
+    radius, no glow) has a square cover (10px radius; a `padding-top: 100%` box, since older WebKit lacks `aspect-ratio`), the name (600, wraps anywhere), a muted line (the game code, the title ID),
+    and a foot with the format pill and the actions (the path is the card's tooltip). **List** (`.library-rows`): 48px cover, name and
+    title ID, format pill, path line, actions on one wrapping row. A cover loads lazily, one at a time; without one (none, too big, not
+    a PNG, still loading) a placeholder with the disc icon stands in, same size.
+  - **Actions** are icon-only buttons with an `aria-label` and `title` ("Inspect <name>", "Convert <name>",
+    "Delete <name>", the last `.danger`). Inspect and Convert switch to that tab with the game loaded.
+    Delete opens the shared **Delete** alertdialog (`confirmDelete`, `delete.tsx`, same copy as Inspect); then
+    a muted "Deleted <path>", focus to the next entry (or Refresh); a failure is "Can’t delete:" + the reason.
+  - **Loader**: while scanning, a centred spinner and "Scanning <folder>…" ("Scanning…" on the PS5) inside the well (`role="status"`,
+    `aria-busy`), the previous list kept under a failed Refresh.
+  - **States**: empty (a computer, no folder yet): a centred `.empty` panel (Convert's "Choose a game folder or image" is the model)
+    with the folder icon, **Pick a folder with your library to scan** and a primary **Choose folder…**; error screen (a newly chosen
+    folder refused or failed): the same panel with a red alert icon, the heading **Can’t scan this folder**, core's message and a
+    **Choose another folder…** button, Refresh and the view buttons hidden; no roots: "No folders are available to scan."; nothing found: one line of help; error: orange "Can’t scan the Library:" + reason; partial: an orange
+    "Scan limit reached. This list may be incomplete." a "Skipped locations and files" fold for the warnings,
+    and a muted note that results stay until Refresh and new outputs appear after it. A failed Refresh keeps
+    the list shown.
 
 ### Web build only (`npm run build:http`, the PS5 payload's UI)
 

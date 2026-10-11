@@ -21,6 +21,7 @@ import {
   isWithin,
   kindLabel,
   onDeleted,
+  type SourceSelection,
   SourceCard,
 } from "./common";
 import { Icon } from "./icons";
@@ -48,6 +49,8 @@ export function Convert(props: {
   dispatch: (a: Action) => void;
   /** Show the "About" tab. */
   onCompare: () => void;
+  /** A game the Library opened here; each new `id` is read once. */
+  selection?: SourceSelection | null;
 }) {
   const [source, setSource] = useState<string | null>(null);
   const [sourceIsImage, setSourceIsImage] = useState(false);
@@ -100,7 +103,18 @@ export function Convert(props: {
     }
   };
 
-  // Inspect deleted this source (or the folder holding it): forget it, and any late answer.
+  // A new Library selection: the same path as a picker choice (resets the form for it).
+  const pickRef = useRef(pickSource);
+  pickRef.current = pickSource;
+  const consumed = useRef(0);
+  useEffect(() => {
+    const sel = props.selection;
+    if (!sel || sel.id === consumed.current) return;
+    consumed.current = sel.id;
+    void pickRef.current(sel.path, sel.kind !== "folder");
+  }, [props.selection]);
+
+  // Inspect or the Library deleted this source (or the folder holding it): forget it, and any late answer.
   useEffect(
     () =>
       onDeleted((gone) => {

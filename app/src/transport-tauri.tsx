@@ -27,6 +27,7 @@ export const transport: Transport = {
   pick,
   useOffline: () => false,
   address: () => null,
+  platform: () => Promise.resolve("host"),
   lz4Patch: (path) => invoke("lz4_patch", { path }),
   lz4Unpatch: (path) => invoke("lz4_unpatch", { path }),
   savePlanProfile: async (request, name, dir) => {

@@ -33,6 +33,8 @@ export interface Transport {
   useOffline(): boolean;
   /** The server's `host:port` as its session reports it (http only; the app: null). */
   address(): string | null;
+  /** Where the backend runs: the app is always "host"; the http build asks the server. */
+  platform(): Promise<"host" | "ps5">;
   /** Patch a game folder in place for LZ4 tracing (api.ts `Lz4Patch`). Its own function: the
    * Tauri command takes `path`, the route `source`. */
   lz4Patch<T>(source: string): Promise<T>;

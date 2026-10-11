@@ -104,6 +104,7 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
 }
 
 let address: string | null = null;
+let platform: "host" | "ps5" | null = null;
 
 /** The server's `host:port` from its session's `url` (the console's own address, never the
  * viewer's `location`), once `serverSession` read it; null before, or when it has none. */
@@ -121,10 +122,21 @@ export async function serverSession(): Promise<{ separator: string | null; addre
     // `http://<ip>:<port>`; a server that couldn't tell its IP says so in words: none then.
     const host = typeof s?.url === "string" ? /^https?:\/\/([\w.:[\]-]+)\/?$/.exec(s.url)?.[1] : undefined;
     address = host ?? null;
+    // Only the server's own word counts (never the browser's OS or URL); a valid one is kept.
+    const plat = (s as { platform?: unknown } | null)?.platform;
+    if (plat === "host" || plat === "ps5") platform = plat;
     return { separator: sep === "/" || sep === "\\" ? sep : null, address };
   } catch {
     return { separator: null, address: null };
   }
+}
+
+/** The server's platform from its session, cached once valid; an unknown one retries the
+ * session once, then rejects (so no PS5-only choice is ever shown by accident). */
+export async function serverPlatform(): Promise<"host" | "ps5"> {
+  if (platform === null) await serverSession();
+  if (platform === null) throw "Can't determine whether PS5 Dump Forge is running on a PS5. Refresh to try again.";
+  return platform;
 }
 
 let started = false;

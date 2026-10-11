@@ -22,6 +22,8 @@ mod extract;
 mod finalize;
 mod inspect;
 mod jobs;
+mod library;
+mod library_roots;
 mod lz4;
 mod lz4_patch;
 mod lz4_profile;
@@ -41,6 +43,7 @@ pub use delete::DeleteError;
 pub use dlc::Dlc;
 pub use extract::extraction_findings;
 pub use finalize::rename_no_replace;
+pub use library::{LibraryEntry, LibraryScan};
 pub use scan::ScannedFolder;
 
 /// What a conversion produces.
@@ -412,6 +415,35 @@ pub fn lz4_patch(folder: &Path) -> anyhow::Result<Lz4Patch> {
 /// exists), the journal and logs are deleted and `ampr_emu.index` is rebuilt.
 pub fn lz4_unpatch(folder: &Path) -> anyhow::Result<Lz4Patch> {
     lz4_patch::patch(folder, lz4_patch::Runtime::Release)
+}
+
+/// PS5 only (FreeBSD; any other OS returns an error for non-empty `roots`). Lists the game dumps
+/// under `roots` (folders and `.exfat`, `.ffpkg`, `.ffpfs`, `.ffpfsc`,
+/// `.pkg` images, by extension, any case) on local disk filesystems: breadth first, at most 6
+/// folders deep, links and network mounts never entered, a game folder never entered, bounded
+/// by fixed limits (`truncated` when one cut the walk short) and about 15 seconds (checked
+/// between steps, so a slow read can overrun it). Reads only `param.json` and the listings;
+/// an image is opened with its reader, which is slower than a folder. Sorted by title. One
+/// scan runs at a time; a second call waits. Empty `roots` is an empty result.
+pub fn scan_library(roots: &[PathBuf]) -> anyhow::Result<LibraryScan> {
+    library::scan_library(roots)
+}
+
+/// Like [`scan_library`] for one folder the user chose: any filesystem (a network share, mounts
+/// nested inside it), since the choice is explicit. Errors (nothing listed) when the folder is
+/// the filesystem root (Windows: the system drive root), `~/Library` or `~/AppData`, or one of the OS's own folders or
+/// inside one, is under ShadowMountPlus's mounts, or cannot be read.
+/// Failures below the folder are warnings.
+pub fn scan_library_folder(root: &Path) -> anyhow::Result<LibraryScan> {
+    library::scan_library_folder(root)
+}
+
+/// The cover of a Library entry (a supported image or a plain game folder, on any filesystem:
+/// no locality check) as a PNG data URL. `None` when the icon is absent, empty, over 512 KiB (checked before and
+/// after reading) or not a PNG; an error when the source is a link, not eligible, or cannot
+/// be opened.
+pub fn library_cover(path: &Path) -> anyhow::Result<Option<String>> {
+    library::library_cover(path)
 }
 
 pub use lz4_traces::Lz4Traces;

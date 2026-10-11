@@ -280,7 +280,6 @@ system.
 
 - Test `.fpkg` on a console
 - USB writes from the PS5 payload (test on hardware)
-- Library (planned)
 - Replace the vendored ps5upload crates with this project's own implementation
 
 Full list with details: [TODO.md](TODO.md).

@@ -7,15 +7,16 @@ import { api, errorText, prettyBytes, type Inspection } from "./api";
 import {
   CardHead,
   dirname,
-  Modal,
   isWithin,
   notifyDeleted,
-  openOverlay,
+  onDeleted,
+  type SourceSelection,
   panelId,
   SourceCard,
   tabId,
   TabList,
 } from "./common";
+import { confirmDelete } from "./delete";
 import { Icon } from "./icons";
 
 // ponytail: a cap instead of a virtualized list; the filter narrows big games.
@@ -26,6 +27,8 @@ export function Inspect(props: {
   outputDirs: string[];
   /** The tab is showing: re-check for leftovers (jobs may have ended meanwhile). */
   visible: boolean;
+  /** A game the Library opened here; each new `id` is read once. */
+  selection?: SourceSelection | null;
 }) {
   const [source, setSource] = useState<string | null>(null);
   const [ins, setIns] = useState<Inspection | null>(null);
@@ -54,6 +57,44 @@ export function Inspect(props: {
     }
   };
 
+  // ponytail: notifications compare path spellings; a source picked through a symlink alias
+  // may need Refresh. Library handoffs keep the entry's path exactly.
+  const visibleRef = useRef(props.visible);
+  visibleRef.current = props.visible;
+  /** Forget the source and any late answer; `path` is what was deleted. */
+  const clear = (path: string) => {
+    seq.current++; // a late answer for this path never lands
+    picked.current = null;
+    setSource(null);
+    setIns(null);
+    setFilter("");
+    setBusy(false);
+    setDeleted(path);
+    if (visibleRef.current) document.getElementById("i-source")?.focus();
+  };
+  const clearRef = useRef(clear);
+  clearRef.current = clear;
+  // Another screen (the Library) deleted this source or the folder holding it. Inspect's own
+  // delete clears first, so picked is already null there.
+  useEffect(
+    () =>
+      onDeleted((gone) => {
+        if (picked.current !== null && isWithin(picked.current, gone)) clearRef.current(gone);
+      }),
+    [],
+  );
+
+  // A new Library selection: read it like a pick (the sequence guard drops older answers).
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
+  const consumed = useRef(0);
+  useEffect(() => {
+    const sel = props.selection;
+    if (!sel || sel.id === consumed.current) return;
+    consumed.current = sel.id;
+    void pickRef.current(sel.path);
+  }, [props.selection]);
+
   // Delete the inspected source, after asking. `deleting` also covers the open question, so a
   // second click can't ask twice; the path asked about is the one deleted.
   const [deleting, setDeleting] = useState(false);
@@ -70,18 +111,9 @@ export function Inspect(props: {
       setDeleting(true);
       setError(null);
       await api.deletePath(path);
-      notifyDeleted(path);
       // Also when the same source, or one inside it, was picked again meanwhile.
-      if (mine === seq.current || (picked.current !== null && isWithin(picked.current, path))) {
-        seq.current++; // a late answer for this path never lands
-        picked.current = null;
-        setSource(null);
-        setIns(null);
-        setFilter("");
-        setBusy(false);
-        setDeleted(path);
-        document.getElementById("i-source")?.focus();
-      }
+      if (mine === seq.current || (picked.current !== null && isWithin(picked.current, path))) clear(path);
+      notifyDeleted(path);
     } catch (e) {
       if (mine === seq.current) setError(errorText(e));
     } finally {
@@ -282,51 +314,4 @@ function Leftovers(props: { dirs: (string | null)[]; visible: boolean }) {
       </details>
     </section>
   );
-}
-
-/** Asks before deleting `path` for good; true: Yes. Two buttons, No first and focused. */
-function confirmDelete(path: string, folder: boolean): Promise<boolean> {
-  return new Promise((resolve) => {
-    let yes = false;
-    openOverlay(
-      (close) => (
-        <Modal
-          close={close}
-          className="modal card"
-          role="alertdialog"
-          labelledBy="del-title"
-          describedBy="del-text"
-        >
-          <div className="modal-head">
-            <span className="head-icon warn">
-              <Icon name="trash" />
-            </span>
-            <h2 id="del-title">Delete this {folder ? "folder" : "image"}?</h2>
-          </div>
-          <div id="del-text">
-            <p className="out-box path">{path}</p>
-            <p className="muted">
-              {folder ? "The folder and everything in it" : "The image file"} will be deleted for
-              good: no Trash, no undo. If deleting stops part way, some of it may already be gone.
-            </p>
-          </div>
-          <div className="row end">
-            <button autoFocus onClick={close}>
-              No
-            </button>
-            <button
-              className="danger"
-              onClick={() => {
-                yes = true;
-                close();
-              }}
-            >
-              Yes, delete
-            </button>
-          </div>
-        </Modal>
-      ),
-      () => resolve(yes),
-    );
-  });
 }

@@ -63,8 +63,23 @@ impl Roots {
 
     /// The roots that exist now (drives: that are mounted now), canonical, each once.
     pub fn current(&self) -> Vec<PathBuf> {
+        self.collect(false)
+    }
+
+    /// [`Self::current`] without ShadowMountPlus's folder (its mounts are the images already
+    /// listed from their files), for the Library's scan.
+    pub fn library(&self) -> Vec<PathBuf> {
+        self.collect(true)
+    }
+
+    fn collect(&self, skip_shadowmnt: bool) -> Vec<PathBuf> {
+        let shadow = Path::new(SHADOWMNT);
+        let shadow_canon = shadow.canonicalize().ok();
         let mut roots = Vec::new();
         for c in &self.list {
+            if skip_shadowmnt && c.path == shadow {
+                continue;
+            }
             let root = match &c.pinned {
                 Some(root) => root.is_dir().then(|| root.clone()),
                 None if self.ps5 => pin(&c.path)
@@ -72,7 +87,9 @@ impl Roots {
                     .filter(|r| !c.drive || mounted(r, (self.statfs)(r))),
                 None => None,
             };
-            if let Some(root) = root.filter(|r| !roots.contains(r)) {
+            let hidden =
+                |r: &PathBuf| skip_shadowmnt && (r == shadow || shadow_canon.as_ref() == Some(r));
+            if let Some(root) = root.filter(|r| !hidden(r) && !roots.contains(r)) {
                 roots.push(root);
             }
         }
@@ -173,6 +190,37 @@ mod tests {
         let (roots, notes) = Roots::new(Platform::Host, &[data, slash]);
         assert_eq!(roots.current(), [real]);
         assert_eq!(notes.len(), 1);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn library_roots_omit_shadowmnt() {
+        let tmp = std::env::temp_dir().join(format!("forge-libroots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = tmp.canonicalize().unwrap();
+        // A pinned root (host-style) and the logical ShadowMountPlus folder as candidates.
+        let shadow = Candidate {
+            path: PathBuf::from(SHADOWMNT),
+            pinned: Some(PathBuf::from(SHADOWMNT)),
+            drive: false,
+        };
+        let plain = Candidate {
+            path: tmp.clone(),
+            pinned: Some(tmp.clone()),
+            drive: false,
+        };
+        let roots = Roots {
+            list: vec![shadow, plain],
+            ps5: true,
+            statfs,
+        };
+        // Browsing keeps it when it exists; the Library never has it.
+        assert_eq!(roots.library(), std::slice::from_ref(&tmp));
+        assert!(roots.current().contains(&tmp));
+        assert!(!roots.library().iter().any(|r| r == Path::new(SHADOWMNT)));
+        let (roots, _) = Roots::new(Platform::Host, std::slice::from_ref(&tmp));
+        assert_eq!(roots.library(), roots.current());
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 

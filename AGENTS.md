@@ -16,9 +16,10 @@ write safety, console speeds).
   rename (`finalize.rs`; macOS exFAT has none: check, then rename; FreeBSD: hard link where the folder has
   them, U3), BLAKE3 verification (`verify.rs`: 8 MiB slice hashes on a pool of up to 8 threads, fast sample
   or full), `inspect.rs` (cover, firmware, backport firmware from executables, embedded DLC; default and
-  generated output names), `prefetch.rs` (read-ahead thread), `delete.rs` (Inspect's delete). FreeBSD/PS5
+  generated output names), `prefetch.rs` (read-ahead thread), `delete.rs` (Inspect's and Library's delete). FreeBSD/PS5
   only: `dest.rs` (destination probe, U1), `durable.rs` (`sync_retry`, `SyncEvery`, drive-removal check; U4/U5/U7). Its `lib.rs` is the
   public API the CLI, the app and the server build against.
+  `library_roots.rs` (PS5 filesystem classifier, the one system-folder list, the chosen-folder refusal) and `library.rs` (`scan_library`, `library_cover`): the Library.
 - `crates/ps5-dump-forge-exfat`: forward-only exFAT writer (512 B sectors, 64 KiB clusters), ported
   from MkPFS. `crates/ps5-dump-forge-ufs2`: write-once UFS2 writer for the one SMP geometry
   (`newfs -O 2 -b 65536 -f 65536 -m 0 -S 4096`). Both: `plan` (validates names, sizes the image)
@@ -84,12 +85,12 @@ write safety, console speeds).
   the image (every runtime check) and the logical files against the source, same fast/full policy.
   Pack and trace need a title whose `eboot.bin` imports `libSceAmpr`. Compression is `lz4_flex`.
   In the UI every LZ4 action lives in the LZ4 tab (`app/src/Lz4.tsx`; **How LZ4 works**, a short
-  text how-to behind a red button, in `Lz4Help.tsx`), two scenarios: **Trace** (a folder,
+  text how-to behind a red button, in `Lz4Help.tsx`), two scenarios, **Pack/Unpack** first and the default whenever it is usable (Trace only when Pack isn't), then **Trace** (a folder,
   `.exfat` or `.ffpkg`: Patch / Unpatch; a folder through `lz4_patch`/`lz4_unpatch`, an image through a
   conversion with `lz4: "trace"|"unpatch"`, `format` = the source's, `lz4_in_place: true`; Download traces
-  in the web build once a journal is there) and **Pack/Unpack** (traces as a zip or folder, locked to the source's
+  in the web build once a journal is there); Pack/Unpack takes traces as a zip or folder, locked to the source's
   own when it is traced; a profile instead; Unpack when the source is packed). Its target pickers are a UI
-  limit (core and CLI keep `.ffpfsc`): Pack LZ4 folder/`.ffpkg`/`.exfat`/`.ffpfs`, Unpack
+  limit (core and CLI keep `.ffpfsc`): Pack LZ4 folder/`.ffpkg` (default)/`.exfat`/`.ffpfs`, Unpack
   folder/`.ffpkg`/`.exfat`/`.ffpfs`; a folder converts to anything in Convert. Convert sends `lz4: null`
   except for its **AMPR runtime** switch (an AMPR title, not packed, no damaged manifest, runtime `none`:
   install, or `other`: replace; shown only when inspect reports `Lz4Facts.shipped_runtime_version`; on for
@@ -168,7 +169,8 @@ write safety, console speeds).
      the source's `SourceStamp`, closes the source and renames the part over it (`Part::replace`, one
      atomic rename, folder synced). Any failure leaves the source byte-identical and the `.part` deleted.
      The server's stale-part filter takes an in-place job's `.part` from its source.
-  3. Deleting the inspected source (Inspect's trash button, after a No / **Yes, delete** question; core
+  3. Deleting the inspected source or a Library entry (the trash button of Inspect or of a Library card/row,
+     the same **No** / **Yes, delete** dialog and the same route, nothing Library-only; core
      `Jobs::delete_path(path, protected)` → `DeleteError` `Refused`/`Missing`/`Busy`/`Failed`,
      `core/src/delete.rs`; server `POST /api/delete_path` `{path}` → `null`, 400/404/409/500, 409 also
      while stopping; Tauri `delete_path` `{path}`). A file (`remove_file`) or folder (`remove_dir_all`:
@@ -182,6 +184,42 @@ write safety, console speeds).
      table locked, so no job is admitted between them. Leftover `.part` cleanup is separate (`TODO.md`).
   The user takes the journal and index off the console (Download traces) and packs on a computer
   (`--lz4-traces`).
+- Library (the tab after LZ4, plain like Convert with the books icon before its text, `app/src/Library.tsx`): the game dumps on this computer or
+  console, scanned on demand; no database, no index, no persisted state. Core `scan_library(roots)` (the PS5 server's roots only; elsewhere it errors "automatic Library discovery runs only on the PS5") /
+  `scan_library_folder(root)` (a chosen folder) / `library_cover(path)`; Tauri `library_scan {root}` (`root` required) / `library_cover`; server `POST /api/library_scan` `{}` (an object; `"root"` string: scan just that folder on any platform, a non-string is 400; without `root`: the PS5 scans its roots, a computer answers 400 "choose a folder to scan"; the UI's **Choose folder…**, any filesystem, a network share included, mounts nested inside it are walked; a chosen root that is a link is resolved first, links inside the walk are never followed, `/mnt/shadowmnt` refused) and
+  `POST /api/library_cover` `{path}` (409 while stopping, 429 only when the shared read cap (2 concurrent source reads: inspections, covers, scans) is full; a second scan takes a slot and waits on the core mutex; no extra counter).
+  - **Roots**: no automatic discovery on a computer (`local_library_roots` and its per-OS classifiers are gone): the user chooses
+    one folder. HTTP on the PS5 = the server's own `Roots::library()`, the current browse roots minus `/mnt/shadowmnt`, so a
+    mounted image's folder is no duplicate entry; FreeBSD `statfs` classification (`MNT_LOCAL` and ufs, msdosfs, exfat, exfatfs, bfs, nullfs, cd9660, udf, zfs) stays for those roots only.
+  - **Refused folders** (`scan_library_folder` returns an error, so the app and the server agree; checked on the canonical path,
+    ASCII case-insensitive on macOS and Windows; one list, `library_roots::refusal`): the filesystem root (Windows: the system
+    drive root; every other folder is fine: the home folder and its children, `/Volumes`, `/media`, `/mnt`, volume and drive roots),
+    `~/Library` / `~/AppData` with everything
+    inside, and system folders (a path at or inside the canonical home is allowed first, so a `/var/home/me` or `/root` home works; only its app-data child is refused) with everything inside (macOS `/System /Library /Applications /private
+    /usr /bin /sbin /etc /var /dev /cores /opt`, except `/private/tmp` (where `/tmp` resolves) and inside it; Linux `/proc /sys /dev /run` (not `/run/media/…`) `/bin /sbin /lib /lib64 /usr /etc /var
+    /boot /root /snap /opt`; Windows on the system drive Windows, Program Files, Program Files (x86), ProgramData, Recovery, `$Recycle.Bin`, System
+    Volume Information). `library_cover` classifies no locality, only links,
+    devices and `/mnt/shadowmnt`. Walk exclusions: 12 skip names, the home's app-data folder (`~/Library` on macOS, `~/AppData` on Windows), `.part`, non-UTF-8 names.
+  - **Limits** (`library.rs`): depth 6 (root 0), 20,000 directories and 200,000 entries per root, 10,000
+    entries per directory, 256 image opens, 2,000 games, 15 s budget, 20 warnings; hitting one (a folder
+    left unread below depth 6 and images the budget never reached included) sets `truncated` (the UI says the list may be incomplete).
+  - **Recognition**: a folder with a regular `eboot.bin` and a plain `sce_sys` holding a `param.json`
+    (1 B..4 MiB) that parses to a title ID is a game and is not entered (only an accepted folder prunes: a rejected one is searched on; probes run in the walk); images by extension
+    (`.exfat .ffpkg .ffpfs .ffpfsc .pkg`, any case) are opened with `open_source` and need the same
+    files. Entry = path, kind, title ID, localized title (fallback: title ID, then file name), version,
+    `has_cover` (a regular `icon0.png` of 1 B..512 KiB by metadata; discovery reads no icon). Sorted by title, ID, version, path. Cover: `library_cover` reads `sce_sys/icon0.png`
+    (≤ 512 KiB) lazily, one at a time in list order, only for an entry the page lists.
+  - **Semantics**: on a computer (`platform` host: the Tauri app and the web UI on a computer) nothing scans until the user
+    chooses a folder: empty panel "Pick a folder with your library to scan" + **Choose folder…**; then the header shows the folder,
+    **Refresh** (rescans it), **Choose folder…** and the view toggles. A refused or failed newly chosen folder is an error screen
+    ("Can’t scan this folder", core's message, **Choose another folder…**) and drops the previous folder and list; a failed Refresh
+    of an accepted folder keeps the list. On the PS5 the first open scans the server's roots once, **Refresh** rescans; no picker.
+    Everything (list, covers, view, folder) lives in memory until the app closes. A converted output shows up after Refresh.
+    `runtimePlatform()` (`GET /api/session` `platform`, host or ps5) decides. Cards and rows show the title ID (game code), not the disc version.
+  - **Actions**: Inspect and Convert hand the entry to `App` as a `SourceSelection {id, path, kind}` (one per
+    tab; the tab switches and loads it); Delete uses the same `confirmDelete` (`app/src/delete.tsx`),
+    `delete_path` and refusals as Inspect, then `notifyDeleted`, which Inspect, Convert, LZ4 and the Library
+    all hear.
 - Names are never renamed: bad names (non-NFC, exFAT/PFS case collisions, forbidden chars, non-ASCII
   in PFS) fail preflight with every offender listed.
 - `.pkg` is built with `BuildRequest::production` only (plaintext `PPRPLAIN-NOAUTH!`, Kraken);
@@ -211,7 +249,7 @@ write safety, console speeds).
   `--cfg libc_unstable_freebsd_version="11"` (the env var is ignored by libc ≥ 0.2.187) and struct-size
   asserts in the CLI. `panic=abort`.
 - The server has **no protections** by user decision: no pairing, token, Host/Origin/CSRF checks or path
-  confinement. Don't re-add them. Its one delete route (`delete_path`, Inspect's, by user decision)
+  confinement. Don't re-add them. Its one delete route (`delete_path`, Inspect's and Library's, by user decision)
   refuses only what exception 3 lists; the page's question is UI, not authentication.
 - Tile `PDFG00001` "PS5 Dump Forge" (deeplink to `http://127.0.0.1:<port>/`), never written without our
   owner file. Self copy: `ps5/build.sh` builds twice; the release ELF embeds stage 1 and saves it to

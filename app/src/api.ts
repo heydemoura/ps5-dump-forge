@@ -241,6 +241,27 @@ export const useOffline = transport.useOffline;
 /** The server's `host:port` from its session (http build); null in the app or when unknown. */
 export const serverAddress = transport.address;
 
+export type RuntimePlatform = "host" | "ps5";
+
+export interface LibraryEntry {
+  path: string;
+  kind: Kind;
+  title_id: string;
+  title_name: string | null;
+  version: string | null;
+  has_cover: boolean;
+}
+
+export interface LibraryScan {
+  roots: string[];
+  entries: LibraryEntry[];
+  truncated: boolean;
+  warnings: string[];
+}
+
+/** Where the backend runs (the server's own answer in the http build); rejects when unknown. */
+export const runtimePlatform: () => Promise<RuntimePlatform> = transport.platform;
+
 export const api = {
   inspect: (path: string) => invoke<Inspection>("inspect", { path }),
   defaultOutput: (source: string, format: Format, dir: string) =>
@@ -267,6 +288,10 @@ export const api = {
   /** Delete a file or folder for good (the page asks first). Refused for a link, a drive or
    * browse root or a folder holding one, and anything an unfinished job reads or writes. */
   deletePath: (path: string) => invoke<null>("delete_path", { path }).then(() => undefined),
+  /** Discover game dumps under the chosen folder, or the PS5's roots (read-only, bounded). */
+  libraryScan: (root?: string) => invoke<LibraryScan>("library_scan", root ? { root } : {}),
+  /** A dump's cover as a data URL, or null. */
+  libraryCover: (path: string) => invoke<string | null>("library_cover", { path }),
   /** Leftover `.part` files in these folders (deduplicated, missing ones skipped). */
   staleParts: (dirs: string[]) => invoke<string[]>("stale_parts", { dirs }),
   /** Show a finished job's output in Finder, Explorer or its folder (Rust looks the path up by

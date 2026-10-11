@@ -1,0 +1,1168 @@
+//! The Library: finds game dumps (folders and images) under a chosen folder or the PS5's roots
+//! and reads only what a list needs (title, version, cover presence). Reads, never writes; never the conversion
+//! folder scanner or a full `inspect`. Bounded by the limits below.
+
+use std::collections::{HashSet, VecDeque};
+use std::fs::{self, FileType};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+
+use crate::convert::Kind;
+use crate::finalize::{FileId, handle_id, path_id};
+#[cfg(target_os = "freebsd")]
+use crate::library_roots::ps5_classify;
+use crate::library_roots::{Os, home, refusal, shadowmnt, skip_dir_name, system_dir, system_drive};
+use crate::preflight::{MAX_PARAM_JSON, parse_param};
+use crate::{Format, scan};
+
+/// Folders deeper than this below a root are not entered (the root is depth 0).
+const MAX_DEPTH: usize = 6;
+/// Directory probes per root.
+const MAX_DIRS: usize = 20_000;
+/// Enumerated directory entries per root.
+const MAX_ENTRIES: usize = 200_000;
+/// Entries read from one directory; the rest are left out and the scan is truncated.
+const MAX_ENTRIES_PER_DIR: usize = 10_000;
+/// Image opens attempted per scan.
+const MAX_IMAGE_PROBES: usize = 256;
+/// Games listed per scan.
+const MAX_GAMES: usize = 2_000;
+/// The scan's cooperative time budget.
+const SCAN_BUDGET: Duration = Duration::from_secs(15);
+/// Detailed warnings; one more line counts the rest.
+const MAX_WARNINGS: usize = 20;
+/// The largest `sce_sys/icon0.png` the Library shows, raw PNG bytes.
+pub(crate) const MAX_LIBRARY_COVER: u64 = 512 * 1024;
+
+/// One game the Library found.
+#[derive(Debug, Clone, Serialize)]
+pub struct LibraryEntry {
+    pub path: PathBuf,
+    pub kind: Format,
+    pub title_id: String,
+    pub title_name: Option<String>,
+    pub version: Option<String>,
+    pub has_cover: bool,
+}
+
+/// What a Library scan found.
+#[derive(Debug, Clone, Serialize)]
+pub struct LibraryScan {
+    pub roots: Vec<PathBuf>,
+    pub entries: Vec<LibraryEntry>,
+    pub truncated: bool,
+    pub warnings: Vec<String>,
+}
+
+const LIMITS: Limits = Limits {
+    depth: MAX_DEPTH,
+    dirs: MAX_DIRS,
+    entries: MAX_ENTRIES,
+    per_dir: MAX_ENTRIES_PER_DIR,
+    images: MAX_IMAGE_PROBES,
+    games: MAX_GAMES,
+    budget: SCAN_BUDGET,
+};
+
+/// The scan's limits, fixed in production and lowered by tests.
+struct Limits {
+    depth: usize,
+    dirs: usize,
+    entries: usize,
+    per_dir: usize,
+    images: usize,
+    games: usize,
+    budget: Duration,
+}
+
+/// Decides whether the Library may enter a path: `Err` says why not.
+type Classify<'a> = &'a (dyn Fn(&Path) -> Result<(), String> + Sync);
+
+/// Library scans run one at a time; a panicking scan must not wedge the next, so a poisoned
+/// lock is still used.
+static SCAN: Mutex<()> = Mutex::new(());
+
+/// Detailed warnings up to the cap, then a count.
+#[derive(Default)]
+struct Warnings {
+    list: Vec<String>,
+    omitted: usize,
+}
+
+impl Warnings {
+    fn add(&mut self, text: String) {
+        if self.list.len() < MAX_WARNINGS {
+            self.list.push(text);
+        } else {
+            self.omitted += 1;
+        }
+    }
+
+    fn finish(mut self) -> Vec<String> {
+        if self.omitted > 0 {
+            self.list
+                .push(format!("{} more warnings not shown", self.omitted));
+        }
+        self.list
+    }
+}
+
+/// What `probe_all` reports for a candidate it never opened because the budget was spent.
+const NOT_PROBED: &str = "not probed: the scan ran out of time";
+
+/// A link (or, on Windows, any reparse point) is never followed.
+fn is_link(ty: FileType, _meta: impl FnOnce() -> Option<fs::Metadata>) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if _meta().is_none_or(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0) {
+            return true;
+        }
+    }
+    ty.is_symlink()
+}
+
+fn image_kind(name: &str) -> Option<Kind> {
+    let (_, ext) = name.rsplit_once('.')?;
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "exfat" => Kind::Exfat,
+        "ffpkg" => Kind::Ffpkg,
+        "ffpfs" => Kind::Ffpfs,
+        "ffpfsc" => Kind::Ffpfsc,
+        "pkg" => Kind::Pkg,
+        _ => return None,
+    })
+}
+
+struct Walk<'a> {
+    limits: &'a Limits,
+    classify: Classify<'a>,
+    home: Option<PathBuf>,
+    start: Instant,
+    candidates: Vec<(PathBuf, Kind)>,
+    /// Accepted game folders, probed inline: only an accepted one is not entered.
+    folders: Vec<LibraryEntry>,
+    warnings: Warnings,
+    truncated: bool,
+    /// Why a scan root itself could not be listed (a warning too; a chosen folder fails on it).
+    root_error: Option<String>,
+    /// Directories already queued or accepted, and the identities of images already listed.
+    seen_dirs: HashSet<FileId>,
+    seen_images: HashSet<FileId>,
+    /// Every accepted root: a walk from another root does not enter it.
+    root_ids: HashSet<FileId>,
+    image_probes: usize,
+}
+
+impl Walk<'_> {
+    fn out_of_time(&mut self) -> bool {
+        let over = self.start.elapsed() >= self.limits.budget;
+        if over && !self.truncated {
+            self.warnings
+                .add("the scan ran out of time; the list is partial".into());
+        }
+        self.truncated |= over;
+        over
+    }
+
+    /// Breadth first from `root` (depth 0), within the per-root budgets.
+    fn root(&mut self, root: &Path, root_id: FileId) {
+        let (mut dirs, mut entries) = (0, 0);
+        let mut queue = VecDeque::from([(root.to_path_buf(), 0, root_id.0)]);
+        while let Some((dir, depth, dev)) = queue.pop_front() {
+            if self.out_of_time() {
+                return;
+            }
+            if dirs >= self.limits.dirs {
+                self.truncated = true;
+                return;
+            }
+            dirs += 1;
+            let mut names = match self.list(&dir, &mut entries, depth == 0) {
+                Ok(names) => names,
+                Err(e) => {
+                    if depth == 0 {
+                        self.root_error
+                            .get_or_insert(format!("{}: {e}", dir.display()));
+                    }
+                    self.warnings.add(format!("{}: {e}", dir.display()));
+                    continue;
+                }
+            };
+            names.sort_by(|a, b| a.0.cmp(&b.0));
+            let has = |n: &str| names.iter().any(|(name, _)| name == n);
+            if has("eboot.bin") && has("sce_sys") {
+                // Folder probes are cheap (metadata and one small read), so they run here:
+                // an accepted game is never entered, a rejected folder is searched on.
+                if let Some(found) = probe_folder(&dir) {
+                    self.folders.push(found);
+                    continue;
+                }
+            }
+            for (name, ty) in names {
+                let path = dir.join(&name);
+                if ty.is_file() {
+                    self.image(path, &name, dev);
+                } else if depth < self.limits.depth {
+                    self.child_dir(&mut queue, path, depth + 1, dev);
+                } else {
+                    // A folder below the depth limit is left unread.
+                    self.truncated = true;
+                }
+            }
+            if entries >= self.limits.entries {
+                self.truncated = true;
+                return;
+            }
+        }
+    }
+
+    /// The first `per_dir` plain entries of `dir` worth a look: regular files and folders
+    /// with UTF-8 names that are not junk, `.part` files or links.
+    fn list(
+        &mut self,
+        dir: &Path,
+        entries: &mut usize,
+        root_dir: bool,
+    ) -> std::io::Result<Vec<(String, FileType)>> {
+        let mut out = Vec::new();
+        for (n, entry) in fs::read_dir(dir)?.enumerate() {
+            if n >= self.limits.per_dir || *entries >= self.limits.entries {
+                self.truncated = true;
+                break;
+            }
+            *entries += 1;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    // An unreadable listing of the chosen root must not look complete.
+                    if root_dir {
+                        self.root_error
+                            .get_or_insert(format!("{}: {e}", dir.display()));
+                    }
+                    self.warnings
+                        .add(format!("{}: skipped an entry: {e}", dir.display()));
+                    continue;
+                }
+            };
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                self.warnings.add(format!(
+                    "{}: skipped a name that is not UTF-8",
+                    dir.display()
+                ));
+                continue;
+            };
+            let ty = match entry.file_type() {
+                Ok(ty) => ty,
+                Err(e) => {
+                    self.warnings.add(format!(
+                        "{}: skipped, cannot stat: {e}",
+                        dir.join(&name).display()
+                    ));
+                    continue;
+                }
+            };
+            if is_link(ty, || entry.metadata().ok()) || scan::is_junk(&name) {
+                continue;
+            }
+            let part = name
+                .rsplit_once('.')
+                .is_some_and(|(_, e)| e.eq_ignore_ascii_case("part"));
+            if !part && (ty.is_file() || (ty.is_dir() && !skip_dir_name(&name))) {
+                out.push((name, ty));
+            }
+        }
+        Ok(out)
+    }
+
+    fn image(&mut self, path: PathBuf, name: &str, dev: u64) {
+        let Some(kind) = image_kind(name) else { return };
+        match path_id(&path) {
+            Ok((id, _)) if id.0 != dev => self.warnings.add(format!(
+                "{}: skipped, on another filesystem than its folder",
+                path.display()
+            )),
+            Ok((id, _)) if !self.seen_images.insert(id) => {}
+            Ok(_) if self.image_probes >= self.limits.images => self.truncated = true,
+            Ok(_) => {
+                self.image_probes += 1;
+                self.candidates.push((path, kind));
+            }
+            Err(e) => self.warnings.add(format!("{}: {e}", path.display())),
+        }
+    }
+
+    fn child_dir(
+        &mut self,
+        queue: &mut VecDeque<(PathBuf, usize, u64)>,
+        path: PathBuf,
+        depth: usize,
+        dev: u64,
+    ) {
+        if shadowmnt(&path) || system_dir(&path, self.home.as_deref()) {
+            return;
+        }
+        let id = match path_id(&path) {
+            Ok((id, _)) => id,
+            Err(e) => return self.warnings.add(format!("{}: {e}", path.display())),
+        };
+        if self.root_ids.contains(&id) || !self.seen_dirs.insert(id) {
+            return;
+        }
+        if id.0 != dev
+            && let Err(why) = (self.classify)(&path)
+        {
+            return self.warnings.add(format!("{}: {why}", path.display()));
+        }
+        queue.push_back((path, depth, id.0));
+    }
+}
+
+/// Opens `rel` under the folder `dir` as a regular file (no link at the end) on the device
+/// `dev` of the folder, with its size; `None` when absent, not a regular file or elsewhere.
+fn folder_open(dir: &Path, rel: &str, dev: u64) -> Option<(fs::File, u64)> {
+    let file = scan::open_nofollow(&dir.join(rel)).ok()?;
+    let meta = file.metadata().ok()?;
+    (meta.is_file() && handle_id(&file).ok()?.0 == dev).then_some((file, meta.len()))
+}
+
+/// The bytes of `rel` under `dir`, at most `max`; `None` when absent, empty, too big, not a
+/// regular file or on another device.
+fn folder_file(dir: &Path, rel: &str, max: u64, dev: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let (file, len) = folder_open(dir, rel, dev)?;
+    if len == 0 || len > max {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= max).then_some(bytes)
+}
+
+/// `sce_sys` must be a plain directory on the folder's own device before anything under it is
+/// opened (a mount there could be a network share).
+fn plain_dir(path: &Path, dev: u64) -> bool {
+    path.symlink_metadata().is_ok_and(|m| {
+        !is_link(m.file_type(), || Some(m.clone()))
+            && m.is_dir()
+            && path_id(path).is_ok_and(|(id, _)| id.0 == dev)
+    })
+}
+
+/// What the list shows, from `param.json` bytes; `None` without a usable title ID.
+fn entry(path: PathBuf, kind: Format, param: &[u8], has_cover: bool) -> Option<LibraryEntry> {
+    let info = parse_param(param);
+    let json = info.param_json.as_ref()?;
+    Some(LibraryEntry {
+        path,
+        kind,
+        title_id: info.title_id?,
+        title_name: crate::inspect::title_name(json),
+        version: json
+            .get("contentVersion")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        has_cover,
+    })
+}
+
+/// A game folder's entry, or `None` when it is not a usable one (a folder's problems are
+/// its own business: no warning).
+fn probe_folder(dir: &Path) -> Option<LibraryEntry> {
+    let dev = path_id(dir).ok()?.0.0;
+    folder_open(dir, "eboot.bin", dev)?;
+    if !plain_dir(&dir.join("sce_sys"), dev) {
+        return None;
+    }
+    let param = folder_file(dir, "sce_sys/param.json", MAX_PARAM_JSON, dev)?;
+    // Metadata only: the icon is read when the list asks for it.
+    let cover = folder_open(dir, "sce_sys/icon0.png", dev)
+        .is_some_and(|(_, len)| (1..=MAX_LIBRARY_COVER).contains(&len));
+    entry(dir.to_path_buf(), Format::Folder, &param, cover)
+}
+
+/// An image's entry. Opening reads the image's own metadata, so this costs more than a folder.
+fn probe_image(path: &Path, kind: Kind) -> Result<Option<LibraryEntry>, String> {
+    let mut tree = crate::convert::open_source(path, kind, &AtomicBool::new(false))
+        .map_err(|e| format!("skipped, cannot open: {e}"))?;
+    let size = |name: &str| tree.files().iter().find(|f| f.path == name).map(|f| f.size);
+    let (cover, param_size) = (size("sce_sys/icon0.png"), size("sce_sys/param.json"));
+    if size("eboot.bin").is_none() {
+        return Err("skipped, no eboot.bin at the root".to_string());
+    }
+    if param_size.is_none_or(|s| s == 0 || s > MAX_PARAM_JSON) {
+        return Err("skipped, sce_sys/param.json is missing or too big".to_string());
+    }
+    let param = tree
+        .read("sce_sys/param.json")
+        .map_err(|e| format!("skipped, param.json: {e}"))?;
+    let format = match kind {
+        Kind::Folder => Format::Folder,
+        Kind::Exfat => Format::Exfat,
+        Kind::Ffpkg => Format::Ffpkg,
+        Kind::Ffpfs => Format::Ffpfs,
+        Kind::Ffpfsc => Format::Ffpfsc,
+        Kind::Pkg => Format::Pkg,
+    };
+    let has_cover = cover.is_some_and(|s| (1..=MAX_LIBRARY_COVER).contains(&s));
+    entry(path.to_path_buf(), format, &param, has_cover)
+        .map(Some)
+        .ok_or_else(|| "skipped, param.json has no usable title ID".to_string())
+}
+
+/// The cover of a supported image or plain game folder as a PNG data URL. `None` when the
+/// icon is absent, empty, over 512 KiB (before or after reading) or not a PNG; an error when
+/// the source is a link, is under ShadowMountPlus's mounts, or cannot be opened. No locality
+/// check: a cover is one read of a path the page listed, which may be from a chosen network
+/// folder.
+pub(crate) fn library_cover(path: &Path) -> anyhow::Result<Option<String>> {
+    cover_with(path, MAX_LIBRARY_COVER, &explicit)
+}
+
+/// The classifier for an explicitly chosen folder: locality is ignored, only ShadowMountPlus's
+/// mounts are refused.
+fn explicit(path: &Path) -> Result<(), String> {
+    if shadowmnt(path) {
+        return Err("is under ShadowMountPlus's mounts".to_string());
+    }
+    Ok(())
+}
+
+/// A root or cover path must not itself be a link, and both the path and its canonical form
+/// (every link among its ancestors resolved) must pass the classifier.
+fn eligible(path: &Path, classify: Classify<'_>) -> Result<(), String> {
+    classify(path)?;
+    let meta = path.symlink_metadata().map_err(|e| e.to_string())?;
+    if is_link(meta.file_type(), || Some(meta.clone())) {
+        return Err("is a link".to_string());
+    }
+    let real = path.canonicalize().map_err(|e| e.to_string())?;
+    classify(&real)
+}
+
+fn cover_with(path: &Path, max: u64, classify: Classify<'_>) -> anyhow::Result<Option<String>> {
+    use anyhow::{anyhow, bail};
+    eligible(path, classify).map_err(|why| anyhow!("{}: {why}", path.display()))?;
+    let meta = path.symlink_metadata()?;
+    // The same five extensions as the scan (never `.ufs2`).
+    let kind = if meta.is_dir() {
+        Kind::Folder
+    } else {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(image_kind)
+            .ok_or_else(|| anyhow!("{} is not a supported image", path.display()))?
+    };
+    let png = if kind == Kind::Folder {
+        let dev = path_id(path)?.0.0;
+        if !plain_dir(&path.join("sce_sys"), dev) {
+            return Ok(None);
+        }
+        folder_file(path, "sce_sys/icon0.png", max, dev)
+    } else {
+        if !meta.is_file() {
+            bail!("{} is not a regular file", path.display());
+        }
+        let folder = path.parent().filter(|p| !p.as_os_str().is_empty());
+        let file_dev = path_id(path)?.0.0;
+        if folder.is_none_or(|p| path_id(p).map(|i| i.0.0).ok() != Some(file_dev)) {
+            bail!(
+                "{} is on another filesystem than its folder",
+                path.display()
+            );
+        }
+        let mut tree = crate::convert::open_source(path, kind, &AtomicBool::new(false))?;
+        const ICON: &str = "sce_sys/icon0.png";
+        let size = tree.files().iter().find(|f| f.path == ICON).map(|f| f.size);
+        match size {
+            Some(s) if (1..=max).contains(&s) => {
+                tree.read(ICON).ok().filter(|b| b.len() as u64 <= max)
+            }
+            _ => None,
+        }
+    };
+    Ok(png.and_then(|b| crate::inspect::png_data_url(&b)))
+}
+
+/// Probes every candidate on up to four threads; results in candidate order. A panic skips
+/// that candidate with a warning.
+fn probe_all(
+    candidates: &[(PathBuf, Kind)],
+    limits: &Limits,
+    start: Instant,
+) -> Vec<Result<Option<LibraryEntry>, String>> {
+    let next = AtomicUsize::new(0);
+    let slots = Mutex::new((0..candidates.len()).map(|_| None).collect::<Vec<_>>());
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(4);
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(candidate) = candidates.get(i) else {
+                        break;
+                    };
+                    let result = if start.elapsed() >= limits.budget {
+                        Err(NOT_PROBED.to_string())
+                    } else {
+                        std::panic::catch_unwind(|| probe_image(&candidate.0, candidate.1))
+                            .unwrap_or_else(|_| Err("skipped, the probe panicked".to_string()))
+                    };
+                    slots.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(result);
+                }
+            });
+        }
+    });
+    let slots = slots.into_inner().unwrap_or_else(|e| e.into_inner());
+    slots.into_iter().map(|r| r.unwrap_or(Ok(None))).collect()
+}
+
+pub(crate) fn scan_library(roots: &[PathBuf]) -> anyhow::Result<LibraryScan> {
+    let _guard = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+    if roots.is_empty() {
+        return Ok(scan(roots, &LIMITS, &|_| Ok(())));
+    }
+    #[cfg(not(target_os = "freebsd"))]
+    anyhow::bail!("automatic Library discovery runs only on the PS5");
+    #[cfg(target_os = "freebsd")]
+    Ok(scan(roots, &LIMITS, &ps5_classify))
+}
+
+/// Lists the game dumps under one folder the user chose, like [`scan_library`] but on any
+/// filesystem, network shares and mounts nested inside it included (an explicit choice;
+/// automatic discovery stays local). ShadowMountPlus's mounts are still refused.
+pub(crate) fn scan_library_folder(root: &Path) -> anyhow::Result<LibraryScan> {
+    refuse_folder(root)?;
+    // A chosen folder may itself be a link (`/tmp`, `/var`): the walk starts at its target.
+    // Links met during the walk are still not followed.
+    let linked = root
+        .symlink_metadata()
+        .is_ok_and(|m| is_link(m.file_type(), || Some(m.clone())));
+    if linked {
+        return scan_chosen(&plain_spelling(root.canonicalize()?));
+    }
+    scan_chosen(root)
+}
+
+/// Windows' `canonicalize` spells `C:\x` as `\\?\C:\x` and `\\server\share` as
+/// `\\?\UNC\server\share`; entry paths use the plain spellings. Other paths are unchanged.
+fn plain_spelling(path: PathBuf) -> PathBuf {
+    let Some(s) = path.to_str() else { return path };
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
+    }
+}
+
+/// Errors when the chosen folder (canonical) is a system one.
+fn refuse_folder(root: &Path) -> anyhow::Result<()> {
+    let Some(os) = Os::HOST else { return Ok(()) };
+    let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let home = home().map(|h| h.canonicalize().unwrap_or(h));
+    match refusal(&real, home.as_deref(), os, system_drive()) {
+        Some(why) => anyhow::bail!(why),
+        None => Ok(()),
+    }
+}
+
+/// The walk of a chosen folder. The folder itself must be a readable directory (an error:
+/// a vanished drive is not an empty library); failures below it are warnings.
+fn scan_chosen(root: &Path) -> anyhow::Result<LibraryScan> {
+    let _guard = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+    // Checked under the lock, and again by the walk: a drive that vanished while this scan
+    // waited is an error, not an empty library.
+    eligible(root, &explicit).map_err(|why| anyhow::anyhow!("{}: {why}", root.display()))?;
+    match scan_inner(&[root.to_path_buf()], &LIMITS, &explicit) {
+        (_, Some(why)) => anyhow::bail!(why),
+        (found, None) => Ok(found),
+    }
+}
+
+fn scan(roots: &[PathBuf], limits: &Limits, classify: Classify<'_>) -> LibraryScan {
+    scan_inner(roots, limits, classify).0
+}
+
+fn scan_inner(
+    roots: &[PathBuf],
+    limits: &Limits,
+    classify: Classify<'_>,
+) -> (LibraryScan, Option<String>) {
+    let mut walk = Walk {
+        limits,
+        classify,
+        home: home(),
+        start: Instant::now(),
+        candidates: Vec::new(),
+        folders: Vec::new(),
+        warnings: Warnings::default(),
+        truncated: false,
+        seen_dirs: HashSet::new(),
+        seen_images: HashSet::new(),
+        root_ids: HashSet::new(),
+        root_error: None,
+        image_probes: 0,
+    };
+    // Accepted roots, in the supplied order one per identity.
+    let mut accepted = Vec::new();
+    for root in roots {
+        let id = match (eligible(root, classify), root.to_str(), path_id(root)) {
+            (Err(why), ..) => Err(why),
+            (_, None, _) => Err("not a UTF-8 path".to_string()),
+            (_, _, Err(e)) => Err(e.to_string()),
+            (_, _, Ok((id, _))) => Ok(id),
+        };
+        // Walk the canonical spelling so every child and shadowmnt check is canonical (`..` or
+        // ancestor links in the typed path). Not on Windows: `\\?\C:\` spellings would leak into
+        // entry paths; ShadowMountPlus's mounts exist only on FreeBSD anyway.
+        #[cfg(not(windows))]
+        let root = &root.canonicalize().unwrap_or_else(|_| root.clone());
+        match id {
+            Ok(id) if walk.root_ids.insert(id) => accepted.push((root.clone(), id)),
+            Ok(_) => {}
+            Err(why) => {
+                walk.root_error
+                    .get_or_insert(format!("{}: {why}", root.display()));
+                walk.warnings.add(format!("{}: {why}", root.display()))
+            }
+        }
+    }
+    for (root, id) in &accepted {
+        walk.seen_dirs.insert(*id);
+        walk.root(root, *id);
+    }
+    let results = probe_all(&walk.candidates, limits, walk.start);
+    let mut entries = std::mem::take(&mut walk.folders);
+    for (candidate, result) in walk.candidates.iter().zip(results) {
+        let path = &candidate.0;
+        match result {
+            Ok(Some(e)) => entries.push(e),
+            Ok(None) => {}
+            Err(why) => {
+                // Images the budget never reached are missing from the list.
+                walk.truncated |= why == NOT_PROBED;
+                walk.warnings.add(format!("{}: {why}", path.display()))
+            }
+        }
+    }
+    if entries.len() > limits.games {
+        entries.truncate(limits.games);
+        walk.truncated = true;
+    }
+    entries.sort_by_cached_key(|e| {
+        let shown = e
+            .title_name
+            .as_deref()
+            .unwrap_or(&e.title_id)
+            .to_lowercase();
+        (shown, e.title_id.clone(), e.version.clone(), e.path.clone())
+    });
+    let root_error = walk.root_error.take();
+    let found = LibraryScan {
+        roots: accepted.into_iter().map(|(r, _)| r).collect(),
+        entries,
+        truncated: walk.truncated,
+        warnings: walk.warnings.finish(),
+    };
+    (found, root_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("forge-library-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    fn put(root: &Path, rel: &str, bytes: &[u8]) {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    /// A game folder at `root/rel` with this `param.json`.
+    fn game(root: &Path, rel: &str, param: &str) -> PathBuf {
+        let dir = root.join(rel);
+        put(&dir, "eboot.bin", b"\x7fELF");
+        put(&dir, "sce_sys/param.json", param.as_bytes());
+        dir
+    }
+
+    fn run(roots: &[&Path], limits: &Limits) -> LibraryScan {
+        let roots: Vec<PathBuf> = roots.iter().map(|r| r.to_path_buf()).collect();
+        scan(&roots, limits, &|_| Ok(()))
+    }
+
+    fn paths(scan: &LibraryScan) -> Vec<&Path> {
+        scan.entries.iter().map(|e| e.path.as_path()).collect()
+    }
+
+    #[test]
+    fn folder_metadata() {
+        let root = tmp("meta");
+        game(
+            &root,
+            "a",
+            r#"{"titleId":"PPSA00001","contentVersion":"01.002.000","localizedParameters":{"defaultLanguage":"de-DE","de-DE":{"titleName":"Spiel"},"en-US":{"titleName":"Game"}}}"#,
+        );
+        // No titleId: the content ID names it; no title, no version.
+        game(
+            &root,
+            "b",
+            r#"{"contentId":"UP0000-PPSA00002_00-TESTTESTTESTTEST"}"#,
+        );
+        put(&root.join("a"), "sce_sys/icon0.png", b"png");
+        let scan = run(&[&root], &LIMITS);
+        let (a, b) = (&scan.entries[1], &scan.entries[0]);
+        assert_eq!(a.kind, Format::Folder);
+        assert_eq!(
+            (a.title_id.as_str(), a.title_name.as_deref()),
+            ("PPSA00001", Some("Spiel"))
+        );
+        assert_eq!(
+            (a.version.as_deref(), a.has_cover),
+            (Some("01.002.000"), true)
+        );
+        assert_eq!(
+            (
+                b.title_id.as_str(),
+                b.title_name.as_deref(),
+                b.version.as_deref()
+            ),
+            ("PPSA00002", None, None)
+        );
+        assert!(!b.has_cover);
+        assert!(scan.warnings.is_empty());
+    }
+
+    #[test]
+    fn folders_that_are_not_games_are_skipped() {
+        let root = tmp("reject");
+        let ok = r#"{"titleId":"PPSA00001"}"#;
+        let no_eboot = game(&root, "no-eboot", ok);
+        fs::remove_file(no_eboot.join("eboot.bin")).unwrap();
+        put(&no_eboot, "x/y.bin", b"");
+        game(&root, "bad-json", "not json");
+        game(&root, "no-id", r#"{"titleName":"x"}"#);
+        game(
+            &root,
+            "big",
+            &format!(
+                r#"{{"titleId":"PPSA00003","pad":"{}"}}"#,
+                "x".repeat(4 * 1024 * 1024)
+            ),
+        );
+        put(&root, "ps4/eboot.bin", b"x");
+        put(&root, "ps4/sce_sys/param.sfo", b"x");
+        let scan = run(&[&root], &LIMITS);
+        assert!(scan.entries.is_empty() && scan.warnings.is_empty());
+    }
+
+    #[test]
+    fn image_extensions() {
+        let root = tmp("ext");
+        for name in [
+            "a.EXFAT",
+            "b.FfPkg",
+            "c.ufs2",
+            "d.lz4",
+            "e.exfat.part",
+            "f.PKG",
+            "g.ffpfs",
+            "h.FFPFSC",
+        ] {
+            put(&root, name, b"junk");
+        }
+        let scan = run(&[&root], &LIMITS);
+        // Every supported one is opened (and fails on junk bytes, with a warning).
+        let mut warned: Vec<_> = scan
+            .warnings
+            .iter()
+            .map(|w| {
+                let path = Path::new(w.split(": ").next().unwrap());
+                path.file_name().unwrap().to_str().unwrap()
+            })
+            .collect();
+        warned.sort();
+        assert_eq!(
+            warned,
+            ["a.EXFAT", "b.FfPkg", "f.PKG", "g.ffpfs", "h.FFPFSC"]
+        );
+    }
+
+    #[test]
+    fn exfat_image_is_listed_and_junk_image_warns() {
+        let root = tmp("image");
+        let src = game(
+            &root,
+            "src",
+            r#"{"titleId":"PPSA00009","titleName":"Image Game","contentVersion":"01.000.000"}"#,
+        );
+        put(&src, "sce_sys/icon0.png", b"png");
+        let tree = ps5upload_fpkg::source::FolderSource::open(&src).unwrap();
+        let layout =
+            ps5_dump_forge_exfat::plan(&tree, &Default::default(), &AtomicBool::new(false))
+                .unwrap();
+        let mut tree = tree;
+        let mut out = fs::File::create(root.join("Game.exfat")).unwrap();
+        ps5_dump_forge_exfat::write(
+            &mut tree,
+            &layout,
+            &mut out,
+            &AtomicBool::new(false),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        drop(out);
+        fs::remove_dir_all(&src).unwrap();
+        put(&root, "bad.ffpkg", b"junk bytes");
+        let scan = run(&[&root], &LIMITS);
+        assert_eq!(scan.entries.len(), 1);
+        let e = &scan.entries[0];
+        assert_eq!(
+            (e.kind, e.title_id.as_str(), e.title_name.as_deref()),
+            (Format::Exfat, "PPSA00009", Some("Image Game"))
+        );
+        assert_eq!(
+            (e.version.as_deref(), e.has_cover),
+            (Some("01.000.000"), true)
+        );
+        assert_eq!(scan.warnings.len(), 1);
+        assert!(scan.warnings[0].contains("bad.ffpkg"));
+    }
+
+    const OK: &str = r#"{"titleId":"PPSA00001"}"#;
+
+    #[test]
+    fn game_folder_is_not_entered() {
+        let root = tmp("prune");
+        let g = game(&root, "g", OK);
+        put(&g, "inner/Other.exfat", b"junk");
+        game(&g, "inner/nested", r#"{"titleId":"PPSA00002"}"#);
+        let scan = run(&[&root], &LIMITS);
+        assert_eq!(paths(&scan), [g.as_path()]);
+        assert!(scan.warnings.is_empty());
+    }
+
+    #[test]
+    fn depth_boundary() {
+        let root = tmp("depth");
+        let shallow = game(&root, "a/b", OK);
+        game(&root, "a/b2/c", r#"{"titleId":"PPSA00002"}"#);
+        let limits = Limits { depth: 2, ..LIMITS };
+        // The root is depth 0: a/b2 is depth 2 and is read, a/b2/c (depth 3) is not.
+        let cut = run(&[&root], &limits);
+        assert_eq!(paths(&cut), [shallow.as_path()]);
+        assert!(
+            cut.truncated,
+            "a folder left unread must mark the scan partial"
+        );
+        let limits = Limits { depth: 3, ..LIMITS };
+        let full = run(&[&root], &limits);
+        assert_eq!(full.entries.len(), 2);
+        assert!(!full.truncated);
+    }
+
+    #[test]
+    fn rejected_folder_does_not_hide_games_below_it() {
+        let root = tmp("collection");
+        put(&root, "c/eboot.bin", b"x");
+        put(&root, "c/sce_sys/param.sfo", b"x"); // looks like a game, is not one
+        let g = game(&root, "c/g", OK);
+        assert_eq!(paths(&run(&[&root], &LIMITS)), [g.as_path()]);
+    }
+
+    #[test]
+    fn cover_presence_is_by_size() {
+        let root = tmp("has-cover");
+        let g = game(&root, "g", OK);
+        let has = |root: &Path| run(&[root], &LIMITS).entries[0].has_cover;
+        assert!(!has(&root));
+        put(&g, "sce_sys/icon0.png", b"");
+        assert!(!has(&root));
+        put(
+            &g,
+            "sce_sys/icon0.png",
+            &vec![0; MAX_LIBRARY_COVER as usize + 1],
+        );
+        assert!(!has(&root));
+        put(&g, "sce_sys/icon0.png", b"not even a png");
+        assert!(has(&root)); // presence is metadata only; the PNG check is the cover read's
+    }
+
+    #[test]
+    fn probes_after_the_budget_are_reported() {
+        let root = tmp("probe-budget");
+        put(&root, "a.exfat", b"junk");
+        let candidates = [(root.join("a.exfat"), Kind::Exfat)];
+        let limits = Limits {
+            budget: Duration::ZERO,
+            ..LIMITS
+        };
+        let out = probe_all(&candidates, &limits, Instant::now());
+        assert_eq!(out[0].as_ref().unwrap_err(), NOT_PROBED);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_root_and_linked_ancestor_are_refused() {
+        let real = tmp("link-real");
+        let g = game(&real, "g", OK);
+        let base = tmp("link-base");
+        let link = base.join("l");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let scan = run(&[&link], &LIMITS);
+        assert!(scan.roots.is_empty() && scan.entries.is_empty());
+        assert!(scan.warnings[0].contains("is a link"));
+        // A cover below a linked ancestor: the classifier sees the real location.
+        let real_c = real.canonicalize().unwrap();
+        let deny = move |p: &Path| {
+            if p.starts_with(&real_c) {
+                Err("network".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let via = base.join("l/g");
+        let err = cover_with(&via, MAX_LIBRARY_COVER, &deny).unwrap_err();
+        assert!(err.to_string().contains("network"));
+        assert!(g.is_dir());
+    }
+
+    #[test]
+    fn small_dir_budget_truncates() {
+        let root = tmp("budget");
+        for i in 0..5 {
+            fs::create_dir_all(root.join(format!("d{i}"))).unwrap();
+        }
+        let limits = Limits { dirs: 3, ..LIMITS };
+        assert!(run(&[&root], &limits).truncated);
+        assert!(!run(&[&root], &LIMITS).truncated);
+        let limits = Limits {
+            per_dir: 2,
+            ..LIMITS
+        };
+        assert!(run(&[&root], &limits).truncated);
+    }
+
+    #[test]
+    fn overlapping_roots_list_each_source_once() {
+        let root = tmp("overlap");
+        let a = game(&root, "x/a", OK);
+        let b = game(&root, "x/b", OK); // a second copy of the same title is kept
+        let inner = root.join("x");
+        let scan = run(&[&root, &inner, &root], &LIMITS);
+        assert_eq!(paths(&scan), [a.as_path(), b.as_path()]);
+        assert_eq!(scan.roots, [root.clone(), inner]);
+    }
+
+    #[test]
+    fn nested_root_has_its_own_depth() {
+        let root = tmp("anchor");
+        let deep = root.join("1/2/3/4");
+        let g = game(&deep, "5/g", OK);
+        let limits = Limits { depth: 2, ..LIMITS };
+        assert!(run(&[&root], &limits).entries.is_empty());
+        assert_eq!(paths(&run(&[&root, &deep], &limits)), [g.as_path()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_are_not_followed() {
+        let root = tmp("links");
+        let real = tmp("links-real");
+        let g = game(&real, "g", OK);
+        std::os::unix::fs::symlink(&g, root.join("linked")).unwrap();
+        // A game whose sce_sys is a link to a real one.
+        put(&root, "game/eboot.bin", b"x");
+        std::os::unix::fs::symlink(g.join("sce_sys"), root.join("game/sce_sys")).unwrap();
+        assert!(run(&[&root], &LIMITS).entries.is_empty());
+    }
+
+    #[test]
+    fn classifier_refusal_of_a_root_is_final() {
+        let root = tmp("net");
+        let kept = game(&root, "ok/g", OK);
+        game(&root, "nas/g", r#"{"titleId":"PPSA00002"}"#);
+        let nas = root.join("nas");
+        let deny = |p: &Path| {
+            if p == nas {
+                Err("network".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        // ponytail: a refusal of a nested mount point needs a real device change under the
+        // temp dir, which a unit test cannot make; only the root refusal is exercised.
+        let scan = scan(&[nas.clone(), root.clone()], &LIMITS, &deny);
+        assert_eq!(scan.roots, std::slice::from_ref(&root));
+        assert_eq!(paths(&scan), [kept.as_path(), nas.join("g").as_path()]);
+        assert!(scan.warnings[0].contains("network"));
+    }
+
+    #[test]
+    fn entries_sort_by_title() {
+        let root = tmp("sort");
+        game(
+            &root,
+            "1",
+            r#"{"titleId":"PPSA00003","titleName":"banana"}"#,
+        );
+        game(
+            &root,
+            "2",
+            r#"{"titleId":"PPSA00002","titleName":"Apple","contentVersion":"02"}"#,
+        );
+        game(
+            &root,
+            "3",
+            r#"{"titleId":"PPSA00002","titleName":"Apple","contentVersion":"01"}"#,
+        );
+        game(&root, "4", r#"{"titleId":"PPSA00001"}"#);
+        let scan = run(&[&root], &LIMITS);
+        let order: Vec<_> = scan
+            .entries
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_str().unwrap())
+            .collect();
+        // "apple" (v01, v02), "banana", then the untitled one by its ID "ppsa00001".
+        assert_eq!(order, ["3", "2", "1", "4"]);
+    }
+
+    #[test]
+    fn verbatim_spellings_are_made_plain() {
+        let p = |s: &str| plain_spelling(PathBuf::from(s));
+        assert_eq!(p(r"\\?\C:\Games\x"), PathBuf::from(r"C:\Games\x"));
+        assert_eq!(p(r"\\?\UNC\nas\games"), PathBuf::from(r"\\nas\games"));
+        assert_eq!(p("/mnt/games"), PathBuf::from("/mnt/games"));
+    }
+
+    #[test]
+    fn explicit_classifier_ignores_locality() {
+        assert!(explicit(Path::new("/Volumes/nas/games")).is_ok());
+        assert!(explicit(Path::new("/mnt/shadowmnt/x")).is_err());
+        let root = tmp("explicit-scan");
+        game(&root, "g", r#"{"titleId":"PPSA00001"}"#);
+        assert_eq!(scan_chosen(&root).unwrap().entries.len(), 1);
+        // A missing folder is an error, not an empty library.
+        assert!(scan_chosen(&root.join("gone")).is_err());
+        // A root that cannot be listed (here a file) is an error from the walk itself.
+        fs::write(root.join("file"), b"x").unwrap();
+        assert!(scan_chosen(&root.join("file")).is_err());
+        let (found, why) = scan_inner(&[root.join("file")], &LIMITS, &explicit);
+        assert!(why.is_some() && !found.warnings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chosen_link_is_followed_unless_it_points_into_a_system_folder() {
+        // Under the build folder: the temp dir is a refused system folder on macOS.
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/forge-chosen-link-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let base = base.canonicalize().unwrap();
+        let g = game(&base, "real/g", r#"{"titleId":"PPSA00001"}"#);
+        let link = base.join("alias");
+        std::os::unix::fs::symlink(base.join("real"), &link).unwrap();
+        let found = scan_library_folder(&link).unwrap();
+        assert_eq!(paths(&found), [g.as_path()]);
+        assert_eq!(found.roots, [base.join("real")]);
+        let usr = base.join("usr-alias");
+        std::os::unix::fs::symlink("/usr", &usr).unwrap();
+        // FreeBSD (the PS5) has no system-folder list.
+        if Os::HOST.is_some() {
+            let why = scan_library_folder(&usr).unwrap_err().to_string();
+            assert!(why.contains("system folder"), "{why}");
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotdot_and_linked_roots_are_walked_canonically() {
+        let base = tmp("canon").canonicalize().unwrap();
+        let g = game(&base, "real/lib/g", r#"{"titleId":"PPSA00001"}"#);
+        fs::create_dir_all(base.join("other")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("alias")).unwrap();
+        let dotted = base.join("other/../real/lib");
+        let aliased = base.join("alias/lib");
+        for root in [dotted, aliased] {
+            let scan = run(&[&root], &LIMITS);
+            assert_eq!(paths(&scan), [g.as_path()]);
+            assert_eq!(scan.roots, [base.join("real/lib")]);
+        }
+    }
+
+    /// The PS5's automatic scan with the real `statfs` classifier (run by scripts/test-freebsd.sh).
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn ps5_scan_uses_the_statfs_classifier() {
+        let root = tmp("ps5-scan");
+        let g = game(&root, "g", r#"{"titleId":"PPSA00001"}"#);
+        let found = scan_library(std::slice::from_ref(&root)).unwrap();
+        assert_eq!(paths(&found), [g.as_path()]);
+        let found = scan_library(&[PathBuf::from("/mnt/shadowmnt")]).unwrap();
+        assert!(found.roots.is_empty() && !found.warnings.is_empty());
+    }
+
+    fn deny_none() -> impl Fn(&Path) -> Result<(), String> + Sync {
+        |_| Ok(())
+    }
+
+    #[test]
+    fn cover_data_url_for_png() {
+        let root = tmp("cover-png");
+        let dir = game(&root, "g", r#"{"titleId":"PPSA00001"}"#);
+        put(&dir, "sce_sys/icon0.png", b"\x89PNG\r\n");
+        let url = cover_with(&dir, MAX_LIBRARY_COVER, &deny_none()).unwrap();
+        assert_eq!(url.as_deref(), Some("data:image/png;base64,iVBORw0K"));
+    }
+
+    #[test]
+    fn cover_none_for_non_png_and_oversized() {
+        let root = tmp("cover-none");
+        let dir = game(&root, "g", r#"{"titleId":"PPSA00001"}"#);
+        put(&dir, "sce_sys/icon0.png", b"JPEG....");
+        assert_eq!(
+            cover_with(&dir, MAX_LIBRARY_COVER, &deny_none()).unwrap(),
+            None
+        );
+        put(&dir, "sce_sys/icon0.png", b"\x89PNG\r\n");
+        assert_eq!(cover_with(&dir, 4, &deny_none()).unwrap(), None);
+    }
+
+    #[test]
+    fn cover_errors_when_source_cannot_be_opened() {
+        let root = tmp("cover-err");
+        put(&root, "bad.ffpkg", b"junk");
+        assert!(cover_with(&root.join("bad.ffpkg"), MAX_LIBRARY_COVER, &deny_none()).is_err());
+    }
+
+    #[test]
+    fn cover_refuses_unsupported_extension() {
+        let root = tmp("cover-ufs2");
+        put(&root, "a.ufs2", b"junk");
+        let err = cover_with(&root.join("a.ufs2"), MAX_LIBRARY_COVER, &|_| Ok(()));
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("not a supported image")
+        );
+    }
+}

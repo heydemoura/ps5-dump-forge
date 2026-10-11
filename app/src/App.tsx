@@ -3,26 +3,37 @@
 // "Stop PS5 Dump Forge" to the header (there's no window to close) and rebuilds the job list
 // from the server's.
 
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 
 import { api, errorText, events, prettyDuration, serverAddress, useOffline, web } from "./api";
 import logo from "./assets/logo.png";
-import { basename, closeOverlays, dirname, panelId, tabId, TabList } from "./common";
+import { basename, closeOverlays, dirname, panelId, tabId, TabList, type SourceSelection } from "./common";
 import { Convert } from "./Convert";
 import { Formats, openConnect } from "./Formats";
 import { Icon } from "./icons";
 import { Inspect } from "./Inspect";
+import { Library } from "./Library";
 import { Lz4 } from "./Lz4";
 import { jobsReducer, type Job } from "./jobs";
 
-// Tabs: [Convert Inspect] | LZ4 | About (ids unchanged; the dividers are drawn only).
-type Tab = "convert" | "lz4" | "inspect" | "formats";
+// Tabs: [Convert Inspect] | LZ4 | Library | About (ids unchanged; the dividers are drawn only).
+type Tab = "convert" | "library" | "lz4" | "inspect" | "formats";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("convert");
   const [jobs, dispatch] = useReducer(jobsReducer, []);
   const [closing, setClosing] = useState<"ask" | "stopping" | "stopped" | "failed" | null>(null);
   const offline = useOffline();
+  // Library handoffs: a new id per action, so the same path is read again.
+  const [inspectSel, setInspectSel] = useState<SourceSelection | null>(null);
+  const [convertSel, setConvertSel] = useState<SourceSelection | null>(null);
+  const selId = useRef(0);
+  const handOff = (to: "inspect" | "convert", e: { path: string; kind: SourceSelection["kind"] }) => {
+    const sel = { id: ++selId.current, path: e.path, kind: e.kind };
+    (to === "inspect" ? setInspectSel : setConvertSel)(sel);
+    setTab(to);
+    document.getElementById(tabId("screen", to))?.focus();
+  };
   // The server's host:port (http build), read once before the app rendered.
   const address = serverAddress();
 
@@ -122,6 +133,16 @@ export function App() {
                 },
                 { id: "inspect", label: "Inspect" },
                 { id: "lz4", label: "LZ4", className: "tab-lz4", sep: true },
+                {
+                  id: "library",
+                  label: (
+                    <>
+                      <Icon name="library" />
+                      Library
+                    </>
+                  ),
+                  sep: true,
+                },
                 { id: "formats", label: "About", sep: true },
               ]}
             />
@@ -134,7 +155,7 @@ export function App() {
               {web && (
                 <button className="small" onClick={askStop}>
                   <Icon name="power" />
-                  Stop PS5 Dump Forge
+                  <span className="stop-label">Stop PS5 Dump Forge</span>
                 </button>
               )}
               <GitHubLink />
@@ -150,6 +171,7 @@ export function App() {
             hidden={tab !== "convert"}
           >
             <Convert
+              selection={convertSel}
               jobs={jobs}
               dispatch={dispatch}
               onCompare={() => {
@@ -157,6 +179,18 @@ export function App() {
                 // The link goes away with its screen: focus the tab that now shows.
                 document.getElementById(tabId("screen", "formats"))?.focus();
               }}
+            />
+          </div>
+          <div
+            id={panelId("screen", "library")}
+            role="tabpanel"
+            aria-labelledby={tabId("screen", "library")}
+            hidden={tab !== "library"}
+          >
+            <Library
+              visible={tab === "library"}
+              onInspect={(e) => handOff("inspect", e)}
+              onConvert={(e) => handOff("convert", e)}
             />
           </div>
           <div
@@ -173,7 +207,7 @@ export function App() {
             aria-labelledby={tabId("screen", "inspect")}
             hidden={tab !== "inspect"}
           >
-            <Inspect outputDirs={outputDirs} visible={tab === "inspect"} />
+            <Inspect outputDirs={outputDirs} visible={tab === "inspect"} selection={inspectSel} />
           </div>
           <div
             id={panelId("screen", "formats")}

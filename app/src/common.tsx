@@ -308,10 +308,18 @@ export function Modal(props: {
 
 const deletedSubs = new Set<(path: string) => void>();
 
-/** Calls `f` with every path Inspect deletes; returns the unsubscribe. */
+/** Calls `f` with every path Inspect or the Library deletes; returns the unsubscribe. */
 export function onDeleted(f: (path: string) => void): () => void {
   deletedSubs.add(f);
   return () => void deletedSubs.delete(f);
+}
+
+/** A game Library handed to Inspect or Convert; a new `id` is a new request, even for the same
+ * path (the screen reads it again). */
+export interface SourceSelection {
+  id: number;
+  path: string;
+  kind: Kind;
 }
 
 export function notifyDeleted(path: string): void {

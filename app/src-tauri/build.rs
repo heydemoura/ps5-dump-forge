@@ -4,6 +4,8 @@ use tauri_build::{AppManifest, Attributes};
 /// `capabilities/default.json` grants. Anything not listed is denied.
 const COMMANDS: &[&str] = &[
     "inspect",
+    "library_scan",
+    "library_cover",
     "default_output",
     "generated_output",
     "start_job",
