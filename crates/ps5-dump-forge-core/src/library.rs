@@ -47,6 +47,9 @@ pub struct LibraryEntry {
     pub title_name: Option<String>,
     pub version: Option<String>,
     pub has_cover: bool,
+    /// LZ4 packed (ampr_emu asset packs): `ampr_assets.index` at the root starts with the
+    /// manifest magic, the rule of `reader::detect` (and of inspect's Packed).
+    pub lz4_packed: bool,
 }
 
 /// What a Library scan found.
@@ -355,7 +358,13 @@ fn plain_dir(path: &Path, dev: u64) -> bool {
 }
 
 /// What the list shows, from `param.json` bytes; `None` without a usable title ID.
-fn entry(path: PathBuf, kind: Format, param: &[u8], has_cover: bool) -> Option<LibraryEntry> {
+fn entry(
+    path: PathBuf,
+    kind: Format,
+    param: &[u8],
+    has_cover: bool,
+    lz4_packed: bool,
+) -> Option<LibraryEntry> {
     let info = parse_param(param);
     let json = info.param_json.as_ref()?;
     Some(LibraryEntry {
@@ -368,7 +377,20 @@ fn entry(path: PathBuf, kind: Format, param: &[u8], has_cover: bool) -> Option<L
             .and_then(|v| v.as_str())
             .map(str::to_string),
         has_cover,
+        lz4_packed,
     })
+}
+
+/// `reader::detect` on a game folder: its `ampr_assets.index` is a regular file (on the
+/// folder's device) that starts with the manifest magic. One open and an 8-byte read.
+fn folder_packed(dir: &Path, dev: u64) -> bool {
+    use ps5_dump_forge_lz4::{MANIFEST, format::PAK_MAGIC};
+    use std::io::Read;
+    let Some((mut file, _)) = folder_open(dir, MANIFEST, dev) else {
+        return false;
+    };
+    let mut magic = [0u8; 8];
+    file.read_exact(&mut magic).is_ok() && &magic == PAK_MAGIC
 }
 
 /// A game folder's entry, or `None` when it is not a usable one (a folder's problems are
@@ -383,7 +405,8 @@ fn probe_folder(dir: &Path) -> Option<LibraryEntry> {
     // Metadata only: the icon is read when the list asks for it.
     let cover = folder_open(dir, "sce_sys/icon0.png", dev)
         .is_some_and(|(_, len)| (1..=MAX_LIBRARY_COVER).contains(&len));
-    entry(dir.to_path_buf(), Format::Folder, &param, cover)
+    let packed = folder_packed(dir, dev);
+    entry(dir.to_path_buf(), Format::Folder, &param, cover, packed)
 }
 
 /// An image's entry. Opening reads the image's own metadata, so this costs more than a folder.
@@ -410,7 +433,9 @@ fn probe_image(path: &Path, kind: Kind) -> Result<Option<LibraryEntry>, String> 
         Kind::Pkg => Format::Pkg,
     };
     let has_cover = cover.is_some_and(|s| (1..=MAX_LIBRARY_COVER).contains(&s));
-    entry(path.to_path_buf(), format, &param, has_cover)
+    // The image is open already: its file list, then 8 bytes of the manifest when listed.
+    let packed = ps5_dump_forge_lz4::reader::detect(tree.as_mut()).unwrap_or(false);
+    entry(path.to_path_buf(), format, &param, has_cover, packed)
         .map(Some)
         .ok_or_else(|| "skipped, param.json has no usable title ID".to_string())
 }
@@ -812,6 +837,8 @@ mod tests {
             r#"{"titleId":"PPSA00009","titleName":"Image Game","contentVersion":"01.000.000"}"#,
         );
         put(&src, "sce_sys/icon0.png", b"png");
+        // A manifest by its magic is what makes an image LZ4 packed (as `reader::detect`).
+        put(&src, "ampr_assets.index", b"AMPRPAK4 rest of a manifest");
         let tree = ps5upload_fpkg::source::FolderSource::open(&src).unwrap();
         let layout =
             ps5_dump_forge_exfat::plan(&tree, &Default::default(), &AtomicBool::new(false))
@@ -837,8 +864,8 @@ mod tests {
             (Format::Exfat, "PPSA00009", Some("Image Game"))
         );
         assert_eq!(
-            (e.version.as_deref(), e.has_cover),
-            (Some("01.000.000"), true)
+            (e.version.as_deref(), e.has_cover, e.lz4_packed),
+            (Some("01.000.000"), true, true)
         );
         assert_eq!(scan.warnings.len(), 1);
         assert!(scan.warnings[0].contains("bad.ffpkg"));
@@ -901,6 +928,43 @@ mod tests {
         assert!(!has(&root));
         put(&g, "sce_sys/icon0.png", b"not even a png");
         assert!(has(&root)); // presence is metadata only; the PNG check is the cover read's
+    }
+
+    /// A folder is LZ4 packed when its root `ampr_assets.index` starts with the manifest magic
+    /// (`reader::detect`); a plain game, an index with other bytes, one too short to hold the
+    /// magic and one in a subfolder are not.
+    #[test]
+    fn lz4_packed_folders() {
+        let root = tmp("lz4-packed");
+        let packed = game(&root, "packed", r#"{"titleId":"PPSA00001"}"#);
+        put(&packed, "ampr_assets.index", b"AMPRPAK4\x01\x00\x00\x00");
+        put(&packed, "ampr_assets-000.pak", b"AMPRDAT3");
+        game(&root, "plain", r#"{"titleId":"PPSA00002"}"#);
+        let other = game(&root, "other", r#"{"titleId":"PPSA00003"}"#);
+        put(&other, "ampr_assets.index", b"AMPRPAK3 an older format");
+        let short = game(&root, "short", r#"{"titleId":"PPSA00004"}"#);
+        put(&short, "ampr_assets.index", b"AMPR");
+        let nested = game(&root, "nested", r#"{"titleId":"PPSA00005"}"#);
+        put(&nested, "data/ampr_assets.index", b"AMPRPAK4");
+        let scan = run(&[&root], &LIMITS);
+        let flags: Vec<_> = scan
+            .entries
+            .iter()
+            .map(|e| (e.title_id.as_str(), e.lz4_packed))
+            .collect();
+        assert_eq!(
+            flags,
+            [
+                ("PPSA00001", true),
+                ("PPSA00002", false),
+                ("PPSA00003", false),
+                ("PPSA00004", false),
+                ("PPSA00005", false),
+            ]
+        );
+        // It goes out on the wire as `lz4_packed`.
+        let json = serde_json::to_value(&scan.entries[0]).unwrap();
+        assert_eq!(json["lz4_packed"], serde_json::json!(true));
     }
 
     #[test]

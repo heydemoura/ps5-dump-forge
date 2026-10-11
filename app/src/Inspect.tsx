@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api, errorText, prettyBytes, type Inspection } from "./api";
+import { api, APP_NAME, errorText, prettyBytes, type Inspection } from "./api";
 import {
   CardHead,
   dirname,
@@ -302,7 +302,7 @@ function Leftovers(props: { dirs: (string | null)[]; visible: boolean }) {
       </ul>
       <p className="muted">
         Unfinished outputs, usually from interrupted jobs. Remove only the ones you recognize,
-        and only when no job is running; PS5 Dump Forge never deletes them itself.
+        and only when no job is running; {APP_NAME} never deletes them itself.
       </p>
       <details className="fold">
         <summary>Folders checked ({dirs.length})</summary>

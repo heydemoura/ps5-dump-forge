@@ -13,6 +13,13 @@ import { Icon } from "./icons";
 
 const name = (e: LibraryEntry) => e.title_name || e.title_id || basename(e.path);
 
+/** Storage in decimal GB as the console's Settings shows it: whole numbers, one decimal under 10 GB. */
+const gb = (bytes: number) => {
+  // The precision follows the rounded value: 9.96 GB is "10 GB", not "10.0 GB".
+  const tenths = Math.round(bytes / 1e8) / 10;
+  return `${tenths < 10 ? tenths.toFixed(1) : Math.round(bytes / 1e9)} GB`;
+};
+
 export function Library(props: {
   visible: boolean;
   onInspect: (entry: LibraryEntry) => void;
@@ -216,6 +223,7 @@ export function Library(props: {
 
   const entries = result?.entries ?? [];
   const host = platform === "host";
+  const storage = platform === "ps5" ? result?.storage : undefined; // the PS5's /data, as of the last scan
   const empty = host && !folder && !refused; // a computer with no folder chosen yet
   const body = busy ? (
     <div className="library-busy" role="status" aria-live="polite">
@@ -311,6 +319,14 @@ export function Library(props: {
             {result && <span className="count">{entries.length}</span>}
           </h2>
           <div className="library-ctl">
+            {storage && (
+              <span className="library-storage" title="Free space on the console's internal storage (/data), as of the last scan">
+                <Icon name="drive" />
+                <span>
+                  Free <b>{gb(storage.free)}</b> of {gb(storage.total)}
+                </span>
+              </span>
+            )}
             {host && folder && (
               <span className="library-folder">
                 <PathLine path={folder} />
@@ -376,7 +392,13 @@ function Item(props: {
       </button>
     </span>
   );
-  const box = <div className="library-cover-box">{cover}</div>;
+  const packed = e.lz4_packed === true;
+  const box = (
+    <div className="library-cover-box">
+      {cover}
+      {packed && <Lz4Badge />}
+    </div>
+  );
   return props.list ? (
     <li className="library-row" title={e.path}>
       {cover}
@@ -384,6 +406,7 @@ function Item(props: {
         <div className="library-name">{n}</div>
         <div className="library-sub muted">
           {e.title_id}
+          {packed && <Lz4Badge />}
         </div>
       </div>
       <FormatPill kind={e.kind} />
@@ -404,5 +427,14 @@ function Item(props: {
         {actions}
       </div>
     </li>
+  );
+}
+
+/** An LZ4 packed dump's badge: "LZ4" in LZ4 yellow on a liquid-glass pill. */
+function Lz4Badge() {
+  return (
+    <span className="lz4-badge" title="LZ4 packed: ampr_emu asset packs">
+      LZ4<span className="visually-hidden"> packed</span>
+    </span>
   );
 }

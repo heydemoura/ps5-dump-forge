@@ -7,6 +7,8 @@ use crate::Platform;
 
 /// ShadowMountPlus's folder of mount points: a plain folder, listed whenever it exists.
 const SHADOWMNT: &str = "/mnt/shadowmnt";
+/// The PS5's internal storage, whose free space the Library shows.
+const DATA: &str = "/data";
 
 pub(crate) struct Roots {
     list: Vec<Candidate>,
@@ -25,11 +27,23 @@ struct Candidate {
     drive: bool,
 }
 
-/// What `statfs` says of a path: where its filesystem is mounted and how many blocks it has.
+/// What `statfs` says of a path: where its filesystem is mounted, how many blocks it has, and
+/// its size and free space in bytes.
 #[cfg_attr(not(target_os = "freebsd"), allow(dead_code))] // built by FreeBSD's `statfs` only
 pub(crate) struct Mount {
     on: PathBuf,
     blocks: u64,
+    /// `f_blocks * f_bsize`.
+    total: u64,
+    /// `f_bavail * f_bsize`: what a user may still write (0 when the reserve is in use).
+    free: u64,
+}
+
+/// A filesystem's free and total bytes, as the Library's scan reply carries them on the PS5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct Storage {
+    pub free: u64,
+    pub total: u64,
 }
 
 impl Roots {
@@ -72,6 +86,19 @@ impl Roots {
         self.collect(true)
     }
 
+    /// The PS5's internal storage (`statfs` of `/data`): `None` on a computer, or when
+    /// `statfs` fails. Asked for each Library scan, so Refresh renews it.
+    pub fn storage(&self) -> Option<Storage> {
+        if !self.ps5 {
+            return None;
+        }
+        let fs = (self.statfs)(Path::new(DATA))?;
+        Some(Storage {
+            free: fs.free,
+            total: fs.total,
+        })
+    }
+
     fn collect(&self, skip_shadowmnt: bool) -> Vec<PathBuf> {
         let shadow = Path::new(SHADOWMNT);
         let shadow_canon = shadow.canonicalize().ok();
@@ -104,7 +131,8 @@ fn mounted(root: &Path, fs: Option<Mount>) -> bool {
     fs.is_some_and(|fs| fs.on == root && fs.blocks > 0)
 }
 
-/// On the PS5 this is `statfs@FBSD_1.0`, forwarded by ps5/compat.c.
+/// On the PS5 this is `statfs@FBSD_1.0`, forwarded by ps5/compat.c (the FreeBSD 11 layout:
+/// the CLI asserts its size).
 #[cfg(target_os = "freebsd")]
 #[allow(clippy::unnecessary_cast)] // f_blocks is u64 on FreeBSD 12+, i64 on 11
 fn statfs(path: &Path) -> Option<Mount> {
@@ -122,9 +150,14 @@ fn statfs(path: &Path) -> Option<Mount> {
         .take_while(|&&c| c != 0)
         .map(|&c| c as u8)
         .collect();
+    let bsize = st.f_bsize as u64;
     Some(Mount {
         on: PathBuf::from(OsString::from_vec(on)),
         blocks: st.f_blocks as u64,
+        total: (st.f_blocks as u64).saturating_mul(bsize),
+        free: u64::try_from(st.f_bavail as i64)
+            .unwrap_or(0)
+            .saturating_mul(bsize),
     })
 }
 
@@ -230,6 +263,8 @@ mod tests {
             Some(Mount {
                 on: on.into(),
                 blocks,
+                total: 0,
+                free: 0,
             })
         };
         let usb = Path::new("/mnt/usb0");
@@ -253,7 +288,12 @@ mod tests {
                 true => p.to_path_buf(),
                 false => p.parent()?.to_path_buf(),
             };
-            Some(Mount { on, blocks: 1 })
+            Some(Mount {
+                on,
+                blocks: 1,
+                total: 0,
+                free: 0,
+            })
         };
         let drive = Candidate {
             path: usb.clone(),
@@ -280,5 +320,42 @@ mod tests {
         assert!(!roots.list[1].drive);
         let (roots, _) = Roots::new(Platform::Host, &mnt);
         assert!(roots.list.iter().all(|c| !c.drive));
+    }
+
+    /// The PS5's free space is `statfs` of `/data`; a computer has none, nor a failed `statfs`.
+    #[test]
+    fn storage_is_the_ps5_data_filesystem() {
+        let fake = |p: &Path| {
+            (p == Path::new(DATA)).then(|| Mount {
+                on: "/user".into(),
+                blocks: 100,
+                total: 825_000_000_000,
+                free: 312_000_000_000,
+            })
+        };
+        let ps5 = Roots {
+            list: Vec::new(),
+            ps5: true,
+            statfs: fake,
+        };
+        assert_eq!(
+            ps5.storage(),
+            Some(Storage {
+                free: 312_000_000_000,
+                total: 825_000_000_000
+            })
+        );
+        let host = Roots {
+            list: Vec::new(),
+            ps5: false,
+            statfs: fake,
+        };
+        assert_eq!(host.storage(), None);
+        let failing = Roots {
+            list: Vec::new(),
+            ps5: true,
+            statfs: |_| None,
+        };
+        assert_eq!(failing.storage(), None);
     }
 }

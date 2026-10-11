@@ -440,6 +440,8 @@ static VERSION_MARKER: &&[u8] = &ps5_dump_forge_server::VERSION_MARKER;
 const _: () = {
     assert!(std::mem::size_of::<libc::stat>() == 120);
     assert!(std::mem::size_of::<libc::dirent>() == 264);
+    // MNAMELEN 88 (FreeBSD 12+: 1024): free space, mount points, filesystem types.
+    assert!(std::mem::size_of::<libc::statfs>() == 472);
 };
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);

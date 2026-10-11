@@ -39,12 +39,22 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
   back (the later flag wins).
 - `entry.c` (`__wrap_main`): elfldr starts a payload with no arguments. No arguments, or `serve` first
   (elfldr's `args=serve`, as the tile's page sends it), runs `serve`, logged to
-  `/data/ps5-dump-forge/serve-<pid>.txt`. A developer hook: an args file `/data/ps5-dump-forge/args` (one
+  `/data/dumpforge/serve-<pid>.txt`. A developer hook: an args file `/data/dumpforge/args` (one
   argument per line, the command first; CR dropped, blank lines skipped; over 16 KiB, a NUL or more than 62
   arguments is refused, never cut short) is renamed to `args.done` before it runs, so an autoloaded boot
   never replays it; its output goes to `log-<pid>.txt`. Before either log is opened, earlier runs'
   `serve-<pid>.txt`/`log-<pid>.txt` whose process is gone (`kill(pid, 0)` → `ESRCH`) are deleted except
   the newest by mtime, so the run before a crash stays readable. It exports `ps5_notify` (at most 3,074 bytes).
+  Folder migration: the PS5 version was "PS5 Dump Forge" with `/data/ps5-dump-forge`; it is "Dump Forge"
+  with `/data/dumpforge` now (the desktop app keeps "PS5 Dump Forge"). Before the folder is created, a
+  payload launch (not the plain CLI) renames `/data/ps5-dump-forge` to `/data/dumpforge` with one
+  `rename(2)` when the old one is a folder and the new one doesn't exist; a failure notifies "cannot move"
+  and the launch goes on with a new folder. After the folder is made, a relative link `/data/ps5-dump-forge`
+  → `dumpforge` is created where nothing is at the old path (one `symlink(2)`, silent on failure, a real
+  old folder never replaced), so a launcher page an earlier version left in AppCache (it knows only the
+  old path) still starts the saved copy. Nothing walks through it: the Library doesn't follow links, the
+  self copy, tile and logs use `/data/dumpforge`. `ps5/test-entry.sh` covers rename, link, link added
+  later, both folders, and a refused rename.
 - `compat.c`: `statfs@FBSD_1.0` / `fstatfs@FBSD_1.0` forwarders (outside `shim/`). `launcher.c`: registers
   the tile (after ps5-ai-cli's launcher).
 - `shim/`, `x86_64-ps5-freebsd.json`, `prepare-rust-std.py`: copied unchanged from ps5-ai-cli `eb1d494`
@@ -92,7 +102,7 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
 | `POST /api/lz4_plan_profile` | `{request}` (a Pack `start_job` body) | `Lz4PlanProfile` `{file_name, toml, packed, loose, log}`: Save as profile; reads only (counts as an inspection, 429 past 2); the page downloads `toml` as `file_name` |
 | `GET /api/lz4_traces?source=` | | both trace files as one zip download (below) |
 | `POST /api/delete_path` | `{path}` | `null`: the file or folder is gone for good (below); 400 refused, 404 missing, 409 a job uses it or stopping, 500 failed (a folder may be partly gone) |
-| `POST /api/library_scan` | `{}` (an object; `root` string scans just that folder on any filesystem (a network share included; a chosen root that is a link is resolved first, links inside the walk are never followed, `/mnt/shadowmnt` refused; system folders such as `/` or `/usr` are refused with core's message), non-string 400; `root` is required on a computer (400 "choose a folder to scan" without it) and optional on the PS5) | `{roots, entries: [{path, kind, title_id, title_name, version, has_cover}], truncated, warnings}`: the Library's scan of that folder, or on the PS5 of the server's current roots (browse roots without `/mnt/shadowmnt`, re-resolved each call so a newly attached drive appears on Refresh). Reads only; counts as an inspection (429 past 2), 409 once stopping, 500 with core's message. Partial results set `truncated` and add `warnings` (core's scan limits and 15 s cooperative budget). The request deadline governs receiving the request, not core's work, which can't be interrupted |
+| `POST /api/library_scan` | `{}` (an object; `root` string scans just that folder on any filesystem (a network share included; a chosen root that is a link is resolved first, links inside the walk are never followed, `/mnt/shadowmnt` refused; system folders such as `/` or `/usr` are refused with core's message), non-string 400; `root` is required on a computer (400 "choose a folder to scan" without it) and optional on the PS5) | `{roots, entries: [{path, kind, title_id, title_name, version, has_cover, lz4_packed}], truncated, warnings, storage?}`: the Library's scan of that folder, or on the PS5 of the server's current roots (browse roots without `/mnt/shadowmnt`, re-resolved each call so a newly attached drive appears on Refresh). `storage` `{free, total}` (bytes, `statfs` of `/data`) only on the PS5, read on each scan. Reads only; counts as an inspection (429 past 2), 409 once stopping, 500 with core's message. Partial results set `truncated` and add `warnings` (core's scan limits and 15 s cooperative budget). The request deadline governs receiving the request, not core's work, which can't be interrupted |
 | `POST /api/library_cover` | `{path}` | a PNG data-URL string, or `null` (no icon, too large, not a PNG); fetched lazily per card. Same cap, 409 and 500 rules (an unreadable source is a 500) |
 | `POST /api/list_dir` | `{path: string\|null}` | `{path, parent, entries: [{name, path, dir, size}], truncated}` |
 | `GET /api/jobs` | | `{instance, jobs: [{id, request, progress, done, log, log_total}]}` |
@@ -130,7 +140,7 @@ Forge notifies "already running at <url>" and exits 0; by anything else, exits 1
 
 - The URL (session `url`, the page header, the host's start notice, the PS5 serve log) uses the address of
   a UDP `connect` toward the internet (no packet sent). On the PS5 the start notification only says to
-  open the PS5 Dump Forge tile.
+  open the Dump Forge tile.
 - The web bundle: `npm run build:http` (Vite mode `http`) writes `app/dist-http` with `transport-http.tsx`
   in place of Tauri (`Picker.tsx` for the dialogs, `http-client.ts`'s poller for the events); `build.rs`
   embeds it, or a placeholder page with a warning (`FORGE_REQUIRE_WEB=1`, set by `ps5/build.sh`, makes that
@@ -141,19 +151,28 @@ Forge notifies "already running at <url>" and exits 0; by anything else, exits 1
 
 - Tile (`tile.rs`, `ps5/launcher.c`): `/user/app/PDFG00001/sce_sys/{param.json,icon0.png}`, `deeplinkUri`
   `http://127.0.0.1:<port>/`, icon `ps5/icon0.png`. Registered only when a file was written. A `PDFG00001`
-  not marked by `/data/ps5-dump-forge/tile-PDFG00001.owner` is another title's and is never touched. Runs in
+  not marked by `/data/dumpforge/tile-PDFG00001.owner` is another title's and is never touched. Its
+  header is "Dump Forge home-screen tile"; the old "PS5 Dump Forge home-screen tile" (a migrated folder)
+  still marks it ours, so the first start rewrites `titleName` "PS5 Dump Forge" → "Dump Forge", registers
+  again and records the new header. While `/data/dumpforge/tile-PDFG00001.owner` is missing (the rename
+  failed, or both folders existed), `/data/ps5-dump-forge/tile-PDFG00001.owner` is taken over when its
+  folder is a real one (not the link), it is a regular file and it names this title folder (header and
+  `(st_dev, st_ino)`): rewritten in the new place, then the tile as above. No valid record in either
+  place: another title's. Runs in
   the background and never fails the server; the serve log says what it did.
 - Self copy (`self_copy.rs`): stage 2 embeds `PDFGSELF`, u64 LE raw length, u64 LE compressed length,
   SHA-256 of stage 1, then stage 1 zlib-compressed (6.3 MB ELF holding 1.7 MB for a 4.5 MB copy). On start a
   thread unpacks it (bounded, hash, ELF magic and version marker checked) into
-  `/data/ps5-dump-forge/ps5-dump-forge.elf`: written when missing, older, the same version with other bytes,
+  `/data/dumpforge/ps5-dump-forge.elf`: written when missing, older, the same version with other bytes,
   or unmarked; kept when identical or newer. Temp file `O_EXCL|O_NOFOLLOW`, fsync, rename, folder fsync. A
   copy that loses the port race, and quit, finish the save first. `GET /api/session` `self_copy`:
   `saving`, `saved`, `up to date`, `kept newer <v>`, `failed: <why>`, or `none` (stage 1, debug, computers).
 - Launch on open (`launcher.ts`, `appcache.ts`): the page is kept by AppCache (`forge.appcache`, a hash over
   every bundle file). Only on the console's own browser (a loopback host) and only at page load: if `GET
   /api/session` doesn't answer, it sends `GET
-  http://127.0.0.1:9021/data/ps5-dump-forge/ps5-dump-forge.elf?args=serve&pipe=0` (then the USB copies) and
+  http://127.0.0.1:9021/data/dumpforge/ps5-dump-forge.elf?args=serve&pipe=0` (then the old
+  `/data/ps5-dump-forge/ps5-dump-forge.elf`, the link or a folder a failed migration left, then the USB
+  copies) and
   waits up to 30 s. A newer payload's manifest swaps the page in and reloads once, never mid-dialog.
 
 ## Writing safely on the PS5

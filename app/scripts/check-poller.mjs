@@ -117,7 +117,7 @@ assert.deepEqual(await c.serverSession(), { separator: "/", address: null });
 console.log("session: separator and address; no address from an older server or one without its IP");
 
 // The platform is the server's word only; unknown retries the session, then rejects.
-const NO_PLATFORM = "Can't determine whether PS5 Dump Forge is running on a PS5. Refresh to try again.";
+const NO_PLATFORM = "Can't determine whether Dump Forge is running on a PS5. Refresh to try again.";
 const fresh = await import("../src/http-client.ts?platform");
 const sess = (body) => (globalThis.fetch = async () => new Response(JSON.stringify(body), { status: 200 }));
 let calls = 0;

@@ -3,7 +3,7 @@
 // from ShadowMountPlus 1.7's README and release notes; the LZ4 packed folder's from its
 // upstream authors, labelled as theirs) and the LZ4 credits. Nothing here talks to Rust.
 
-import { serverAddress } from "./api";
+import { APP_NAME, serverAddress } from "./api";
 import { AddressQr, CardHead, FormatPill, Modal, openOverlay, Prose } from "./common";
 import { Icon, type IconName } from "./icons";
 
@@ -177,7 +177,7 @@ export function Formats() {
         <div className="credits">
           <p className="muted">
             Upstream's numbers: what the authors of ampr_emu and Lazy_AMPR report, not measured by
-            PS5 Dump Forge; they vary by game. ampr_emu 0.4.2.1 is an upstream test build; known
+            {APP_NAME}; they vary by game. ampr_emu 0.4.2.1 is an upstream test build; known
             issue: some games crash when saving.
           </p>
           <p className="muted">

@@ -494,7 +494,7 @@ fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> {
         findings.extend(preflight::output(&req.source, &out, req.format));
     }
     if req.format == Format::Pkg {
-        return crate::package::run(req, ctx, source.as_mut(), &info, findings, &out, &stamp);
+        return crate::package::run(req, ctx, source, &info, findings, &out, &stamp);
     }
     if !matches!(req.format, Format::Folder | Format::Lz4) {
         findings.extend(preflight::too_deep(source.as_ref()));

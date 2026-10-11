@@ -339,7 +339,7 @@ const t0 = Date.now();
 await b.c.call("quit_app");
 const exit = await server.exited;
 assert.deepEqual(exit, { status: 0, signal: null });
-assert.match(stderr, /PS5 Dump Forge stopped\n$/);
+assert.match(stderr, /Dump Forge stopped\n$/);
 console.log(`quit: POST /api/quit, resolved after the server exited 0 (${Date.now() - t0} ms)`);
 assert.ok(sent.some((s) => s.path === "/api/quit" && s.method === "POST"));
 server = null;

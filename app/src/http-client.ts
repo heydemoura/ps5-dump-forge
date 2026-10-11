@@ -23,7 +23,7 @@ const POLL_TIMEOUT_MS = 15000;
 
 /** The result of a job the page saw running, once the server's list no longer has it (its
  * 32-job history dropped it between two polls, so its real result was never seen). */
-export const GONE = "no longer reported by PS5 Dump Forge (dropped from its job history before its result was seen)";
+export const GONE = "no longer reported by Dump Forge (dropped from its job history before its result was seen)";
 
 // ---------- status, for the UI (useSyncExternalStore) ----------
 
@@ -94,7 +94,7 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
   } catch {
     setOffline(true);
     kick();
-    throw "Can't reach PS5 Dump Forge. Check that the payload is still running and this device is on the same network.";
+    throw "Can't reach Dump Forge. Check that the payload is still running and this device is on the same network.";
   }
   setOffline(false);
   if (res.status !== 200) throw errorOf(res.data, res.status);
@@ -135,7 +135,7 @@ export async function serverSession(): Promise<{ separator: string | null; addre
  * session once, then rejects (so no PS5-only choice is ever shown by accident). */
 export async function serverPlatform(): Promise<"host" | "ps5"> {
   if (platform === null) await serverSession();
-  if (platform === null) throw "Can't determine whether PS5 Dump Forge is running on a PS5. Refresh to try again.";
+  if (platform === null) throw "Can't determine whether Dump Forge is running on a PS5. Refresh to try again.";
   return platform;
 }
 
@@ -289,14 +289,14 @@ async function poll(): Promise<void> {
 
 /** How long quit waits for the server to go away (it cancels jobs and cleans up first). */
 export const QUIT_WAIT_MS = 120000;
-export const STILL_ANSWERING = "PS5 Dump Forge is still answering after 2 minutes; check the PS5.";
+export const STILL_ANSWERING = "Dump Forge is still answering after 2 minutes; check the PS5.";
 
 /** `POST /api/quit`, then wait until the server is gone. Polling pauses meanwhile: an
  * unreachable server is the expected end, not an offline notice. Rejects with
  * `STILL_ANSWERING` (and polls again) if it is still up at the deadline. */
 async function quit(): Promise<void> {
   const res = await request("POST", "/api/quit", {}).catch(() => null);
-  if (!res) throw "Can't reach PS5 Dump Forge to stop it.";
+  if (!res) throw "Can't reach Dump Forge to stop it.";
   if (res.status !== 200) throw errorOf(res.data, res.status);
   stopping = true;
   if (timer !== undefined) clearTimeout(timer);

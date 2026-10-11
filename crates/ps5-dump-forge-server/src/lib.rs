@@ -118,13 +118,10 @@ pub fn serve(opts: Options) -> io::Result<()> {
                 opts.platform,
             );
             if is_forge(opts.port) {
-                (opts.notify)(&format!("PS5 Dump Forge: already running at {url}"));
+                (opts.notify)(&format!("Dump Forge: already running at {url}"));
                 Ok(())
             } else {
-                let line = format!(
-                    "PS5 Dump Forge: port {} is used by another program",
-                    opts.port
-                );
+                let line = format!("Dump Forge: port {} is used by another program", opts.port);
                 (opts.notify)(&line);
                 Err(io::Error::new(io::ErrorKind::AddrInUse, line))
             }
@@ -199,8 +196,8 @@ pub fn serve_on(listener: TcpListener, opts: Options) -> io::Result<()> {
 /// address is in the page's header (and the log) for anyone else on the network.
 fn started(url: &str, ps5: bool) -> String {
     match ps5 {
-        true => "PS5 Dump Forge is running: open the PS5 Dump Forge tile".into(),
-        false => format!("PS5 Dump Forge: open {url}"),
+        true => "Dump Forge is running: open the Dump Forge tile".into(),
+        false => format!("Dump Forge: open {url}"),
     }
 }
 
@@ -287,10 +284,10 @@ mod tests {
         let url = "http://192.168.1.20:8095";
         assert_eq!(
             super::started(url, false),
-            "PS5 Dump Forge: open http://192.168.1.20:8095"
+            "Dump Forge: open http://192.168.1.20:8095"
         );
         let ps5 = super::started(url, true);
-        assert!(ps5.contains("open the PS5 Dump Forge tile"), "{ps5}");
+        assert!(ps5.contains("open the Dump Forge tile"), "{ps5}");
         assert!(!ps5.contains("http"), "{ps5}");
     }
 }

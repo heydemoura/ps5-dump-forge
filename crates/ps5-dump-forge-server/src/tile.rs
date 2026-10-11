@@ -21,8 +21,16 @@ const ICON: &[u8] = include_bytes!("../../../ps5/icon0.png");
 /// PDFG00001 that is then never ours (delete it by hand); and a filesystem that hands a deleted
 /// folder's inode number to another app's new PDFG00001 makes that one look ours.
 #[cfg(target_env = "ps5")]
-const OWNER_FILE: &str = "/data/ps5-dump-forge/tile-PDFG00001.owner";
-const OWNER_HEADER: &str = "PS5 Dump Forge home-screen tile";
+const OWNER_FILE: &str = "/data/dumpforge/tile-PDFG00001.owner";
+/// Where earlier versions kept it. `ps5/entry.c` renames that folder to `/data/dumpforge`; when
+/// that failed (or both folders existed) the record is still there, and is taken over while
+/// `OWNER_FILE` is missing, only from a real folder (not the compatibility link to the new one).
+#[cfg(target_env = "ps5")]
+const OLD_OWNER_FILE: &str = "/data/ps5-dump-forge/tile-PDFG00001.owner";
+const OWNER_HEADER: &str = "Dump Forge home-screen tile";
+/// The header earlier versions wrote: still ours. Their tile's `titleName` differs, so the first
+/// start rewrites it, the owner file with the new header included.
+const OLD_OWNER_HEADER: &str = "PS5 Dump Forge home-screen tile";
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Outcome {
@@ -42,7 +50,7 @@ fn param_json(port: u16) -> Vec<u8> {
         "titleId": TITLE_ID,
         "localizedParameters": {
             "defaultLanguage": "en-US",
-            "en-US": { "titleName": "PS5 Dump Forge" },
+            "en-US": { "titleName": "Dump Forge" },
         },
         "deeplinkUri": format!("http://127.0.0.1:{port}/"),
     });
@@ -60,6 +68,7 @@ fn param_json(port: u16) -> Vec<u8> {
 pub(crate) fn ensure(
     apps: &Path,
     owner: &Path,
+    old_owner: &Path,
     port: u16,
     register: impl FnOnce() -> i32,
 ) -> io::Result<Outcome> {
@@ -84,11 +93,15 @@ pub(crate) fn ensure(
             )));
         }
         Ok(meta) => {
-            let text = match fs::symlink_metadata(owner) {
-                Ok(m) if m.is_file() => fs::read_to_string(owner).unwrap_or_default(),
-                _ => String::new(),
-            };
             let ours = owner_text(&meta, false);
+            let mut text = read_owner(owner).unwrap_or_default();
+            if !fs::exists(owner)? && real_dir(old_owner.parent()) {
+                // An earlier version's record, if it names this folder: moved to `owner`.
+                if let Some(old) = read_owner(old_owner).filter(|t| t.starts_with(&ours)) {
+                    record(owner, &meta, old == owner_text(&meta, true))?;
+                    text = old;
+                }
+            }
             (text.starts_with(&ours), text == owner_text(&meta, true))
         }
     };
@@ -141,6 +154,25 @@ pub(crate) fn ensure(
         record(owner, &folder, true)?;
     }
     Ok(Outcome::Registered(code))
+}
+
+/// An owner file's text, an earlier version's header read as ours; `None` unless a regular file.
+fn read_owner(path: &Path) -> Option<String> {
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.is_file() => {
+            let text = fs::read_to_string(path).unwrap_or_default();
+            Some(match text.strip_prefix(OLD_OWNER_HEADER) {
+                Some(rest) => format!("{OWNER_HEADER}{rest}"),
+                None => text,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A folder itself, not a link to one.
+fn real_dir(path: Option<&Path>) -> bool {
+    path.is_some_and(|p| fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
 }
 
 /// The owner file's text for the title folder `folder`.
@@ -220,6 +252,7 @@ pub(crate) fn install(port: u16) {
             let line = match ensure(
                 Path::new("/user/app"),
                 Path::new(OWNER_FILE),
+                Path::new(OLD_OWNER_FILE),
                 port,
                 register,
             ) {
@@ -252,7 +285,7 @@ mod tests {
         let owner = apps.join("tile.owner");
         let (calls, code) = (Cell::new(0), Cell::new(0));
         let run = |port| {
-            ensure(&apps, &owner, port, || {
+            ensure(&apps, &owner, &apps.join("old/tile.owner"), port, || {
                 calls.set(calls.get() + 1);
                 code.get()
             })
@@ -342,6 +375,91 @@ mod tests {
         std::os::unix::fs::symlink(&apps, &title).unwrap();
         assert!(matches!(run(8095), Outcome::Left(why) if why.contains("not a folder")));
         assert_eq!(calls.get(), 6);
+        fs::remove_dir_all(&apps).unwrap();
+    }
+
+    /// A console that ran a version named "PS5 Dump Forge": its owner file's old header still
+    /// marks the folder ours, in the new place or (while that has none) the old folder, so the
+    /// tile is renamed and registered, the new header recorded in the new place.
+    #[test]
+    fn takes_over_earlier_owner_files() {
+        let apps = std::env::temp_dir().join(format!("forge-tile-old-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&apps);
+        let sys = apps.join(TITLE_ID).join("sce_sys");
+        let owner = apps.join("new/tile.owner");
+        let old_dir = apps.join("old");
+        let old_owner = old_dir.join("tile.owner");
+        fs::create_dir_all(&sys).unwrap();
+        fs::create_dir_all(owner.parent().unwrap()).unwrap();
+        fs::create_dir_all(&old_dir).unwrap();
+        let meta = fs::symlink_metadata(apps.join(TITLE_ID)).unwrap();
+        let old_text = owner_text(&meta, true).replacen(OWNER_HEADER, OLD_OWNER_HEADER, 1);
+        assert!(
+            old_text.starts_with("PS5 Dump Forge home-screen tile\n"),
+            "{old_text}"
+        );
+        let old_param = String::from_utf8(param_json(8095))
+            .unwrap()
+            .replace("\"Dump Forge\"", "\"PS5 Dump Forge\"");
+        let calls = Cell::new(0);
+        let run = |old: &Path| {
+            ensure(&apps, &owner, old, 8095, || {
+                calls.set(calls.get() + 1);
+                0
+            })
+            .unwrap()
+        };
+        let reset = || {
+            fs::write(sys.join("param.json"), &old_param).unwrap();
+            fs::write(sys.join("icon0.png"), ICON).unwrap();
+            let _ = fs::remove_file(&owner);
+        };
+        let renamed = |calls_now: u32| {
+            assert_eq!(fs::read(sys.join("param.json")).unwrap(), param_json(8095));
+            assert_eq!(fs::read_to_string(&owner).unwrap(), owner_text(&meta, true));
+            assert_eq!(run(&old_owner), Outcome::Ready);
+            assert_eq!(calls.get(), calls_now);
+        };
+
+        // The old header in the new place (the folder was renamed).
+        reset();
+        fs::write(&owner, &old_text).unwrap();
+        assert_eq!(run(&old_owner), Outcome::Registered(0));
+        renamed(1);
+
+        // Only in the old folder (the rename failed): taken over.
+        reset();
+        fs::write(&old_owner, &old_text).unwrap();
+        assert_eq!(run(&old_owner), Outcome::Registered(0));
+        renamed(2);
+
+        // The old place reached through a link is not taken (the compatibility link points at
+        // the new folder, so it's the same file anyway).
+        reset();
+        let link_dir = apps.join("link");
+        std::os::unix::fs::symlink(&old_dir, &link_dir).unwrap();
+        assert!(
+            matches!(run(&link_dir.join("tile.owner")), Outcome::Left(why) if why.contains("is not ours"))
+        );
+        assert!(!owner.exists());
+
+        // A record in the old folder naming another folder: not ours, nothing written.
+        let other = owner_text(&fs::symlink_metadata(&apps).unwrap(), true).replacen(
+            OWNER_HEADER,
+            OLD_OWNER_HEADER,
+            1,
+        );
+        fs::write(&old_owner, other).unwrap();
+        assert!(matches!(run(&old_owner), Outcome::Left(why) if why.contains("is not ours")));
+        assert!(!owner.exists());
+        // No record anywhere: a foreign tile.
+        fs::remove_file(&old_owner).unwrap();
+        assert!(matches!(run(&old_owner), Outcome::Left(why) if why.contains("is not ours")));
+        assert_eq!(
+            fs::read_to_string(sys.join("param.json")).unwrap(),
+            old_param
+        );
+        assert_eq!(calls.get(), 2);
         fs::remove_dir_all(&apps).unwrap();
     }
 }

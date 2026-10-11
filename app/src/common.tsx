@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
-import { pick, prettyBytes, serverAddress, type Format, type Inspection, type Kind, type Lz4Facts } from "./api";
+import { APP_NAME, pick, prettyBytes, serverAddress, type Format, type Inspection, type Kind, type Lz4Facts } from "./api";
 import { basename, SEPARATORS, trimSep } from "./paths";
 import { useCoverGlow } from "./glow";
 import { Icon, type IconName } from "./icons";
@@ -528,7 +528,7 @@ function Facts({ ins, full }: { ins: Inspection; full: boolean }) {
       )}
       {full && ins.forge_version !== null && (
         <div className="tile wide">
-          <dt>PS5 Dump Forge</dt>
+          <dt>{APP_NAME}</dt>
           <dd className="value mono">v{ins.forge_version}</dd>
         </div>
       )}

@@ -155,7 +155,7 @@ fn request(source: &Path, output: &Path) -> Value {
 fn session_and_headers() {
     let srv = start("session");
     let note = srv.notes.lock().unwrap()[0].clone();
-    assert_eq!(note, format!("PS5 Dump Forge: open http://{}", srv.addr));
+    assert_eq!(note, format!("Dump Forge: open http://{}", srv.addr));
     // No Host or Origin rules: any Host, any Origin, no token, no content type.
     let req = "GET /api/session HTTP/1.1\r\nHost: evil.example\r\nOrigin: null\r\n\r\n";
     let (status, head, body) = exchange(srv.addr, req.as_bytes());

@@ -20,8 +20,11 @@ export type Failure = "loader" | "missing" | "timeout";
 export type Outcome = { ok: true; up: boolean } | { ok: false; failure: Failure; message: string };
 
 export const ELFLDR = "http://127.0.0.1:9021";
-/** Where the payload saves itself, then the USB drives, in this order. */
+/** Where the payload saves itself, where earlier versions did (the payload renames that folder
+ * on start and links the old name to the new one; a real folder there means the rename failed),
+ * then the USB drives, in this order. */
 export const COPIES = [
+  "/data/dumpforge/ps5-dump-forge.elf",
   "/data/ps5-dump-forge/ps5-dump-forge.elf",
   ...[0, 1, 2, 3, 4, 5, 6, 7].map((i) => `/mnt/usb${i}/ps5-dump-forge.elf`),
 ];
@@ -33,11 +36,11 @@ export const START_WAIT_MS = 30000;
 
 export const MESSAGES: Record<Failure, string> = {
   loader:
-    "Can't reach the payload loader on port 9021. Run your autoloader (jailbreak) first, then open PS5 Dump Forge again.",
+    "Can't reach the payload loader on port 9021. Run your autoloader (jailbreak) first, then open Dump Forge again.",
   missing:
-    "No saved copy of PS5 Dump Forge was found (in /data/ps5-dump-forge/ or on a USB drive). Load it once from a PC; it saves a copy for this tile.",
+    "No saved copy of Dump Forge was found (in /data/dumpforge/ or on a USB drive). Load it once from a PC; it saves a copy for this tile.",
   timeout:
-    "PS5 Dump Forge was started but hasn't answered after 30 seconds. It may still be starting (a console waking from rest mode is slow).",
+    "Dump Forge was started but hasn't answered after 30 seconds. It may still be starting (a console waking from rest mode is slow).",
 };
 
 const fail = (failure: Failure): Outcome => ({ ok: false, failure, message: MESSAGES[failure] });
@@ -135,7 +138,7 @@ async function requestStart(d: Deps): Promise<Outcome> {
 }
 
 /** The whole page-load check. `onStarting` runs once nothing answered, before elfldr is
- * asked (the page shows "Starting PS5 Dump Forge…"). */
+ * asked (the page shows "Starting Dump Forge…"). */
 export async function launch(d: Deps, onStarting: () => void): Promise<Outcome> {
   let s = await session(d);
   // Anything that answers but isn't ours running is the app's business (its offline notice).

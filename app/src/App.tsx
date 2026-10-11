@@ -1,11 +1,11 @@
 // Shell: header with tabs, the job list (fed by events), and the close-while-running prompt.
 // Nothing is saved: what the screens remember lasts until the app closes. The http build adds
-// "Stop PS5 Dump Forge" to the header (there's no window to close) and rebuilds the job list
+// "Stop Dump Forge" to the header (there's no window to close) and rebuilds the job list
 // from the server's.
 
 import { useEffect, useReducer, useRef, useState } from "react";
 
-import { api, errorText, events, prettyDuration, serverAddress, useOffline, web } from "./api";
+import { api, APP_NAME, errorText, events, prettyDuration, serverAddress, useOffline, web } from "./api";
 import logo from "./assets/logo.png";
 import { basename, closeOverlays, dirname, panelId, tabId, TabList, type SourceSelection } from "./common";
 import { Convert } from "./Convert";
@@ -94,7 +94,7 @@ export function App() {
             <div className="brand-row">
               <h1 className="brand">
                 <img src={logo} alt="" width={30} height={30} />
-                <span className="visually-hidden">PS5 Dump Forge</span>
+                <span className="visually-hidden">{APP_NAME}</span>
               </h1>
               {/* The address is a button: How to connect, with the QR code, in a dialog. */}
               {address && (
@@ -155,7 +155,7 @@ export function App() {
               {web && (
                 <button className="small" onClick={askStop}>
                   <Icon name="power" />
-                  <span className="stop-label">Stop PS5 Dump Forge</span>
+                  <span className="stop-label">Stop Dump Forge</span>
                 </button>
               )}
               <GitHubLink />
@@ -252,7 +252,7 @@ export function App() {
                     ))}
                   </ul>
                   <p className="muted">
-                    {web ? "Stopping PS5 Dump Forge" : "Quitting"} stops{" "}
+                    {web ? "Stopping Dump Forge" : "Quitting"} stops{" "}
                     {unfinished.length === 1 ? "it" : "them"} and deletes the unfinished output.
                   </p>
                 </div>
@@ -262,7 +262,7 @@ export function App() {
                   </button>
                   <button className="danger" onClick={quit}>
                     {web
-                      ? "Stop PS5 Dump Forge"
+                      ? "Stop Dump Forge"
                       : unfinished.length === 1
                         ? "Stop job and quit"
                         : "Stop jobs and quit"}
@@ -274,7 +274,7 @@ export function App() {
                 <span className="spinner" aria-hidden="true" />
                 <h2 id="quit-title">
                   <span id="quit-text">
-                    {active > 0 || !web ? "Stopping jobs and cleaning up…" : "Stopping PS5 Dump Forge…"}
+                    {active > 0 || !web ? "Stopping jobs and cleaning up…" : "Stopping Dump Forge…"}
                   </span>
                 </h2>
               </div>
@@ -284,7 +284,7 @@ export function App() {
                   <span className="head-icon warn">
                     <Icon name="alert" />
                   </span>
-                  <h2 id="quit-title">Couldn't stop PS5 Dump Forge</h2>
+                  <h2 id="quit-title">Couldn't stop Dump Forge</h2>
                 </div>
                 <p className="muted" id="quit-text">
                   {quitError}
@@ -305,7 +305,7 @@ export function App() {
                     <Icon name="power" />
                   </span>
                   <h2 id="quit-title" tabIndex={-1} ref={(el) => el?.focus()}>
-                    PS5 Dump Forge has stopped
+                    Dump Forge has stopped
                   </h2>
                 </div>
                 <p className="muted" id="quit-text">
@@ -330,7 +330,7 @@ function GitHubLink() {
       <path d="M8 0c4.42 0 8 3.58 8 8a8.01 8.01 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A8 8 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
     </svg>
   );
-  const label = "PS5 Dump Forge on GitHub";
+  const label = `${APP_NAME} on GitHub`;
   return web ? (
     <a className="gh-link" href={REPO} target="_blank" rel="noreferrer" aria-label={label} title={label}>
       {mark}

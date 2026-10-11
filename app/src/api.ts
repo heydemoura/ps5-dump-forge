@@ -232,6 +232,10 @@ export interface JobsRestore {
 /** The http build: a browser on the LAN, paths are the server's, nothing is revealed locally. */
 export const web = transport.web;
 
+/** The product's name in the UI: the PS5 payload's web UI drops "PS5" (its tile says "Dump
+ * Forge"); the desktop app keeps it. */
+export const APP_NAME = web ? "Dump Forge" : "PS5 Dump Forge";
+
 /** A folder or file chosen in the native dialog, or (http build) the server's folder browser. */
 export const pick = (o: PickOptions): Promise<string | null> => transport.pick(o);
 
@@ -250,6 +254,8 @@ export interface LibraryEntry {
   title_name: string | null;
   version: string | null;
   has_cover: boolean;
+  /** LZ4 packed (ampr_emu asset packs: `ampr_assets.index` at the root). Missing from an older backend. */
+  lz4_packed?: boolean;
 }
 
 export interface LibraryScan {
@@ -257,6 +263,8 @@ export interface LibraryScan {
   entries: LibraryEntry[];
   truncated: boolean;
   warnings: string[];
+  /** The PS5 only: the internal storage (`/data`) in bytes, as of this scan. */
+  storage?: { free: number; total: number };
 }
 
 /** Where the backend runs (the server's own answer in the http build); rejects when unknown. */

@@ -4,7 +4,7 @@
 # FORGE_SKIP_WEB=1 skips that (app/dist-http as it is, or a placeholder page).
 # Two stages, since a running payload can't read its own file: stage 1 (target/ps5/stage1.elf)
 # has no copy of itself; stage 2, the final ELF, embeds stage 1, which it saves as
-# /data/ps5-dump-forge/ps5-dump-forge.elf (crates/ps5-dump-forge-server/src/self_copy.rs).
+# /data/dumpforge/ps5-dump-forge.elf (crates/ps5-dump-forge-server/src/self_copy.rs).
 # A debug build (FORGE_DEBUG_API set) stops after stage 1: the final ELF is stage 1, no copy.
 set -euo pipefail
 cd "$(dirname "$0")/.."

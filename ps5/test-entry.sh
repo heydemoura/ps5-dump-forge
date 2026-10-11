@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host check of entry.c's launch modes (none, "serve" as elfldr's args=serve passes it, others), args-file parsing and log redirection: builds it with the
+# Host check of entry.c's launch modes (none, "serve" as elfldr's args=serve passes it, others), args-file parsing, log redirection and the old folder's rename: builds it with the
 # host cc against stubs for __real_main (prints its arguments to stdout and a marker to stderr;
 # LONGNOTE makes it call ps5_notify with 4,000 bytes, FAIL makes it return 3) and the PS5
 # notification call (appends the message and its length to $NOTES, never to the redirected
@@ -37,7 +37,7 @@ int sceKernelSendNotificationRequest(int a, struct notification *n, size_t s, in
 }
 int main(int argc, char **argv) { return __wrap_main(argc, argv); }
 EOF
-cc -Wall -Wextra -Werror -DFORGE_DIR="\"$tmp/forge\"" entry.c "$tmp/stub.c" -o "$tmp/entry"
+cc -Wall -Wextra -Werror -DFORGE_DIR="\"$tmp/forge\"" -DOLD_FORGE_DIR="\"$tmp/ro/old\"" -DFORGE_LINK="\"../forge\"" entry.c "$tmp/stub.c" -o "$tmp/entry"
 
 closed= old=
 # run <args-file bytes, or "" for no args file> <expected exit> <expected log text, or "" for no
@@ -130,4 +130,32 @@ left="$(cd "$tmp/forge" && ls | sort | tr '\n' ' ')"
    -e "$tmp/forge/serve-$d3.txt" && -e "$tmp/forge/serve-$$.txt" && -e "$tmp/forge/serve-abc.txt" &&
    -e "$tmp/forge/serve-$d1.txt.bak" && $(ls "$tmp"/forge/serve-*.txt | wc -l) -eq 4 ]] ||
   { echo "FAIL: log pruning: exit $code, left: $left"; exit 1; }
-echo "entry.c launch modes and args parsing: ok"
+# Earlier versions' folder: renamed to the new one when that is missing, its files kept, and a
+# link to the new one left in its place (what an old cached launcher page asks for); left alone
+# when both exist; a rename that fails is notified and the launch goes on.
+rm -rf "$tmp/forge" "$tmp/ro" "$tmp/notes"; mkdir -p "$tmp/ro/old"; echo elf > "$tmp/ro/old/ps5-dump-forge.elf"
+set +e; NOTES="$tmp/notes" "$tmp/entry" serve > /dev/null; code=$?; set -e
+[[ $code == 0 && -d "$tmp/forge" && ! -L "$tmp/forge" && -L "$tmp/ro/old" && "$(readlink "$tmp/ro/old")" == ../forge &&
+   "$(cat "$tmp/forge/ps5-dump-forge.elf")" == elf && "$(cat "$tmp/ro/old/ps5-dump-forge.elf")" == elf && ! -e "$tmp/notes" ]] &&
+  ls "$tmp"/forge/serve-*.txt > /dev/null || { echo "FAIL: old folder not renamed and linked: exit $code"; exit 1; }
+# The link again on the next launch: left as it is, nothing renamed back.
+set +e; NOTES="$tmp/notes" "$tmp/entry" serve > /dev/null; code=$?; set -e
+[[ $code == 0 && -L "$tmp/ro/old" && -d "$tmp/forge" && ! -L "$tmp/forge" && ! -e "$tmp/notes" ]] ||
+  { echo "FAIL: second launch with the link: exit $code"; exit 1; }
+# Migrated by a build without the link (new folder, nothing at the old path): the link added.
+rm "$tmp/ro/old"
+set +e; NOTES="$tmp/notes" "$tmp/entry" > /dev/null; code=$?; set -e
+[[ $code == 0 && "$(readlink "$tmp/ro/old")" == ../forge && ! -e "$tmp/notes" ]] ||
+  { echo "FAIL: link not added: exit $code"; exit 1; }
+rm "$tmp/ro/old"; mkdir "$tmp/ro/old"; echo old > "$tmp/ro/old/ps5-dump-forge.elf"
+set +e; NOTES="$tmp/notes" "$tmp/entry" > /dev/null; code=$?; set -e
+[[ $code == 0 && ! -L "$tmp/ro/old" && "$(cat "$tmp/ro/old/ps5-dump-forge.elf")" == old && "$(cat "$tmp/forge/ps5-dump-forge.elf")" == elf ]] ||
+  { echo "FAIL: both folders: exit $code"; exit 1; }
+if [[ $(id -u) != 0 ]]; then  # root ignores the read-only parent
+  rm -rf "$tmp/forge"; chmod 555 "$tmp/ro"
+  set +e; NOTES="$tmp/notes" "$tmp/entry" serve > /dev/null; code=$?; set -e
+  chmod 755 "$tmp/ro"
+  [[ $code == 0 && -d "$tmp/ro/old" && ! -L "$tmp/ro/old" && "$(cat "$tmp/notes")" == *"cannot move $tmp/ro/old to $tmp/forge"* ]] &&
+    ls "$tmp"/forge/serve-*.txt > /dev/null || { echo "FAIL: rename refused: exit $code"; exit 1; }
+fi
+echo "entry.c launch modes, args parsing and the old folder: ok"

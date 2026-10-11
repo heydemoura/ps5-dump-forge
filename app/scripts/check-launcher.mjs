@@ -67,34 +67,44 @@ d = console5({ session: (x) => (x.loads.length && ++polls >= 3 ? up : null), loa
 r = await run(d);
 assert.deepEqual(r.out, { ok: true, up: true });
 assert.equal(r.starting, 1);
-assert.deepEqual(d.loads, ["/data/ps5-dump-forge/ps5-dump-forge.elf"]);
+assert.deepEqual(d.loads, ["/data/dumpforge/ps5-dump-forge.elf"]);
 assert.equal(d.now, 2000, "polled every second");
 console.log("session down -> elfldr /data copy -> session up -> app");
 
+// Only an earlier version's copy (the folder rename failed): the old /data path next.
+d = console5({
+  session: (x) => (x.loads.length === 2 ? up : null),
+  loader: (p) => (p === "/data/ps5-dump-forge/ps5-dump-forge.elf" ? "" : MISSING),
+});
+r = await run(d);
+assert.deepEqual(r.out, { ok: true, up: true });
+assert.deepEqual(d.loads, ["/data/dumpforge/ps5-dump-forge.elf", "/data/ps5-dump-forge/ps5-dump-forge.elf"]);
+console.log("Error reading -> the old /data/ps5-dump-forge copy");
+
 // "Error reading": the USB drives in order, usb0..usb2, then usb2 is the one.
 d = console5({
-  session: (x) => (x.loads.length === 4 ? up : null),
+  session: (x) => (x.loads.length === 5 ? up : null),
   loader: (p) => (p === "/mnt/usb2/ps5-dump-forge.elf" ? "" : MISSING),
 });
 r = await run(d);
 assert.deepEqual(r.out, { ok: true, up: true });
-assert.deepEqual(d.loads, ["/data/ps5-dump-forge/ps5-dump-forge.elf", "/mnt/usb0/ps5-dump-forge.elf", "/mnt/usb1/ps5-dump-forge.elf", "/mnt/usb2/ps5-dump-forge.elf"]);
+assert.deepEqual(d.loads, ["/data/dumpforge/ps5-dump-forge.elf", "/data/ps5-dump-forge/ps5-dump-forge.elf", "/mnt/usb0/ps5-dump-forge.elf", "/mnt/usb1/ps5-dump-forge.elf", "/mnt/usb2/ps5-dump-forge.elf"]);
 console.log("Error reading -> /mnt/usb0..7 in order");
 
 // No copy anywhere.
 d = console5({ session: () => null, loader: () => MISSING });
 r = await run(d);
 assert.deepEqual(r.out, { ok: false, failure: "missing", message: L.MESSAGES.missing });
-assert.equal(d.loads.length, 9);
+assert.equal(d.loads.length, 10);
 assert.equal(d.loads.at(-1), "/mnt/usb7/ps5-dump-forge.elf");
-assert.match(L.MESSAGES.missing, /No saved copy of PS5 Dump Forge was found/);
+assert.match(L.MESSAGES.missing, /No saved copy of Dump Forge was found \(in \/data\/dumpforge\//);
 console.log("no copy -> missing message");
 
 // elfldr unreachable.
 d = console5({ session: () => null, loader: () => null });
 r = await run(d);
 assert.deepEqual(r.out, { ok: false, failure: "loader", message: L.MESSAGES.loader });
-assert.deepEqual(d.loads, ["/data/ps5-dump-forge/ps5-dump-forge.elf"]);
+assert.deepEqual(d.loads, ["/data/dumpforge/ps5-dump-forge.elf"]);
 assert.match(L.MESSAGES.loader, /Can't reach the payload loader on port 9021/);
 console.log("9021 unreachable -> loader message");
 

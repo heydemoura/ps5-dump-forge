@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use crate::http::{self, Head, Response};
-use crate::paths::Roots;
+use crate::paths::{Roots, Storage};
 use crate::table::{self, Table};
 use crate::{Options, Platform, random_hex};
 
@@ -50,6 +50,15 @@ pub(crate) struct Server {
     /// Tests widen the gap between `Jobs::start` returning and the table admitting the job.
     #[cfg(test)]
     admit_pause: std::time::Duration,
+}
+
+/// `POST /api/library_scan`'s reply: core's scan, plus `storage` on the PS5 only.
+#[derive(serde::Serialize)]
+struct ScanReply<'a> {
+    #[serde(flatten)]
+    scan: &'a ps5_dump_forge_core::LibraryScan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storage: Option<Storage>,
 }
 
 /// A lock that survives a panic elsewhere (the data stays consistent per call).
@@ -343,13 +352,14 @@ impl Server {
 
     fn refuse_if_stopping(&self) -> Result<(), Response> {
         if self.stopping.load(Ordering::SeqCst) {
-            return Err(Response::error(409, "PS5 Dump Forge is stopping"));
+            return Err(Response::error(409, "Dump Forge is stopping"));
         }
         Ok(())
     }
 
     /// The Library scan: the body's `root`, or on the PS5 the configured current roots. Capped
-    /// like an inspection, and refused once stopping.
+    /// like an inspection, and refused once stopping. On the PS5 the reply also carries the
+    /// internal storage's free space (`storage`); a computer's has no such field.
     // ponytail: the request deadline covers receiving the request, not core's work.
     fn library_scan(&self, body: &[u8]) -> Reply {
         let root = optional_root(body)?;
@@ -361,7 +371,10 @@ impl Server {
             Some(r) => ps5_dump_forge_core::scan_library_folder(r),
             None => ps5_dump_forge_core::scan_library(&self.roots.library()),
         })?;
-        Ok(Response::json(&found))
+        Ok(Response::json(&ScanReply {
+            scan: &found,
+            storage: self.roots.storage(),
+        }))
     }
 
     /// One Library cover, capped like an inspection, and refused once stopping.
@@ -399,7 +412,7 @@ impl Server {
         });
         let _admission = lock(&self.admission);
         if self.stopping.load(Ordering::SeqCst) {
-            return Err(Response::error(409, "PS5 Dump Forge is stopping"));
+            return Err(Response::error(409, "Dump Forge is stopping"));
         }
         if self.running.load(Ordering::SeqCst) >= MAX_JOBS {
             return Err(Response::error(
@@ -428,7 +441,7 @@ impl Server {
         let arg: SourceArg = parse(body)?;
         let _admission = lock(&self.admission);
         if self.stopping.load(Ordering::SeqCst) {
-            return Err(Response::error(409, "PS5 Dump Forge is stopping"));
+            return Err(Response::error(409, "Dump Forge is stopping"));
         }
         if self.running.load(Ordering::SeqCst) > 0 {
             return Err(Response::error(
@@ -455,7 +468,7 @@ impl Server {
         let arg: PathArg = parse(body)?;
         let _admission = lock(&self.admission);
         if self.stopping.load(Ordering::SeqCst) {
-            return Err(Response::error(409, "PS5 Dump Forge is stopping"));
+            return Err(Response::error(409, "Dump Forge is stopping"));
         }
         let mut keep = self.roots.current();
         keep.extend(self.opts.roots.iter().cloned());
@@ -619,7 +632,7 @@ impl Server {
         self.jobs.cancel_all_and_wait();
         #[cfg(target_env = "ps5")]
         crate::self_copy::wait();
-        (self.opts.notify)("PS5 Dump Forge stopped");
+        (self.opts.notify)("Dump Forge stopped");
         (self.opts.exit)(0);
     }
 }
@@ -730,7 +743,17 @@ mod tests {
         );
         // FreeBSD (the PS5) has no system-folder list.
         if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
-            let r = post(&server, "library_scan", json!({ "root": "/" }));
+            // Windows refuses only the system drive's root; "/" is the current drive's (D:\ on
+            // GitHub's runners), which is allowed.
+            let system_root = match cfg!(windows) {
+                true => {
+                    let drive = std::env::var("SystemDrive").ok();
+                    let letter = drive.and_then(|d| d.chars().next()).unwrap_or('C');
+                    format!("{letter}:\\")
+                }
+                false => "/".to_string(),
+            };
+            let r = post(&server, "library_scan", json!({ "root": system_root }));
             assert_eq!(r.status, 500, "{}", r.text());
             assert!(r.text().contains("system folder"), "{}", r.text());
         }
@@ -740,6 +763,8 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
         assert_eq!(v["roots"], json!([root]));
         assert_eq!(v["entries"], json!([]));
+        // A computer's reply has no free space.
+        assert!(v.get("storage").is_none(), "{v}");
         assert_eq!(
             (&v["truncated"], &v["warnings"]),
             (&json!(false), &json!([]))
@@ -759,6 +784,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
         assert_eq!(v["roots"], json!([other]));
         assert_eq!(v["entries"][0]["title_id"], json!("PPSA00001"), "{v}");
+        assert_eq!(v["entries"][0]["lz4_packed"], json!(false), "{v}");
         assert_eq!(v["entries"].as_array().unwrap().len(), 1);
         assert_eq!(
             post(&server, "library_scan", json!({ "root": 5 })).status,
@@ -811,6 +837,43 @@ mod tests {
             assert!(r.text().contains("stopping"), "{}", r.text());
         }
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The scan reply's shape: core's fields at the top level, `storage` `{free, total}` beside
+    /// them on the PS5 and absent elsewhere.
+    #[test]
+    fn scan_reply_shape() {
+        let scan = ps5_dump_forge_core::LibraryScan {
+            roots: vec![PathBuf::from("/data")],
+            entries: Vec::new(),
+            truncated: false,
+            warnings: Vec::new(),
+        };
+        let storage = Some(Storage {
+            free: 312_000_000_000,
+            total: 825_000_000_000,
+        });
+        let v = serde_json::to_value(ScanReply {
+            scan: &scan,
+            storage,
+        })
+        .unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "roots": ["/data"], "entries": [], "truncated": false, "warnings": [],
+                "storage": { "free": 312_000_000_000u64, "total": 825_000_000_000u64 },
+            })
+        );
+        let v = serde_json::to_value(ScanReply {
+            scan: &scan,
+            storage: None,
+        })
+        .unwrap();
+        assert!(
+            v.get("storage").is_none() && v["roots"] == json!(["/data"]),
+            "{v}"
+        );
     }
 
     /// The PS5's automatic scan (FreeBSD only: the filesystem classifier): a pinned root posted

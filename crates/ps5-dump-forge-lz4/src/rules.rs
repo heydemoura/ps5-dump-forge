@@ -2,13 +2,14 @@
 //! built-in fallback, behind one `select`. Globs follow Python's `fnmatchcase` (as upstream
 //! `ampr_pack.py`'s profiles do): `*` crosses `/`, case-sensitive, whole-path match.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use crate::{PackSpec, RuntimeProfile};
 
 // ---- glob ---------------------------------------------------------------------------------------
 
+#[derive(Clone)]
 enum Tok {
     Star,
     Any,
@@ -395,6 +396,7 @@ pub struct Rule {
 }
 
 impl Rule {
+    #[cfg(test)]
     fn matches(&self, path: &str) -> bool {
         self.include.iter().any(|p| glob_match(p, path))
             && !self.exclude.iter().any(|p| glob_match(p, path))
@@ -405,11 +407,110 @@ impl Rule {
 pub struct Profile {
     pub default_action: Action,
     pub default_block_shift: u8,
-    pub rules: Vec<Rule>,
+    /// Private, so `compiled` always matches it: read through [`Profile::rules`].
+    rules: Vec<Rule>,
     pub runtime: Option<RuntimeProfile>,
     pub auto_loose: AutoLoose,
     /// Known keys that are accepted and have no effect here, as `scope.key`, for the job log.
     pub ignored: Vec<String>,
+    compiled: Compiled,
+}
+
+impl Profile {
+    /// The `[[rule]]`s in file order; the last match wins.
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+}
+
+/// `Profile::rules` compiled once by `load_profile`, so matching a file compiles nothing and
+/// patterns that name one exact path (Save as profile writes one per packed file) are a map
+/// lookup, not a scan. Selects the same rule as the plain reverse scan: the last rule with a
+/// matching include and no matching exclude.
+#[derive(Clone, Default)]
+struct Compiled {
+    /// Per rule: its include patterns that are not one exact path.
+    globs: Vec<Vec<Vec<Tok>>>,
+    /// Per rule: its exclude patterns.
+    excludes: Vec<Vec<Vec<Tok>>>,
+    /// The rules with any `globs`, ascending.
+    globbed: Vec<usize>,
+    /// Normalized exact path -> the rules (ascending) with an include naming exactly it.
+    exact: HashMap<String, Vec<usize>>,
+}
+
+// Derived from `rules`, so equal rules mean equal `Compiled`; too big to print.
+impl PartialEq for Compiled {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Compiled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Compiled")
+    }
+}
+
+/// The one path a pattern matches when every token matches one fixed char (`[*]`, `[[]` and
+/// `[a-a]` included), else `None`.
+fn literal(toks: &[Tok]) -> Option<String> {
+    toks.iter()
+        .map(|t| match t {
+            Tok::Lit(c) => Some(*c),
+            Tok::Set { neg: false, ranges } if ranges.len() == 1 && ranges[0].0 == ranges[0].1 => {
+                Some(ranges[0].0)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+impl Compiled {
+    fn new(rules: &[Rule]) -> Compiled {
+        let mut c = Compiled::default();
+        for (i, r) in rules.iter().enumerate() {
+            let mut globs = Vec::new();
+            for p in &r.include {
+                let toks = compile(&norm(p));
+                match literal(&toks) {
+                    Some(path) => {
+                        let rs = c.exact.entry(path).or_default();
+                        if rs.last() != Some(&i) {
+                            rs.push(i);
+                        }
+                    }
+                    None => globs.push(toks),
+                }
+            }
+            if !globs.is_empty() {
+                c.globbed.push(i);
+            }
+            c.globs.push(globs);
+            c.excludes
+                .push(r.exclude.iter().map(|p| compile(&norm(p))).collect());
+        }
+        c
+    }
+
+    /// The index of the last rule matching `path`.
+    fn last_match(&self, path: &str) -> Option<usize> {
+        let s = norm(path);
+        let hit = |ps: &[Vec<Tok>]| ps.iter().any(|t| glob_match_compiled(t, &s));
+        let key: String = s.iter().collect();
+        let exact = self
+            .exact
+            .get(&key)
+            .and_then(|rs| rs.iter().rev().copied().find(|&r| !hit(&self.excludes[r])));
+        // A later rule can only beat it through a glob include.
+        self.globbed
+            .iter()
+            .rev()
+            .copied()
+            .take_while(|&r| exact.is_none_or(|e| r > e))
+            .find(|&r| hit(&self.globs[r]) && !hit(&self.excludes[r]))
+            .or(exact)
+    }
 }
 
 /// Where the choices come from, in the order the caller prefers: an explicit profile, this dump's
@@ -439,7 +540,7 @@ pub fn select(path: &str, size: u64, sel: &Selection) -> Option<PackSpec> {
 /// What `p`'s own rules choose for a non-empty, not `always_loose` file: its last matching rule,
 /// else the profile default. [`select`] then applies the keep-loose list.
 pub fn profile_spec(path: &str, p: &Profile) -> Option<PackSpec> {
-    let rule = p.rules.iter().rev().find(|r| r.matches(path));
+    let rule = p.compiled.last_match(path).map(|i| &p.rules[i]);
     let (action, block_shift, layout, hot) = match rule {
         Some(r) => (r.action, r.block_shift, r.layout, r.hot),
         None => (p.default_action, p.default_block_shift, Layout::Auto, false),
@@ -982,6 +1083,7 @@ pub fn load_profile(path: &Path) -> Result<Profile, Vec<String>> {
         runtime: None,
         auto_loose: AutoLoose::default(),
         ignored: Vec::new(),
+        compiled: Compiled::default(),
     };
     for k in root.keys() {
         if !["pack", "rule", "runtime", "groups"].contains(&k.as_str()) {
@@ -1042,6 +1144,7 @@ pub fn load_profile(path: &Path) -> Result<Profile, Vec<String>> {
         return Err(c.errs);
     }
     p.ignored = c.ignored;
+    p.compiled = Compiled::new(&p.rules);
     Ok(p)
 }
 
@@ -1352,6 +1455,67 @@ action = "loose"
         assert_eq!(s("data/keep/a.bin"), None);
         assert_eq!(s("sce_sys/a.bin"), None);
         assert_eq!(select("data/a.bin", 0, &Selection::Profile(&p)), None);
+    }
+
+    #[test]
+    fn compiled_lookup_equals_the_reverse_scan() {
+        // Literal, escaped-literal, glob and exclude rules overlapping in both orders.
+        let p = load(
+            "compiled",
+            r#"
+[[rule]]
+include = ["data/a.bin", "data/[[]x].bin", "data/[*]star", "data/q[?]", "data/[]", "/data\\c.bin"]
+[[rule]]
+include = "data/*.bin"
+exclude = "data/b*"
+action = "store"
+[[rule]]
+include = ["data/a.bin", "data/[a-a]2.bin"]
+action = "loose"
+hot = true
+[[rule]]
+include = ["data/[*]star", "x/**"]
+exclude = ["data/[[]*", "x/skip*"]
+layout = "random"
+[[rule]]
+include = "data/b.bin"
+exclude = "**/b.bin"
+[[rule]]
+include = ["data/[ab].bin", "data/[!a]?.bin", "data/q?"]
+block_size = 32768
+[[rule]]
+include = ["data/c.bin", "x/keep", "data/[*]star"]
+exclude = "x/k*p"
+action = "store"
+"#,
+        )
+        .unwrap();
+        let naive = |path: &str| p.rules.iter().rposition(|r| r.matches(path));
+        let mut paths: Vec<String> = Vec::new();
+        for dir in ["data/", "/data/", "data\\", "x/", ""] {
+            for name in [
+                "a.bin", "b.bin", "c.bin", "a2.bin", "[x].bin", "*star", "xstar", "q?", "qz", "[]",
+                "[", "bb.bin", "ab.bin", "keep", "skip1", "k", "",
+            ] {
+                paths.push(format!("{dir}{name}"));
+            }
+        }
+        let mut hits = 0;
+        for path in &paths {
+            let want = naive(path);
+            assert_eq!(p.compiled.last_match(path), want, "{path}");
+            hits += usize::from(want.is_some());
+        }
+        assert!(hits > 20, "the table exercises matches ({hits})");
+        // The overrides the table relies on, spelled out.
+        let m = |path: &str| p.compiled.last_match(path);
+        assert_eq!(m("data/a2.bin"), Some(2), "[a-a] literal over glob");
+        assert_eq!(m("data/c.bin"), Some(6), "literal over glob");
+        assert_eq!(m("data/a.bin"), Some(5), "glob over literal");
+        assert_eq!(m("data/*star"), Some(6), "escaped literal");
+        assert_eq!(m("data/xstar"), None, "[*] is not a glob");
+        assert_eq!(m("data/[x].bin"), Some(1), "[[] literal, then *.bin");
+        assert_eq!(m("x/keep"), Some(3), "excluded literal, earlier glob");
     }
 
     #[test]

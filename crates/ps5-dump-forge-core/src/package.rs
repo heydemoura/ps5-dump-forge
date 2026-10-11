@@ -21,6 +21,7 @@ use unicode_normalization::is_nfc;
 use crate::convert::SourceStamp;
 use crate::finalize::{Part, part_path};
 use crate::jobs::Ctx;
+use crate::prefetch::Prefetch;
 use crate::preflight::{self, GameInfo, listing};
 use crate::verify::{self, HashingTree, Mode};
 use crate::{ConvertRequest, JobReport, KrakenLevel};
@@ -264,14 +265,14 @@ fn synced_build<T>(built: ps5upload_fpkg::Result<T>, synced: io::Result<()>) -> 
 pub(crate) fn run(
     req: &ConvertRequest,
     ctx: &Ctx,
-    tree: &mut dyn SourceTree,
+    mut tree: Box<dyn SourceTree>,
     info: &GameInfo,
     mut findings: Vec<String>,
     out: &Path,
     stamp: &SourceStamp,
 ) -> anyhow::Result<JobReport> {
     ctx.log(CONSOLE);
-    let (more, notes) = source_findings(tree, info);
+    let (more, notes) = source_findings(tree.as_mut(), info);
     findings.extend(more);
     for note in notes {
         ctx.log(note);
@@ -339,8 +340,8 @@ pub(crate) fn run(
             Mode::Full => None,
         },
     };
-    let prepared =
-        build::prepare(tree, &request, &mut control).map_err(fpkg("preparing the package"))?;
+    let prepared = build::prepare(tree.as_mut(), &request, &mut control)
+        .map_err(fpkg("preparing the package"))?;
     for line in prepared.log() {
         ctx.log(format!("fpkg: {line}"));
     }
@@ -377,7 +378,14 @@ pub(crate) fn run(
     let (mut part, mut file) = Part::create_file(&part_path(out, ctx.job))?;
     #[cfg(target_os = "freebsd")]
     part.set_dest(&dest);
-    let mut hashing = HashingTree::new(tree);
+    // As in `convert`: reads run one range ahead on their own thread, so the builder's producer
+    // hashes and lays out one range while the next is read (a `.pkg` source's Kraken blocks
+    // decoded); `HashingTree` sees exactly the calls and bytes it would without read-ahead.
+    // The builder asks 256 KiB at a time, and a `.pkg` source pays its decode threads per read:
+    // 4 MiB windows (about 12 MiB in memory, see `Prefetch`) keep the producer fed.
+    let mut ahead = Prefetch::with_window(tree, 4 << 20)
+        .map_err(|e| anyhow::Error::new(e).context("starting the read-ahead thread"))?;
+    let mut hashing = HashingTree::new(&mut ahead);
     #[cfg(not(target_os = "freebsd"))]
     let report = build::write_package(
         &prepared,
@@ -437,7 +445,7 @@ pub(crate) fn run(
     // builder serves it; files the build passed through keep the hash of the source read.
     ctx.progress("verify", 0, 1);
     let source_hashes = hashing.into_digests();
-    let mut packaged = Packaged::new(&prepared, tree);
+    let mut packaged = Packaged::new(&prepared, &mut ahead);
     let known: HashMap<String, verify::Digest> = packaged
         .unchanged
         .iter()

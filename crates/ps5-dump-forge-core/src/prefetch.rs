@@ -30,6 +30,11 @@ struct Ahead {
 /// Any other request drops that guess, so the bytes served are always those a direct read
 /// would give; a failed guess fails only the request that asks for that range.
 ///
+/// With a `window` ([`Prefetch::with_window`]) each guess reads at least `window` bytes and
+/// the writer's side keeps what the request did not take, serving the next requests of that
+/// range from it while the worker reads the window after it. In memory then: the window held,
+/// the one read ahead and the answer in flight, about three windows (12 MiB at 4 MiB).
+///
 /// The writer still checks its cancel flag between reads. Dropping this waits for the worker,
 /// so a read already in a syscall finishes first.
 // ponytail: the next file is not read ahead, so a game of many small files gains little.
@@ -41,10 +46,20 @@ pub(crate) struct Prefetch {
     ask: Option<SyncSender<Ask>>,
     answer: Receiver<Result<Vec<u8>>>,
     worker: Option<JoinHandle<()>>,
+    window: usize,
+    sizes: HashMap<String, u64>,
+    /// Bytes of `path` from `offset` a window read gave beyond its request.
+    held: Option<(String, u64, Vec<u8>)>,
 }
 
 impl Prefetch {
     pub(crate) fn new(tree: Box<dyn SourceTree>) -> std::io::Result<Self> {
+        Self::with_window(tree, 0)
+    }
+
+    /// Reads ahead at least `window` bytes at a time: for a source that pays per read (a
+    /// `.pkg`'s decode threads) and a writer that asks for less.
+    pub(crate) fn with_window(tree: Box<dyn SourceTree>, window: usize) -> std::io::Result<Self> {
         let (files, empty_dirs, describe) = (
             tree.files().to_vec(),
             tree.empty_dirs().to_vec(),
@@ -55,8 +70,12 @@ impl Prefetch {
         let (answers, answer) = sync_channel(1);
         let worker = std::thread::Builder::new()
             .name("read-ahead".into())
-            .spawn(move || serve(tree, asks, answers))?;
+            .spawn(move || serve(tree, asks, answers, window))?;
+        let sizes = files.iter().map(|f| (f.path.clone(), f.size)).collect();
         Ok(Self {
+            window,
+            sizes,
+            held: None,
             files,
             empty_dirs,
             describe,
@@ -92,7 +111,12 @@ impl Drop for Prefetch {
     }
 }
 
-fn serve(mut tree: Box<dyn SourceTree>, asks: Receiver<Ask>, answers: SyncSender<Result<Vec<u8>>>) {
+fn serve(
+    mut tree: Box<dyn SourceTree>,
+    asks: Receiver<Ask>,
+    answers: SyncSender<Result<Vec<u8>>>,
+    window: usize,
+) {
     let sizes: HashMap<String, u64> = tree
         .files()
         .iter()
@@ -105,11 +129,20 @@ fn serve(mut tree: Box<dyn SourceTree>, asks: Receiver<Ask>, answers: SyncSender
             Ask::Range(path, offset, len) => {
                 let answer = match ahead.take() {
                     // A prefix of a longer read at the same offset is what a read of `len` gives.
+                    // With a window the writer's side keeps the rest, and a window that failed
+                    // is no answer for the shorter range asked: that range is read itself.
                     Some(a) if a.path == path && a.offset == offset && len <= a.len => {
-                        a.got.map(|mut bytes| {
-                            bytes.truncate(len);
-                            bytes
-                        })
+                        match a.got {
+                            Err(_) if window > 0 && len < a.len => {
+                                tree.read_range(&path, offset, len)
+                            }
+                            got => got.map(|mut bytes| {
+                                if window == 0 {
+                                    bytes.truncate(len);
+                                }
+                                bytes
+                            }),
+                        }
                     }
                     _ => tree.read_range(&path, offset, len),
                 };
@@ -117,7 +150,7 @@ fn serve(mut tree: Box<dyn SourceTree>, asks: Receiver<Ask>, answers: SyncSender
                     Ok(bytes) if !bytes.is_empty() && len <= AHEAD_MAX => offset
                         .checked_add(bytes.len() as u64)
                         .filter(|&at| sizes.get(&path).is_some_and(|&size| at < size))
-                        .map(|at| (path, at, len)),
+                        .map(|at| (path, at, len.max(window))),
                     _ => None,
                 };
                 (answer, next)
@@ -148,7 +181,24 @@ impl SourceTree for Prefetch {
     }
 
     fn read_range(&mut self, path: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
-        self.call(Ask::Range(path.to_string(), offset, len))
+        let size = self.sizes.get(path).copied().unwrap_or(0);
+        let n = size.saturating_sub(offset).min(len as u64) as usize;
+        if let Some((at, bytes)) = self.held.as_ref().and_then(|(p, at, bytes)| {
+            (p == path && len <= self.window && offset >= *at).then_some((*at, bytes))
+        }) && let Some(range) = usize::try_from(offset - at)
+            .ok()
+            .and_then(|from| bytes.get(from..from + n))
+        {
+            return Ok(range.to_vec());
+        }
+        self.held = None;
+        let got = self.call(Ask::Range(path.to_string(), offset, len))?;
+        if got.len() <= len {
+            return Ok(got);
+        }
+        let head = got[..len].to_vec();
+        self.held = Some((path.to_string(), offset, got));
+        Ok(head)
     }
 
     fn empty_dirs(&self) -> &[String] {
@@ -177,6 +227,8 @@ mod tests {
         data: Vec<Vec<u8>>,
         log: Log,
         bad: Vec<u64>,
+        /// Reads whose range covers one of these offsets fail.
+        bad_in: Vec<u64>,
         gate: Option<Receiver<()>>,
         dropped: Arc<Mutex<bool>>,
     }
@@ -194,6 +246,7 @@ mod tests {
                 data: files.iter().map(|(_, d)| d.clone()).collect(),
                 log: Log::default(),
                 bad: Vec::new(),
+                bad_in: Vec::new(),
                 gate: None,
                 dropped: Arc::default(),
             }
@@ -221,6 +274,13 @@ mod tests {
             }
             if path == "boom" {
                 panic!("the source panicked");
+            }
+            if let Some(at) = self
+                .bad_in
+                .iter()
+                .find(|&&at| offset <= at && at < offset + len as u64)
+            {
+                return Err(Error::Format(format!("bad byte at {at}")));
             }
             if self.bad.contains(&offset) {
                 return Err(Error::Format(format!("bad read at {offset}")));
@@ -312,6 +372,81 @@ mod tests {
                 at("g", 0, 50),
                 at("g", 50, 50),
                 at("g", 70, 20),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_reads_ahead_more_than_asked_and_serves_the_same_bytes() {
+        let (f, g) = (bytes(1000, 8), bytes(250, 9));
+        let mem = Mem::new(&[("f", f.clone()), ("g", g.clone())]);
+        let log = mem.log.clone();
+        let mut tree = Prefetch::with_window(Box::new(mem), 300).unwrap();
+        // Front to back in reads of 100: each window read once, the first read as asked.
+        let mut offset = 0;
+        while offset < 1000 {
+            assert_eq!(
+                tree.read_range("f", offset, 100).unwrap(),
+                f[offset as usize..][..100]
+            );
+            offset += 100;
+        }
+        assert_eq!(tree.read_range("f", 1000, 100).unwrap(), b"");
+        assert_eq!(
+            settled(&log, 4),
+            [
+                at("f", 0, 100),
+                at("f", 100, 300),
+                at("f", 400, 300),
+                at("f", 700, 300)
+            ]
+        );
+        // Missed guesses and held bytes that do not cover a request: still a direct read's bytes.
+        assert_eq!(tree.read_range("f", 50, 100).unwrap(), f[50..150]);
+        assert_eq!(tree.read_range("f", 150, 100).unwrap(), f[150..250]);
+        assert_eq!(
+            tree.read_range("f", 280, 100).unwrap(),
+            f[280..380],
+            "past the window"
+        );
+        assert_eq!(
+            tree.read_range("f", 380, 500).unwrap(),
+            f[380..880],
+            "over the window"
+        );
+        assert_eq!(tree.read_range("g", 0, 100).unwrap(), g[..100]);
+        assert_eq!(
+            tree.read_range("g", 100, 200).unwrap(),
+            g[100..],
+            "the file's tail"
+        );
+        assert_eq!(tree.read_range("f", 0, 1000).unwrap(), f);
+    }
+
+    #[test]
+    fn a_failed_window_fails_only_the_reads_that_cover_the_bad_byte() {
+        let data = bytes(1000, 10);
+        let mut mem = Mem::new(&[("f", data.clone())]);
+        mem.bad_in = vec![500];
+        let log = mem.log.clone();
+        let mut tree = Prefetch::with_window(Box::new(mem), 300).unwrap();
+        for at in [0, 100, 200, 300] {
+            assert_eq!(
+                tree.read_range("f", at, 100).unwrap(),
+                data[at as usize..][..100]
+            );
+        }
+        // The window guessed at 400 covers byte 500 and failed; 400..500 does not.
+        assert_eq!(tree.read_range("f", 400, 100).unwrap(), data[400..500]);
+        let err = tree.read_range("f", 500, 100).unwrap_err().to_string();
+        assert_eq!(err, "bad byte at 500");
+        assert_eq!(
+            settled(&log, 6)[2..],
+            [
+                at("f", 400, 300),
+                at("f", 400, 100),
+                at("f", 500, 300),
+                at("f", 500, 100)
             ]
         );
     }

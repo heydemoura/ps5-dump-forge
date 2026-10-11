@@ -1,6 +1,7 @@
 /* Payload entry, linked in front of Rust's main with -Wl,--wrap=main. elfldr starts a payload
  * with no arguments and no terminal, so with none it runs "serve" (the web UI), its stdout and
- * stderr in /data/ps5-dump-forge/serve-<pid>.txt. The web launcher starts the saved copy with
+ * stderr in /data/dumpforge/serve-<pid>.txt (earlier versions' /data/ps5-dump-forge is renamed
+ * to it first). The web launcher starts the saved copy with
  * elfldr's args=serve: "serve" as the first argument is that same launch (never the args file).
  * A developer hook: an args file there (one argument per line, the command first: "convert",
  * "/mnt/usb0/GAME", "--to", "ffpkg") runs once instead of a no-argument serve, renamed to
@@ -18,8 +19,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#ifndef FORGE_DIR // ps5/test-entry.sh points it at a temporary folder
-#define FORGE_DIR "/data/ps5-dump-forge"
+#ifndef FORGE_DIR // ps5/test-entry.sh points both at temporary folders
+#define FORGE_DIR "/data/dumpforge"
+#endif
+#ifndef OLD_FORGE_DIR
+#define OLD_FORGE_DIR "/data/ps5-dump-forge"
+#endif
+#ifndef FORGE_LINK // OLD_FORGE_DIR's compatibility link: FORGE_DIR, relative to /data
+#define FORGE_LINK "dumpforge"
 #endif
 
 extern int __real_main(int argc, char **argv);
@@ -86,7 +93,7 @@ static int redirect(const char *name) {
     snprintf(log, sizeof(log), FORGE_DIR "/%s-%ld.txt", name, (long)getpid());
     int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0666);
     if (fd < 0 || dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
-        ps5_notify("PS5 Dump Forge: cannot write its log in " FORGE_DIR);
+        ps5_notify("Dump Forge: cannot write its log in " FORGE_DIR);
         return -1;
     }
     if (fd > STDERR_FILENO) close(fd);
@@ -100,23 +107,39 @@ static int serve(int argc, char **argv) {
     if (redirect("serve") != 0) return 1;
     int result = __real_main(argc, argv);
     fflush(NULL);
-    if (result != 0) ps5_notify("PS5 Dump Forge failed; see the log in " FORGE_DIR);
+    if (result != 0) ps5_notify("Dump Forge failed; see the log in " FORGE_DIR);
     return result;
+}
+
+// Earlier versions' folder (the saved copy, the tile's owner file, logs, args), renamed once
+// to FORGE_DIR when that doesn't exist yet. A failed rename is reported and the launch goes on
+// with a new folder (the server takes the tile's owner file over from the old one).
+static void migrate(void) {
+    struct stat st;
+    if (lstat(FORGE_DIR, &st) == 0 || errno != ENOENT) return;
+    if (lstat(OLD_FORGE_DIR, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+    if (rename(OLD_FORGE_DIR, FORGE_DIR) != 0)
+        ps5_notify("Dump Forge: cannot move " OLD_FORGE_DIR " to " FORGE_DIR);
 }
 
 int __wrap_main(int argc, char **argv) {
     int serving = argc > 1 && strcmp(argv[1], "serve") == 0;
     if (argc > 1 && !serving) return __real_main(argc, argv);
+    migrate();
     if (mkdir(FORGE_DIR, 0777) != 0 && errno != EEXIST) {
-        ps5_notify("PS5 Dump Forge: cannot create " FORGE_DIR);
+        ps5_notify("Dump Forge: cannot create " FORGE_DIR);
         return 1;
     }
+    // A page an earlier version left in the browser's AppCache starts the saved copy from the
+    // old path: a link there to the new folder, only where nothing is (a real old folder stays).
+    // Best effort, silent.
+    (void)symlink(FORGE_LINK, OLD_FORGE_DIR);
     if (serving) return serve(argc, argv);
     // One-shot: renamed (replacing an older args.done) before anything runs, so an autoloaded
     // boot never replays it, even one that fails to parse.
     if (rename(FORGE_DIR "/args", FORGE_DIR "/args.done") != 0) {
         if (errno != ENOENT) {
-            ps5_notify("PS5 Dump Forge: cannot rename " FORGE_DIR "/args to args.done");
+            ps5_notify("Dump Forge: cannot rename " FORGE_DIR "/args to args.done");
             return 1;
         }
         // No args file: the normal launch.
@@ -129,14 +152,14 @@ int __wrap_main(int argc, char **argv) {
     static char *args[64];
     FILE *file = fopen(FORGE_DIR "/args.done", "r");
     if (!file) {
-        ps5_notify("PS5 Dump Forge: cannot read " FORGE_DIR "/args.done");
+        ps5_notify("Dump Forge: cannot read " FORGE_DIR "/args.done");
         return 2;
     }
     size_t len = fread(text, 1, sizeof(text), file);
     int failed = ferror(file);
     fclose(file);
     if (failed || len == sizeof(text) || memchr(text, 0, len)) {
-        ps5_notify("PS5 Dump Forge: " FORGE_DIR "/args.done is unreadable, over 16 KiB or holds a NUL");
+        ps5_notify("Dump Forge: " FORGE_DIR "/args.done is unreadable, over 16 KiB or holds a NUL");
         return 2;
     }
     text[len] = 0;
@@ -152,7 +175,7 @@ int __wrap_main(int argc, char **argv) {
         if (l && line[l - 1] == '\r') line[--l] = 0;
         if (l) {
             if (n == 63) {
-                ps5_notify("PS5 Dump Forge: " FORGE_DIR "/args.done has over 62 arguments");
+                ps5_notify("Dump Forge: " FORGE_DIR "/args.done has over 62 arguments");
                 return 2;
             }
             args[n++] = line;
@@ -162,9 +185,9 @@ int __wrap_main(int argc, char **argv) {
     args[n] = NULL;
 
     if (redirect("log") != 0) return 1;
-    ps5_notify("PS5 Dump Forge started; log in " FORGE_DIR);
+    ps5_notify("Dump Forge started; log in " FORGE_DIR);
     int result = __real_main(n, args);
     fflush(NULL);
-    ps5_notify(result == 0 ? "PS5 Dump Forge: done" : "PS5 Dump Forge failed; see the log in " FORGE_DIR);
+    ps5_notify(result == 0 ? "Dump Forge: done" : "Dump Forge failed; see the log in " FORGE_DIR);
     return result;
 }

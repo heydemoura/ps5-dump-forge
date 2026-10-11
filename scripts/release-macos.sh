@@ -2,7 +2,7 @@
 # Build and package the macOS release:
 #
 #   dist/ps5-dump-forge-<ver>-macos-universal.zip  one folder: PS5 Dump Forge.app, ps5-dump-forge (CLI),
-#                                                   README.md, LICENSE, THIRD-PARTY-NOTICES.md; the app and
+#                                                   README.md, docs/LZ4.md, LICENSE, THIRD-PARTY-NOTICES.md; the app and
 #                                                   the CLI are arm64+x86_64 universal binaries (lipo-joined
 #                                                   for the CLI, `tauri build --target
 #                                                   universal-apple-darwin` for the app)
@@ -123,7 +123,7 @@ check() {
     done
   done
   run_cli_slices "$cli_bin"
-  for f in README.md LICENSE THIRD-PARTY-NOTICES.md; do
+  for f in README.md docs/LZ4.md LICENSE THIRD-PARTY-NOTICES.md; do
     [[ -s "$dir/$f" ]] || { echo "release-macos.sh: $f missing" >&2; exit 1; }
   done
 }
@@ -142,7 +142,7 @@ mkdir "$pkg"
 ditto "$app" "$pkg/PS5 Dump Forge.app"
 cp "$cli" "$pkg/ps5-dump-forge"
 codesign --force -s - "$pkg/ps5-dump-forge"
-cp README.md LICENSE THIRD-PARTY-NOTICES.md "$pkg/"
+cp README.md LICENSE THIRD-PARTY-NOTICES.md "$pkg/" && mkdir -p "$pkg/docs" && cp docs/LZ4.md "$pkg/docs/"
 check "$pkg"
 
 # ditto keeps the bundle's symlinks, permissions and signature intact (zip(1) can break them).

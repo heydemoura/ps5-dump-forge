@@ -13,14 +13,15 @@ export default defineConfig(({ mode }) => {
   const http = mode === "http";
   return {
     // The page title carries the version: the PS5 browser shows it in its title bar (the
-    // desktop window sets the same title from Cargo's version in main.rs).
+    // desktop window sets the same title from Cargo's version in main.rs). The http build is
+    // the PS5 payload's UI, named "Dump Forge" (its tile's name); the desktop app keeps "PS5".
     // scripts/check-versions.sh keeps package.json at Cargo.toml's version.
     plugins: [
       react(),
       {
         name: "title-version",
         transformIndexHtml: (html: string) =>
-          html.replace("<title>PS5 Dump Forge</title>", `<title>PS5 Dump Forge v${version}</title>`),
+          html.replace("<title>PS5 Dump Forge</title>", `<title>${http ? "" : "PS5 "}Dump Forge v${version}</title>`),
       },
       ...(http
         ? [

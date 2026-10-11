@@ -1,4 +1,4 @@
-//! The PS5 payload saves a copy of its own ELF as `/data/ps5-dump-forge/ps5-dump-forge.elf`,
+//! The PS5 payload saves a copy of its own ELF as `/data/dumpforge/ps5-dump-forge.elf`,
 //! so the home-screen tile's page can ask elfldr to start it after a console restart. A running
 //! payload can't read its own file, so `ps5/build.sh` builds twice: stage 1 (no copy inside),
 //! then stage 2 with stage 1 embedded by `build.rs` as a blob:
@@ -187,7 +187,7 @@ mod payload {
     // `static SELF_ELF: Option<&[u8]>`: stage 2's blob, `None` in stage 1 (build.rs).
     include!(concat!(env!("OUT_DIR"), "/self_elf.rs"));
 
-    const TARGET: &str = "/data/ps5-dump-forge/ps5-dump-forge.elf";
+    const TARGET: &str = "/data/dumpforge/ps5-dump-forge.elf";
     static STATUS: Mutex<String> = Mutex::new(String::new());
     static SAVING: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 

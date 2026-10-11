@@ -217,7 +217,8 @@ impl Dest {
         at::reopen(&self.root, name)
     }
 
-    /// fsyncs every directory this job created, and the root.
+    /// fsyncs every directory this job created, and the root. The root's sync comes last:
+    /// on macOS its F_FULLFSYNC is the barrier that makes every [`sync_file`] durable.
     pub(crate) fn sync(&mut self, ctx: &Ctx) -> anyhow::Result<()> {
         let dirs: Vec<String> = self.created.iter().cloned().collect();
         for rel in dirs {
@@ -226,6 +227,35 @@ impl Dest {
         }
         at::sync(&self.root, ctx.cancel).context("syncing the .part folder")
     }
+}
+
+/// Syncs a file written into the `.part` folder; it is durable once [`Dest::sync`] has run.
+///
+/// macOS: plain fsync(2), which per Apple's man page moves the file's data and metadata to
+/// the drive but may leave them in the drive's volatile cache. F_FULLFSYNC (what `sync_all`
+/// does there) is fsync(2) and then a flush of that whole cache (fcntl(2)): ~5 ms each on an
+/// APFS SSD, 26 s of a 41 s extraction of 5,549 files. `Dest::sync` ends with one
+/// F_FULLFSYNC on the root, after every file here, so one flush gives the same guarantee
+/// before the rename. Elsewhere `sync_all`: Linux fsync and Windows FlushFileBuffers are
+/// already full.
+#[cfg(not(target_os = "freebsd"))]
+pub(crate) fn sync_file(file: &File) -> std::io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use std::os::fd::AsRawFd;
+        loop {
+            // SAFETY: a valid descriptor.
+            if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+                return Ok(());
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    file.sync_all()
 }
 
 /// Every step relative to a directory handle opened with `O_NOFOLLOW`, so a directory
@@ -419,8 +449,7 @@ pub(crate) fn write(tree: &mut dyn SourceTree, part: &Part, ctx: &Ctx) -> anyhow
             ctx.progress("write", done, total);
         }
         #[cfg(not(target_os = "freebsd"))]
-        out.sync_all()
-            .with_context(|| format!("syncing {}", file.path))?;
+        sync_file(&out).with_context(|| format!("syncing {}", file.path))?;
         #[cfg(target_os = "freebsd")]
         {
             out.finish()

@@ -42,7 +42,7 @@ fn main() {
         let page = out.join("placeholder.html");
         std::fs::write(
             &page,
-            "<!doctype html><meta charset=\"utf-8\"><title>PS5 Dump Forge</title>\
+            "<!doctype html><meta charset=\"utf-8\"><title>Dump Forge</title>\
              <p>web UI not built: run <code>npm run build:http</code> in app/</p>\n",
         )
         .unwrap();

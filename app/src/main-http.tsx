@@ -36,7 +36,7 @@ function Launcher({ failed }: { failed: Failed | null }) {
               <Icon name="alert" />
             </span>
             <h2 id="launch-title">
-              {failed.failure === "timeout" ? "PS5 Dump Forge didn't answer" : "Can't start PS5 Dump Forge"}
+              {failed.failure === "timeout" ? "Dump Forge didn't answer" : "Can't start Dump Forge"}
             </h2>
           </div>
           <p className="muted" id="launch-text">
@@ -52,7 +52,7 @@ function Launcher({ failed }: { failed: Failed | null }) {
         <div className="modal card" role="status">
           <div className="modal-head">
             <span className="spinner" aria-hidden="true" />
-            <h2>Starting PS5 Dump Forge…</h2>
+            <h2>Starting Dump Forge…</h2>
           </div>
         </div>
       )}

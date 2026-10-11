@@ -3,7 +3,7 @@
 #
 #   dist/ps5-dump-forge-<ver>-linux-<arch>.tar.gz  one folder: PS5 Dump Forge.AppDir (Tauri's AppImage,
 #                                                extracted whole), forge.sh (the launcher), ps5-dump-forge
-#                                                (CLI), README.md, LICENSE, THIRD-PARTY-NOTICES.md
+#                                                (CLI), README.md, docs/LZ4.md, LICENSE, THIRD-PARTY-NOTICES.md
 #
 # An extracted AppDir instead of the AppImage: it needs no FUSE, and the app keeps its WebView data
 # in data/ next to forge.sh (core's app_dir: the folder holding the *.AppDir). The AppDir is kept
@@ -111,7 +111,7 @@ check() {
     sed -n '/^FORGE_HOST_VARS="/,/"$/p' "$dir/forge.sh" | grep -qw -- "$v" ||
       { echo "release-linux.sh: AppRun sets $v, but forge.sh does not keep it for host tools" >&2; exit 1; }
   done
-  for f in README.md LICENSE THIRD-PARTY-NOTICES.md; do
+  for f in README.md docs/LZ4.md LICENSE THIRD-PARTY-NOTICES.md; do
     [[ -s "$dir/$f" ]] || { echo "release-linux.sh: $f missing" >&2; exit 1; }
   done
   "$dir/ps5-dump-forge" inspect "$fixture" > /dev/null
@@ -144,7 +144,7 @@ mkdir "$pkg"
 mv "$stage/squashfs-root" "$pkg/$appdir_name"
 find "$pkg/$appdir_name" -type d -exec chmod 755 {} +
 cp "$cli" "$pkg/ps5-dump-forge"
-cp README.md LICENSE THIRD-PARTY-NOTICES.md "$pkg/"
+cp README.md LICENSE THIRD-PARTY-NOTICES.md "$pkg/" && mkdir -p "$pkg/docs" && cp docs/LZ4.md "$pkg/docs/"
 cat > "$pkg/forge.sh" <<'EOF'
 #!/bin/sh
 # Starts PS5 Dump Forge from the AppDir next to this script (its WebView data goes to data/ here).

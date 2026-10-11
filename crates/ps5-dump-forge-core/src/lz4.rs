@@ -1011,9 +1011,10 @@ impl PackOutput for PartOutput<'_> {
         Ok(self.dest.reopen_root(name)?)
     }
 
-    /// A `File` buffers nothing: syncing is all there is to finish.
+    /// A `File` buffers nothing: syncing is all there is to finish (durable with the caller's
+    /// `Dest::sync`, as for every extracted file).
     fn finish(&mut self, _: &str, w: File) -> ps5upload_fpkg::Result<()> {
-        Ok(w.sync_all()?)
+        Ok(crate::extract::sync_file(&w)?)
     }
 }
 
