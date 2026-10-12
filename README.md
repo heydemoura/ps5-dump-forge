@@ -1,7 +1,8 @@
 <p align="center"><img src="app/src-tauri/icons/128x128@2x.png" width="128" alt="PS5 Dump Forge"></p>
 
 Runs on everything (including your PS5) and converts everything: **folder**, **exfat**, **ffpfs**, **ffpfsc**, **pkg** and can utilize **LZ4 compression**.
-Supoort more than a 10 different languages.
+The interface is in 11 languages: English, Russian, Simplified Chinese, German, Spanish, French, Japanese,
+Brazilian Portuguese, Italian, Korean and Arabic.
 
 | Platform | Runs on | You get |
 |---|---|---|
@@ -26,17 +27,15 @@ Supoort more than a 10 different languages.
 
 Images are mounted by [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus); the debug FPKG is
 installed. Every format can be created and read back (an image or `.fpkg` can be extracted to a folder).
-**PS5** is the conversion speed on the console itself (internal SSD, from a Hades II `.pkg`, full
-verification; `.ffpfsc` at level 1).
 
-| Format | Console speed | PS5 | Size on disk | Notes |
-|---|---|---|---|---|
-| `.fpkg` (debug FPKG, saved as `.pkg`) | Native, full speed | 80 MB/s | 30–60% less, depending on the game | Installs on firmware 11.60 or lower with kstuff + fpkg-enable + ppr-patch. Kraken level (`--kraken`): **Fast** (default), **Balanced** / **Smallest** ≈ 2.6% smaller at ~6× / ~9× the compression time. Reads packages from this builder and compatible debug builders. |
-| `.ffpkg` (UFS2) | Full image speed | 230 MB/s | Equal to the game size | The default, ShadowMountPlus's recommendation. |
-| `.exfat` (512 B sectors, 64 KiB clusters) | Full image speed | 230 MB/s | Equal to the game size | For games that only run like external-drive content. |
-| `.ffpfs` (PFS, uncompressed) | Full image speed | 240 MB/s | Equal to the game size | Experimental in ShadowMountPlus. ASCII file names only. |
-| `.ffpfsc` (compressed PFS container) | may stutter | 120 MB/s | Depends on the compression level, usually 30–60% less | Experimental, always mounted read-only. exFAT (default), UFS2 or PFS inside. zlib level 0–9 (`--level`), default 6. |
-| Folder | Full drive speed | 240 MB/s | Equal to the game size | Run as it is by ShadowMountPlus. |
+| Format | Console speed | Size on disk | Notes |
+|---|---|---|---|
+| `.fpkg` (debug FPKG, saved as `.pkg`) | Native, full speed | 30–60% less, depending on the game | Installs on firmware 11.60 or lower with kstuff + fpkg-enable + ppr-patch. Kraken level (`--kraken`): **Fast** (default), **Balanced** / **Smallest** ≈ 2.6% smaller at ~6× / ~9× the compression time. Reads packages from this builder and compatible debug builders. |
+| `.ffpkg` (UFS2) | Full image speed | Equal to the game size | The default, ShadowMountPlus's recommendation. |
+| `.exfat` (512 B sectors, 64 KiB clusters) | Full image speed | Equal to the game size | For games that only run like external-drive content. |
+| `.ffpfs` (PFS, uncompressed) | Full image speed | Equal to the game size | Experimental in ShadowMountPlus. ASCII file names only. |
+| `.ffpfsc` (compressed PFS container) | may stutter | Depends on the compression level, usually 30–60% less | Experimental, always mounted read-only. exFAT (default), UFS2 or PFS inside. zlib level 0–9 (`--level`), default 6. |
+| Folder | Full drive speed | Equal to the game size | Run as it is by ShadowMountPlus. |
 
 ## LZ4 asset packs
 
@@ -56,19 +55,6 @@ Without traces or a profile, Pack falls back to a built-in guess of which files 
 ampr_emu 0.4.2.1 is an upstream test build: some games crash when saving. Details, CLI options and
 caveats: [docs/LZ4.md](docs/LZ4.md).
 
-## Benchmarks on PC
-
-| From the `.pkg` to | Time | Speed | Output |
-|---|---|---|---|
-| Folder | 11.1 s | 831 MB/s | 9.23 GB |
-| `.exfat` | 9.4 s | 978 MB/s | 9.60 GB |
-| `.ffpkg` | 12.1 s | 761 MB/s | 9.61 GB |
-| `.ffpfs` | 9.4 s | 981 MB/s | 9.50 GB |
-| `.ffpfsc` (exFAT inside, level 6) | 19.0 s | 486 MB/s | 8.58 GB |
-| `.fpkg` (Kraken Fast) | 40.5 s | 228 MB/s | 8.53 GB |
-
-MacBook Pro M3 (Apple M3 Max).
-
 ## Download and run
 
 Every release archive on the Releases page holds the app, the `ps5-dump-forge` command-line tool,
@@ -80,7 +66,7 @@ WebView data, so keep it in any folder you can write to.
 - **Load it** with any ELF loader: send `ps5-dump-forge-<version>-ps5.elf` to elfldr's port 9021
   (`nc -w 3 <ps5-ip> 9021 < ps5-dump-forge-<version>-ps5.elf`), or list it in an autoloader's
   `autoload.txt`. A notification says Dump Forge is launched; open it from its icon.
-- **Open the UI** from the Dump Forge tile, or in any browser on the same network:
+- **Open the UI** from the Dump Forge icon, or in any browser on the same network:
   `http://<ps5-ip>:8095`.
 
 ### macOS (11 or later)

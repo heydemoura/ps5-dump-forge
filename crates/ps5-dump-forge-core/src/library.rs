@@ -734,6 +734,7 @@ mod tests {
         scan(&roots, limits, &|_| Ok(()))
     }
 
+    #[cfg(unix)]
     fn paths(scan: &LibraryScan) -> Vec<&Path> {
         scan.entries.iter().map(|e| e.path.as_path()).collect()
     }
@@ -822,6 +823,7 @@ mod tests {
         assert!(scan.warnings[0].contains("bad.ffpkg"));
     }
 
+    #[cfg(unix)]
     const OK: &str = r#"{"titleId":"PPSA00001"}"#;
 
     #[cfg(unix)]

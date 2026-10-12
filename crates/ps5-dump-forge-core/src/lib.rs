@@ -560,7 +560,8 @@ pub(crate) fn test_dir(name: &str) -> PathBuf {
 
 /// Whether a test's hard link or symlink `made` it: false only where the volume cannot make
 /// one at all (EOPNOTSUPP/ENOTSUP, FreeBSD's msdosfs); any other error fails the test.
-#[cfg(test)]
+/// Only the macOS/FreeBSD rename tests in `finalize.rs` use it.
+#[cfg(all(test, any(target_os = "macos", target_os = "freebsd")))]
 pub(crate) fn supported(made: std::io::Result<()>, what: &str) -> bool {
     match made {
         Ok(()) => true,
