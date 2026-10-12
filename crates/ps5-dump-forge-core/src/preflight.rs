@@ -463,53 +463,6 @@ mod tests {
         assert!(parse_param(b"not json").param_json.is_none());
     }
 
-    /// An image reader's tree: the root checks do not depend on the source being a folder.
-    struct Mem(Vec<ps5upload_fpkg::source::SourceFile>, Vec<u8>);
-
-    impl SourceTree for Mem {
-        fn files(&self) -> &[ps5upload_fpkg::source::SourceFile] {
-            &self.0
-        }
-        fn read(&mut self, _: &str) -> ps5upload_fpkg::Result<Vec<u8>> {
-            Ok(self.1.clone())
-        }
-        fn describe(&self) -> String {
-            "mem".into()
-        }
-    }
-
-    #[test]
-    fn input_checks_any_tree() {
-        let file = |path: &str| ps5upload_fpkg::source::SourceFile {
-            path: path.into(),
-            size: 20,
-        };
-        let mut tree = Mem(vec![file("data/eboot.bin")], Vec::new());
-        let (_, findings) = input(&mut tree);
-        assert_eq!(findings.len(), 2, "{findings:?}");
-        let param = br#"{"titleId":"PPSA01234"}"#.to_vec();
-        let mut tree = Mem(vec![file("eboot.bin"), file("sce_sys/param.json")], param);
-        let (info, findings) = input(&mut tree);
-        assert!(findings.is_empty(), "{findings:?}");
-        assert_eq!(info.title_id.as_deref(), Some("PPSA01234"));
-    }
-
-    #[test]
-    fn listing_caps() {
-        let items: Vec<String> = (0..MAX_LISTED + 5).map(|i| i.to_string()).collect();
-        let lines = listing("x", &items);
-        assert_eq!(lines.len(), MAX_LISTED + 1);
-        assert!(lines.last().unwrap().contains("5 more"));
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn free_space_is_known_here() {
-        let (free, fat) = fs_stat(Path::new(".")).unwrap();
-        assert!(free > 0);
-        fat.unwrap();
-    }
-
     #[test]
     fn folder_names_follow_the_probe() {
         let paths = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };

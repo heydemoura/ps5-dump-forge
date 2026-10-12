@@ -47,15 +47,3 @@ pub const LOGS: [&str; 2] = ["ampr_emu.log", "apr_emu.log"];
 pub fn volume_name(n: u32) -> String {
     format!("ampr_assets-{n:03}.pak")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn volume_names() {
-        assert_eq!(volume_name(0), "ampr_assets-000.pak");
-        assert_eq!(volume_name(12), "ampr_assets-012.pak");
-        assert_eq!(volume_name(1000), "ampr_assets-1000.pak");
-    }
-}

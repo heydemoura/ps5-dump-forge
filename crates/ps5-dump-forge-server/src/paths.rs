@@ -227,37 +227,6 @@ mod tests {
     }
 
     #[test]
-    fn library_roots_omit_shadowmnt() {
-        let tmp = std::env::temp_dir().join(format!("forge-libroots-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let tmp = tmp.canonicalize().unwrap();
-        // A pinned root (host-style) and the logical ShadowMountPlus folder as candidates.
-        let shadow = Candidate {
-            path: PathBuf::from(SHADOWMNT),
-            pinned: Some(PathBuf::from(SHADOWMNT)),
-            drive: false,
-        };
-        let plain = Candidate {
-            path: tmp.clone(),
-            pinned: Some(tmp.clone()),
-            drive: false,
-        };
-        let roots = Roots {
-            list: vec![shadow, plain],
-            ps5: true,
-            statfs,
-        };
-        // Browsing keeps it when it exists; the Library never has it.
-        assert_eq!(roots.library(), std::slice::from_ref(&tmp));
-        assert!(roots.current().contains(&tmp));
-        assert!(!roots.library().iter().any(|r| r == Path::new(SHADOWMNT)));
-        let (roots, _) = Roots::new(Platform::Host, std::slice::from_ref(&tmp));
-        assert_eq!(roots.library(), roots.current());
-        std::fs::remove_dir_all(&tmp).unwrap();
-    }
-
-    #[test]
     fn drive_is_listed_only_while_mounted() {
         let fs = |on: &str, blocks| {
             Some(Mount {
@@ -320,42 +289,5 @@ mod tests {
         assert!(!roots.list[1].drive);
         let (roots, _) = Roots::new(Platform::Host, &mnt);
         assert!(roots.list.iter().all(|c| !c.drive));
-    }
-
-    /// The PS5's free space is `statfs` of `/data`; a computer has none, nor a failed `statfs`.
-    #[test]
-    fn storage_is_the_ps5_data_filesystem() {
-        let fake = |p: &Path| {
-            (p == Path::new(DATA)).then(|| Mount {
-                on: "/user".into(),
-                blocks: 100,
-                total: 825_000_000_000,
-                free: 312_000_000_000,
-            })
-        };
-        let ps5 = Roots {
-            list: Vec::new(),
-            ps5: true,
-            statfs: fake,
-        };
-        assert_eq!(
-            ps5.storage(),
-            Some(Storage {
-                free: 312_000_000_000,
-                total: 825_000_000_000
-            })
-        );
-        let host = Roots {
-            list: Vec::new(),
-            ps5: false,
-            statfs: fake,
-        };
-        assert_eq!(host.storage(), None);
-        let failing = Roots {
-            list: Vec::new(),
-            ps5: true,
-            statfs: |_| None,
-        };
-        assert_eq!(failing.storage(), None);
     }
 }

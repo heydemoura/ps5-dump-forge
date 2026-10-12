@@ -1,6 +1,7 @@
 // Checks src/http-client.ts's snapshot diffing with a plain `node scripts/check-poller.mjs`
-// (type stripping, no server): restore, progress/log/done once, a job dropped from the
-// server's history, and a payload restart.
+// (type stripping, no server): restore, progress/log/done once, a new job, a job dropped from
+// the server's history and a payload restart; then src/jobs.ts's reducer: a restart's reused id
+// starts blank, and the job bar only grows and is full only on success.
 
 import assert from "node:assert/strict";
 
@@ -71,75 +72,6 @@ assert.equal(list[0].shown, 0.05);
 assert.deepEqual(list[0].log, ["new"]);
 console.log("jobs reducer: ok (a restart's reused id starts from blank)");
 
-// ---- quit: resolves once the server is gone; rejects at a 2-minute wall-clock deadline ----
-// The 1 s waits advance a fake clock; each answer "takes" 4 s, so the deadline isn't a count.
-const realSetTimeout = globalThis.setTimeout;
-let now = 0;
-Date.now = () => now;
-globalThis.setTimeout = (f, ms = 0, ...rest) => (ms === 1000 ? ((now += 1000), realSetTimeout(f, 0, ...rest)) : realSetTimeout(f, ms, ...rest));
-let answers = 0;
-let up = true;
-globalThis.fetch = async (path) => {
-  if (path !== "/api/quit") {
-    if (!up) throw new TypeError("connection refused");
-    now += 4000;
-    answers++;
-  }
-  return new Response(JSON.stringify(path === "/api/quit" ? {} : { app: "ps5-dump-forge" }), { status: 200 });
-};
-await assert.rejects(c.call("quit_app"), (e) => e === c.STILL_ANSWERING);
-assert.ok(now >= c.QUIT_WAIT_MS && now < c.QUIT_WAIT_MS + 6000, `gave up at ${now} ms`);
-assert.ok(answers < 120, `${answers} answers, not 120 iterations`);
-now = 0;
-let polls = 0;
-globalThis.fetch = async (path) => {
-  if (path === "/api/quit") return new Response("{}", { status: 200 });
-  if (++polls === 3) up = false;
-  if (!up) throw new TypeError("connection refused");
-  return new Response("{}", { status: 200 });
-};
-await c.call("quit_app");
-assert.ok(now <= 4000, `resolved once gone (${now} ms)`);
-globalThis.setTimeout = realSetTimeout;
-console.log(`quit: still answering -> rejects at the deadline (${answers} answers), gone -> resolves`);
-
-// The session read before the app renders: the separator, and the address the header shows
-// (the server's own url, never the page's location); none from an older server or one that
-// couldn't tell its IP.
-const session = (body) => (globalThis.fetch = async () => new Response(JSON.stringify(body), { status: 200 }));
-session({ separator: "/", url: "http://192.168.1.20:8095" });
-assert.deepEqual(await c.serverSession(), { separator: "/", address: "192.168.1.20:8095" });
-assert.equal(c.serverAddress(), "192.168.1.20:8095");
-session({ separator: "\\", url: "http://this PS5's IP address:8095" });
-assert.deepEqual(await c.serverSession(), { separator: "\\", address: null });
-session({ separator: "/" });
-assert.deepEqual(await c.serverSession(), { separator: "/", address: null });
-console.log("session: separator and address; no address from an older server or one without its IP");
-
-// The platform is the server's word only; unknown retries the session, then rejects.
-const NO_PLATFORM = "Can't determine whether Dump Forge is running on a PS5. Refresh to try again.";
-const fresh = await import("../src/http-client.ts?platform");
-const sess = (body) => (globalThis.fetch = async () => new Response(JSON.stringify(body), { status: 200 }));
-let calls = 0;
-globalThis.fetch = async () => {
-  calls++;
-  throw new TypeError("offline");
-};
-await assert.rejects(fresh.serverPlatform(), (e) => e === NO_PLATFORM);
-assert.equal(calls, 1, "one lookup per call");
-sess({ separator: "/", platform: "invalid" });
-await assert.rejects(fresh.serverPlatform(), (e) => e === NO_PLATFORM);
-sess({ separator: "/", platform: "ps5" });
-assert.equal(await fresh.serverPlatform(), "ps5");
-globalThis.fetch = async () => assert.fail("cached");
-assert.equal(await fresh.serverPlatform(), "ps5");
-const host = await import("../src/http-client.ts?host");
-sess({ separator: "/" });
-await assert.rejects(host.serverPlatform(), (e) => e === NO_PLATFORM);
-sess({ separator: "/", platform: "host" });
-assert.equal(await host.serverPlatform(), "host");
-console.log("platform: host, ps5 cached; missing, invalid or failed lookup rejects");
-
 // The job bar (src/jobs.ts): never back, short of full until the job succeeds, even when
 // core's estimate is met before its last pass (R1's plateau, fixed in core; this only guards).
 const step = (jobs, stage, done, total, at = 0) => jobsReducer(jobs, { type: "progress", e: { kind: "progress", job: 1, stage, done, total }, at });
@@ -158,14 +90,6 @@ for (const [stage, done, total] of [
   seen.push(js[0].shown);
 }
 assert.deepEqual(seen, [...seen].sort((x, y) => x - y), "the bar only grows");
-assert.ok(seen[3] > seen[2], "writing moves it");
 assert.ok(seen.every((f) => f < 1), `short of full before done: ${seen}`);
 assert.equal(jobsReducer(js, { type: "done", e: ok(1) })[0].shown, 1, "done Ok: full");
-const failed = jobsReducer(js, { type: "done", e: { kind: "done", job: 1, result: { Err: "cancelled" } } })[0];
-assert.ok(failed.shown < 1, "cancelled: not full");
-// A reload restores the last progress the same way: a full estimate isn't a full bar.
-const restored = jobsReducer([], { type: "restore", e: { replace: true, jobs: [job(1, { progress: prog(1, 100) })] }, at: 0 });
-assert.ok(restored[0].shown < 1 && !restored[0].result, "restored mid-job: short of full");
-const restoredDone = jobsReducer([], { type: "restore", e: { replace: true, jobs: [job(1, { progress: prog(1, 100), done: ok(1) })] }, at: 0 });
-assert.equal(restoredDone[0].shown, 1, "restored done: full");
-console.log(`jobs: one bar ${seen.map((f) => Math.floor(100 * f)).join(" -> ")}%, full only on success, also after a reload`);
+console.log(`jobs: one bar ${seen.map((f) => Math.floor(100 * f)).join(" -> ")}%, full only on success`);

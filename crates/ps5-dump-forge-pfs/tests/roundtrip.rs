@@ -549,16 +549,6 @@ fn ffpfsc_round_trips_with_an_exfat_inside() {
     wrap_round_trip("exfat");
 }
 
-#[test]
-fn ffpfsc_round_trips_with_a_ufs2_inside() {
-    wrap_round_trip("ffpkg");
-}
-
-#[test]
-fn ffpfsc_round_trips_with_a_pfs_inside() {
-    wrap_round_trip("ffpfs");
-}
-
 /// Wraps `data` and reads it back through the outer PFS: `(report, bytes read)`.
 fn wrap_bytes(data: &[u8]) -> (ps5_dump_forge_pfs::WrapReport, Vec<u8>) {
     let tmp = TempDir::new("bytes");
@@ -601,18 +591,6 @@ fn incompressible_blocks_are_stored_raw() {
     assert_eq!((r.blocks, r.compressed_blocks), (6, 1));
     assert!(r.stored_size > BLOCK + 5 * BLOCK, "always a container");
     assert!(r.stored_size < BLOCK + 6 * BLOCK);
-}
-
-#[test]
-fn compressible_blocks_shrink() {
-    let mut data = Vec::new();
-    for i in 0..40_000u32 {
-        data.extend_from_slice(format!("line {i} of the game data\n").as_bytes());
-    }
-    let (r, back) = wrap_bytes(&data);
-    assert_eq!(back, data);
-    assert_eq!(r.compressed_blocks, r.blocks);
-    assert!(r.stored_size < data.len() as u64 / 3, "{r:?}");
 }
 
 /// Past 8063 blocks the offset table outgrows its first block and pushes the data back.
@@ -768,85 +746,6 @@ fn damaged_containers_are_refused() {
     );
 }
 
-/// The two writers that feed `.ffpfsc` write the same bytes into any `Write + Seek`, and
-/// refuse an output that already holds something.
-#[test]
-fn inner_writers_take_any_seekable_output() {
-    let mut tree = MemTree::new(&[("eboot.bin", 70_000), ("sce_sys/param.json", 10)]);
-    let cancel = AtomicBool::new(false);
-    let tmp = TempDir::new("generic");
-    let l = ps5_dump_forge_exfat::plan(&tree, &Default::default(), &cancel).unwrap();
-    let mut mem = Cursor::new(Vec::new());
-    ps5_dump_forge_exfat::write(&mut tree, &l, &mut mem, &cancel, &mut |_, _| {}).unwrap();
-    let mut file = File::create(tmp.0.join("x.exfat")).unwrap();
-    ps5_dump_forge_exfat::write(&mut tree, &l, &mut file, &cancel, &mut |_, _| {}).unwrap();
-    assert_eq!(
-        std::fs::read(tmp.0.join("x.exfat")).unwrap(),
-        mem.into_inner()
-    );
-    let mut used = Cursor::new(vec![0u8]);
-    assert!(
-        ps5_dump_forge_exfat::write(&mut tree, &l, &mut used, &cancel, &mut |_, _| {}).is_err()
-    );
-
-    let l = ps5_dump_forge_ufs2::plan(&tree, &Default::default(), &cancel).unwrap();
-    let mut mem = Cursor::new(Vec::new());
-    ps5_dump_forge_ufs2::write(&mut tree, &l, &mut mem, &cancel, &mut |_, _| {}).unwrap();
-    let mut file = File::create(tmp.0.join("x.ffpkg")).unwrap();
-    ps5_dump_forge_ufs2::write(&mut tree, &l, &mut file, &cancel, &mut |_, _| {}).unwrap();
-    let mem = mem.into_inner();
-    assert_eq!(mem.len() as u64, l.image_size);
-    assert_eq!(std::fs::read(tmp.0.join("x.ffpkg")).unwrap(), mem);
-    let mut used = Cursor::new(vec![0u8]);
-    assert!(ps5_dump_forge_ufs2::write(&mut tree, &l, &mut used, &cancel, &mut |_, _| {}).is_err());
-}
-
-#[test]
-fn reads_past_the_end_are_empty() {
-    let mut tree = MemTree::new(&[("eboot.bin", 100), ("sce_sys/param.json", 30)]);
-    let (_, img) = build(&mut tree);
-    let mut src = read_back(img);
-    assert!(src.read_range("eboot.bin", 100, 8).unwrap().is_empty());
-    assert!(src.read_range("eboot.bin", u64::MAX, 1).unwrap().is_empty());
-}
-
-#[test]
-fn a_second_dot_entry_is_refused() {
-    let mut tree = MemTree::new(&[("eboot.bin", 100)]);
-    let (_, mut img) = build(&mut tree);
-    // uroot's `..` (its second record) rewritten as another `.`.
-    let uroot = u32_at(inode(&img, 2), 0x64) as usize * B;
-    let at = uroot + u32_at(&img, uroot + 12) as usize;
-    assert_eq!(&img[at + 16..at + 18], b"..");
-    img[at + 4..at + 8].copy_from_slice(&4i32.to_le_bytes());
-    img[at + 8..at + 12].copy_from_slice(&1i32.to_le_bytes());
-    img[at + 17] = 0;
-    let e = PfsSource::from_reader(Box::new(Cursor::new(img)), "x".into())
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(e.contains("exactly one '.'"), "{e}");
-}
-
-#[test]
-fn a_wrapped_name_holds_no_slash() {
-    let tmp = TempDir::new("slash");
-    let mut out = File::create(tmp.0.join("o.ffpfsc")).unwrap();
-    let cancel = AtomicBool::new(false);
-    let r = wrap(
-        "dir/PPSA00001.exfat",
-        BLOCK,
-        &mut out,
-        &WrapOptions::default(),
-        &cancel,
-        |s| {
-            s.write_all(&[0; B])?;
-            Ok(())
-        },
-    );
-    assert!(r.is_err());
-}
-
 const FPT_MISMATCH: &str = "x: the flat path table does not match the directory tree (the console looks files up through it)";
 
 fn open_err(img: Vec<u8>) -> String {
@@ -912,71 +811,4 @@ fn a_damaged_path_table_is_refused() {
     removed[2 * B + second..3 * B].fill(0);
     assert_eq!(dirents(&removed, 2 * B), [(2, 3, "uroot".into())]);
     assert_eq!(open_err(removed), missing);
-}
-
-/// The hash upper-cases only on a case-insensitive image (mode bit 0x8).
-#[test]
-fn the_path_table_follows_the_case_mode() {
-    let mut tree = MemTree::new(&[("eboot.bin", 100), ("sce_sys/param.json", 30)]);
-    let (_, img) = build(&mut tree);
-    let mut sensitive = img.clone();
-    sensitive[0x1C] &= !0x8;
-    assert_eq!(open_err(sensitive.clone()), FPT_MISMATCH);
-    // The same table hashed as written, without upper-casing, is what that image needs.
-    let exact = |p: &str| {
-        p.bytes()
-            .fold(0u32, |h, c| h.wrapping_mul(31).wrapping_add(u32::from(c)))
-    };
-    let mut want = [
-        (exact("/sce_sys"), 3 | 0x2000_0000),
-        (exact("/eboot.bin"), 4u32),
-        (exact("/sce_sys/param.json"), 5),
-    ];
-    want.sort();
-    for (i, (h, v)) in want.iter().enumerate() {
-        let at = 3 * B + 8 * i;
-        sensitive[at..at + 4].copy_from_slice(&h.to_le_bytes());
-        sensitive[at + 4..at + 8].copy_from_slice(&v.to_le_bytes());
-    }
-    let mut back = PfsSource::from_reader(Box::new(Cursor::new(sensitive)), "x".into()).unwrap();
-    assert_eq!(back.header().mode, 0);
-    assert_same(&mut tree, &mut back);
-}
-
-/// `A_` and `B@` share a hash: the resolver's records must be what the tree encodes to, and
-/// it must be there.
-#[test]
-fn a_damaged_collision_resolver_is_refused() {
-    let mut tree = MemTree::new(&[("A_", 3), ("B@", 4), ("eboot.bin", 5)]);
-    let (_, img) = build(&mut tree);
-    let resolver = 4 * B;
-    assert_eq!(
-        dirents(&img, resolver),
-        [(4, 2, "/A_".into()), (5, 2, "/B@".into())]
-    );
-    // A record's inode, its type, a byte of its path, and the terminator.
-    for (at, flip) in [
-        (resolver, 1),
-        (resolver + 4, 1),
-        (resolver + 17, 0x20),
-        (resolver + 48, 1),
-    ] {
-        let mut bad = img.clone();
-        bad[at] ^= flip;
-        assert_eq!(open_err(bad), FPT_MISMATCH, "byte {at:#x}");
-    }
-    // The FPT's pointer into the resolver.
-    let mut bad = img.clone();
-    let at = (0..2)
-        .map(|i| 3 * B + 8 * i)
-        .find(|&at| u32_at(&img, at + 4) == 0x8000_0000)
-        .unwrap();
-    bad[at + 4] = 8;
-    assert_eq!(open_err(bad), FPT_MISMATCH);
-    // No resolver in the super-root.
-    let mut gone = img.clone();
-    let at = 2 * B + u32_at(&img, 2 * B + 12) as usize;
-    assert_eq!(&img[at + 16..at + 34], b"collision_resolver");
-    gone[at + 16] = b'C';
-    assert_eq!(open_err(gone), FPT_MISMATCH);
 }

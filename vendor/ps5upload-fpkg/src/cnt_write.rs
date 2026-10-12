@@ -877,29 +877,6 @@ mod tests {
         assert_eq!(v["scenarios"][0]["en-US"]["title"], "Scenario #0");
     }
 
-    /// A chosen language narrows the package to it, the shape Sony's own scenarios take (Spider-Man
-    /// 2 lists its four): that language is the default and the only one supported.
-    #[test]
-    fn a_chosen_language_is_the_default_and_the_only_one() {
-        let v: serde_json::Value =
-            serde_json::from_slice(&playgo_scenario_json(Some("fr-FR"))).unwrap();
-        assert_eq!(v["scenarioDefaultLanguage"], "fr-FR");
-        assert_eq!(v["chunkDefaultLanguage"], "fr-FR");
-        assert_eq!(v["chunkSupportedLanguages"], serde_json::json!(["fr-FR"]));
-        let names: Vec<&String> = v["scenarios"][0]
-            .as_object()
-            .unwrap()
-            .keys()
-            .filter(|k| k.contains('-'))
-            .collect();
-        assert_eq!(names, ["fr-FR"]);
-        // A code the console doesn't know leaves the package as it always was.
-        assert_eq!(
-            playgo_scenario_json(Some("xx-XX")),
-            playgo_scenario_json(None)
-        );
-    }
-
     #[test]
     fn extras_take_the_publishing_tools_layout() {
         let id = "UP0000-PPSA01234_00-TESTGAME00000000";

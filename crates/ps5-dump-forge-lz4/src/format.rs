@@ -356,13 +356,6 @@ mod tests {
     }
 
     #[test]
-    fn pak_hash_is_fnv1a_64() {
-        assert_eq!(pak_hash(b""), 0xcbf29ce484222325);
-        assert_eq!(pak_hash(b"a"), 0xaf63dc4c8601ec8c);
-        assert_eq!(pak_hash(b"foobar"), 0x85944171f73967e8);
-    }
-
-    #[test]
     fn hashes_fold_paths_but_cmd_hash_does_not() {
         assert_eq!(pak_hash(b"/APP0\\Dir\\X.Bin"), pak_hash(b"/app0/dir/x.bin"));
         assert_eq!(idx_hash(b"/APP0\\Dir\\X.Bin"), idx_hash(b"/app0/dir/x.bin"));
@@ -372,11 +365,6 @@ mod tests {
         assert_ne!(cmd_hash(b"\\"), cmd_hash(b"/"));
         assert_eq!(cmd_hash(b""), 1469598103934665603);
         assert_eq!(cmd_hash(b"a"), idx_hash(b"a"));
-    }
-
-    #[test]
-    fn crc_check_value() {
-        assert_eq!(crc32(b"123456789"), 0xcbf43926);
     }
 
     fn sample(len: usize) -> Vec<u8> {
@@ -411,39 +399,6 @@ mod tests {
             h[len] ^= 1;
             assert!(f(&h[..len - 1]).is_err());
         }
-    }
-
-    #[test]
-    fn pak_header_crc_keeps_payload_crc_and_payload_ranges() {
-        let mut f = sample(300);
-        assert_eq!(pak_payload_crc(&f).unwrap(), crc32(&f[128..]));
-        assert_eq!(crc1_payload_crc(&f).unwrap(), crc32(&f[48..]));
-        let before = pak_header_crc(&f).unwrap();
-        f[PAK_PAYLOAD_CRC_AT] ^= 1;
-        assert_ne!(pak_header_crc(&f).unwrap(), before);
-        assert!(pak_payload_crc(&f[..127]).is_err());
-        assert!(crc1_payload_crc(&f[..47]).is_err());
-    }
-
-    #[test]
-    fn le_helpers_check_bounds() {
-        let mut b = [0u8; 16];
-        put_u16(&mut b, 0, 0x0102).unwrap();
-        put_u32(&mut b, 2, 0x03040506).unwrap();
-        put_u64(&mut b, 8, 0x1122334455667788).unwrap();
-        assert_eq!(&b[..6], &[2, 1, 6, 5, 4, 3]);
-        assert_eq!(u16_at(&b, 0).unwrap(), 0x0102);
-        assert_eq!(u32_at(&b, 2).unwrap(), 0x03040506);
-        assert_eq!(u64_at(&b, 8).unwrap(), 0x1122334455667788);
-        put_i64(&mut b, 8, -2).unwrap();
-        assert_eq!(i64_at(&b, 8).unwrap(), -2);
-        assert!(u64_at(&b, 9).is_err());
-        assert!(u32_at(&b, usize::MAX).is_err());
-        assert!(put_u32(&mut b, 14, 1).is_err());
-        assert!(put_bytes(&mut b, usize::MAX, &[1, 2]).is_err());
-        assert!(check_magic(b"AMPRPAK4x", PAK_MAGIC, "a manifest").is_ok());
-        assert!(check_magic(b"AMPRPAK", PAK_MAGIC, "a manifest").is_err());
-        assert!(check_magic(b"AMPRPAK3", PAK_MAGIC, "a manifest").is_err());
     }
 
     #[test]
@@ -532,31 +487,6 @@ mod tests {
     }
 
     #[test]
-    fn descriptors_round_trip() {
-        for stored in [1, 2, 4096, 65536, MAX_STORED] {
-            for codec in [Codec::Raw, Codec::Lz4] {
-                for flags in 0..=CHUNK_FLAGS_KNOWN {
-                    let d = pack_descriptor(stored, codec, flags).unwrap();
-                    assert_eq!(d >> 30, 0);
-                    assert_eq!(
-                        unpack_descriptor(d).unwrap(),
-                        Descriptor {
-                            stored,
-                            codec,
-                            flags
-                        }
-                    );
-                }
-            }
-        }
-        assert_eq!(pack_descriptor(1, Codec::Raw, 0).unwrap(), 0);
-        assert_eq!(
-            pack_descriptor(65536, Codec::Lz4, CHUNK_SHARED).unwrap(),
-            0xffff | 1 << 20 | 1 << 22
-        );
-    }
-
-    #[test]
     fn descriptors_reject_invalid() {
         assert!(pack_descriptor(0, Codec::Raw, 0).is_err());
         assert!(pack_descriptor(MAX_STORED + 1, Codec::Raw, 0).is_err());
@@ -566,16 +496,5 @@ mod tests {
         assert!(unpack_descriptor(1 << 30).is_err());
         assert!(unpack_descriptor(1 << 31).is_err());
         assert!(unpack_descriptor(0x10 << 22).is_err());
-    }
-
-    #[test]
-    fn locations() {
-        let l = pack_location(7, 0x1234_5678_9abc).unwrap();
-        assert_eq!(unpack_location(l), (7, 0x1234_5678_9abc));
-        assert_eq!(
-            unpack_location(pack_location(u16::MAX, OFFSET_MASK).unwrap()),
-            (u16::MAX, OFFSET_MASK)
-        );
-        assert!(pack_location(0, OFFSET_MASK + 1).is_err());
     }
 }

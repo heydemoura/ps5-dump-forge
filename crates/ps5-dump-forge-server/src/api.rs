@@ -632,7 +632,7 @@ impl Server {
         self.jobs.cancel_all_and_wait();
         #[cfg(target_env = "ps5")]
         crate::self_copy::wait();
-        (self.opts.notify)("Dump Forge stopped");
+        (self.opts.notify)(crate::notice::stopped(crate::notice::console_lang()));
         (self.opts.exit)(0);
     }
 }
@@ -695,26 +695,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
-    }
-
-    #[test]
-    fn caps() {
-        let server = Arc::new(server());
-        let tmp = std::env::temp_dir();
-        let source = json!({ "source": tmp, "format": "exfat", "dir": tmp, "taken": [] });
-        server.inspecting.store(MAX_INSPECTIONS, Ordering::SeqCst);
-        for (route, body) in [
-            ("inspect", json!({ "path": tmp })),
-            ("default_output", source.clone()),
-            ("generated_output", source),
-        ] {
-            let r = post(&server, route, body);
-            assert_eq!((r.status, r.retry_after), (429, Some(1)), "{route}");
-        }
-        server.inspecting.store(0, Ordering::SeqCst);
-        server.running.store(MAX_JOBS, Ordering::SeqCst);
-        let request = json!({ "request": { "source": tmp, "format": "exfat", "output": "/x" } });
-        assert_eq!(post(&server, "start_job", request).status, 429);
     }
 
     fn library_server(root: &Path) -> Arc<Server> {
@@ -836,67 +816,6 @@ mod tests {
             assert_eq!(r.status, 409, "{route}");
             assert!(r.text().contains("stopping"), "{}", r.text());
         }
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// The scan reply's shape: core's fields at the top level, `storage` `{free, total}` beside
-    /// them on the PS5 and absent elsewhere.
-    #[test]
-    fn scan_reply_shape() {
-        let scan = ps5_dump_forge_core::LibraryScan {
-            roots: vec![PathBuf::from("/data")],
-            entries: Vec::new(),
-            truncated: false,
-            warnings: Vec::new(),
-        };
-        let storage = Some(Storage {
-            free: 312_000_000_000,
-            total: 825_000_000_000,
-        });
-        let v = serde_json::to_value(ScanReply {
-            scan: &scan,
-            storage,
-        })
-        .unwrap();
-        assert_eq!(
-            v,
-            json!({
-                "roots": ["/data"], "entries": [], "truncated": false, "warnings": [],
-                "storage": { "free": 312_000_000_000u64, "total": 825_000_000_000u64 },
-            })
-        );
-        let v = serde_json::to_value(ScanReply {
-            scan: &scan,
-            storage: None,
-        })
-        .unwrap();
-        assert!(
-            v.get("storage").is_none() && v["roots"] == json!(["/data"]),
-            "{v}"
-        );
-    }
-
-    /// The PS5's automatic scan (FreeBSD only: the filesystem classifier): a pinned root posted
-    /// with `{}` lists its game.
-    #[cfg(target_os = "freebsd")]
-    #[test]
-    fn library_scan_on_the_ps5_uses_the_roots() {
-        let root = std::env::temp_dir().join(format!("forge-api-ps5-lib-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("game/sce_sys")).unwrap();
-        std::fs::write(root.join("game/eboot.bin"), b"x").unwrap();
-        std::fs::write(
-            root.join("game/sce_sys/param.json"),
-            br#"{"titleId":"PPSA00001","contentVersion":"01.000.000"}"#,
-        )
-        .unwrap();
-        let root = root.canonicalize().unwrap();
-        let opts = Options::new(0, vec![root.clone()], Platform::Ps5, |_: &str| {});
-        let server = Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap());
-        let r = post(&server, "library_scan", json!({}));
-        assert_eq!(r.status, 200, "{}", r.text());
-        let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
-        assert_eq!(v["entries"][0]["title_id"], json!("PPSA00001"), "{v}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

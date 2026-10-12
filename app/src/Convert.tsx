@@ -24,13 +24,14 @@ import {
   type SourceSelection,
   SourceCard,
 } from "./common";
+import { useMessages } from "./i18n";
 import { Icon } from "./icons";
 import { JobsCard } from "./JobList";
 import type { Action, Job } from "./jobs";
 import {
   DEFAULT_FFPFSC_LEVEL,
   FfpfscField,
-  FORMAT_INFO,
+  formatInfo,
   GenerateSwitch,
   KrakenField,
   Lead,
@@ -52,6 +53,7 @@ export function Convert(props: {
   /** A game the Library opened here; each new `id` is read once. */
   selection?: SourceSelection | null;
 }) {
+  const t = useMessages().convert;
   const [source, setSource] = useState<string | null>(null);
   const [sourceIsImage, setSourceIsImage] = useState(false);
   const [ins, setIns] = useState<Inspection | null>(null);
@@ -145,9 +147,9 @@ export function Convert(props: {
   const lz4Reason = !lz4?.packed
     ? null
     : removable && removeBackport
-      ? "This dump's assets are LZ4 packed and its LZ4 manifest lists the backport: unpack it in the LZ4 tab first, then remove the backport here."
+      ? t.lz4Backport
       : lz4.runtime === "forge_trace"
-        ? "This packed dump carries the LZ4 trace runtime: unpack or pack it again in the LZ4 tab first."
+        ? t.lz4Trace
         : null;
 
   // An AMPR title, not packed, whose runtime isn't Forge's: offer the bundled one in the output
@@ -166,9 +168,9 @@ export function Convert(props: {
   // Build would certainly fail: say why next to it instead.
   const hard = ins ? ins.findings.filter((l) => classify(l).kind === "block") : [];
   const blockReason = insError
-    ? "Can't build: this source couldn't be read (see Source)."
+    ? t.unreadable
     : hard.length > 0
-      ? `Can't build: ${hard[0]}${hard.length > 1 ? ` (and ${hard.length - 1} more, see Source)` : ""}.`
+      ? t.blocked(hard[0], hard.length - 1)
       : lz4Reason;
 
   const { target, named } = out;
@@ -228,17 +230,17 @@ export function Convert(props: {
         />
 
         <section className="card" aria-labelledby="c-target">
-          <CardHead icon="target" title="Target" id="c-target" />
+          <CardHead icon="target" title={t.target} id="c-target" />
           <FormatPicker
             name="target-format"
-            label="Target format"
+            label={t.targetFormat}
             value={format}
             onChange={pickFormat}
             disabled={(f) => f === "folder" && source !== null && !sourceIsImage}
-            reason={(f) => (f === "folder" ? "the source is already a folder" : undefined)}
+            reason={(f) => (f === "folder" ? t.alreadyFolder : undefined)}
           />
           <p className="muted desc">
-            <Lead text={FORMAT_INFO[format]} />
+            <Lead note={formatInfo(format)} />
           </p>
           {format === "pkg" && <PkgWarning />}
           {format === "ffpfsc" && (
@@ -261,24 +263,16 @@ export function Convert(props: {
                 />
                 <span className="switch-track" aria-hidden="true" />
                 <span>
-                  {lz4.runtime === "none" ? "Install" : "Replace"} the AMPR runtime (ampr_emu{" "}
-                  {shipped})
+                  {t.runtime(lz4.runtime === "none", shipped)}
                   <span className="muted hint">
-                    {lz4.runtime === "none"
-                      ? "This game uses AMPR but has no fakelib/libSceAmpr.sprx: the output gets the bundled one."
-                      : "fakelib/libSceAmpr.sprx isn't a runtime Forge ships (it may be newer or older): the output gets the bundled one instead."}{" "}
-                    The trace journal and logs are left out and a fresh ampr_emu.index is written.
-                    Only the output changes, never the source. Off: copied as it is.
+                    {lz4.runtime === "none" ? t.runtimeNone : t.runtimeOther} {t.runtimeRest}
                   </span>
                 </span>
               </label>
               {installRuntime && (
                 <p className="note-line warn">
                   <Icon name="warn" />
-                  <span>
-                    ampr_emu {shipped} is an upstream test build; known issue: some games crash
-                    when saving.
-                  </span>
+                  <span>{t.runtimeWarn(shipped)}</span>
                 </p>
               )}
             </div>
@@ -295,11 +289,10 @@ export function Convert(props: {
                 />
                 <span className="switch-track" aria-hidden="true" />
                 <span>
-                  Remove backport
+                  {t.removeBackport}
                   {removable && (
                     <span className="muted hint">
-                      Leaves out {libs} backport librar{libs === 1 ? "y" : "ies"} from fakelib/
-                      {keptNote(emus)}
+                      {t.removeHint(libs, emus.filter((n) => n !== "Other"), emus.includes("Other"))}
                     </span>
                   )}
                 </span>
@@ -307,7 +300,7 @@ export function Convert(props: {
               {ins.backport_blocked && (
                 <p className="note-line warn">
                   <Icon name="warn" />
-                  <span>Can't remove the backport: {ins.backport_blocked.replace(/^remove backport: /, "")}</span>
+                  <span>{t.cantRemove(ins.backport_blocked.replace(/^remove backport: /, ""))}</span>
                 </p>
               )}
             </div>
@@ -316,7 +309,7 @@ export function Convert(props: {
           <VerifySwitch checked={fullVerify} onChange={setFullVerify} />
           <button className="link" onClick={props.onCompare}>
             <Icon name="table" />
-            Compare formats
+            {t.compare}
           </button>
           <OutputField out={out} source={source} prefix="c" />
           <div className="build-row">
@@ -327,7 +320,7 @@ export function Convert(props: {
               disabled={!source || !target || !!named.error || !!blockReason || submitting}
             >
               <Icon name="bolt" />
-              Build
+              {t.build}
             </button>
           </div>
           {(blockReason || formatWarn > 0 || dupe || error) && (
@@ -342,18 +335,14 @@ export function Convert(props: {
               {!blockReason && formatWarn > 0 && (
                 <p className="note-line warn">
                   <Icon name="warn" />
-                  <span>
-                    Likely to fail as <b>{kindLabel(format)}</b>: it refuses file names listed in Source.
-                  </span>
+                  <span>{t.likelyFail(kindLabel(format))}</span>
                 </p>
               )}
               {dupe && (
                 <p className="note-line muted">
                   <Icon name="info" />
                   <span>
-                    {collides
-                      ? "A job is already writing this file: Build again would fail. Pick another name."
-                      : <>Already building this game as <b>{kindLabel(format)}</b>; Build again makes a second copy.</>}
+                    {collides ? t.collides : t.already(kindLabel(format))}
                   </span>
                 </p>
               )}
@@ -367,10 +356,3 @@ export function Convert(props: {
   );
 }
 
-/** What "Remove backport" keeps: the emulators by name, and any other homebrew libraries. */
-function keptNote(emus: string[]): string {
-  const named = emus.filter((n) => n !== "Other");
-  const other = emus.includes("Other");
-  if (named.length === 0) return other ? "; other homebrew libraries stay." : ".";
-  return `; the emulators (${named.join(", ")})${other ? " and other homebrew libraries" : ""} stay.`;
-}

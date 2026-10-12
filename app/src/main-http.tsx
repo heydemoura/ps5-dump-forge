@@ -6,8 +6,9 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { checkForUpdate, setCanReload, watchUpdates } from "./appcache";
+import { initLang, msg, useMessages } from "./i18n";
 import { Icon } from "./icons";
-import { browserDeps, launching, launchOnce, type Outcome } from "./launcher";
+import { browserDeps, type Failure, launching, launchOnce } from "./launcher";
 import { setServerSeparator } from "./paths";
 import "./styles.css";
 
@@ -24,9 +25,11 @@ setCanReload(() => {
   return !document.querySelector(".modal-backdrop") && !(el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName));
 });
 
-type Failed = Extract<Outcome, { ok: false }> | { ok: false; failure: "load"; message: string };
+/** A launch failure, or the app's bundle failing to load (`detail`: the browser's error). */
+type Failed = { failure: Failure } | { failure: "load"; detail: string };
 
 function Launcher({ failed }: { failed: Failed | null }) {
+  const t = useMessages().launch;
   return (
     <div className="modal-backdrop">
       {failed ? (
@@ -36,15 +39,15 @@ function Launcher({ failed }: { failed: Failed | null }) {
               <Icon name="alert" />
             </span>
             <h2 id="launch-title">
-              {failed.failure === "timeout" ? "Dump Forge didn't answer" : "Can't start Dump Forge"}
+              {failed.failure === "timeout" ? t.noAnswer : t.cantStart}
             </h2>
           </div>
           <p className="muted" id="launch-text">
-            {failed.message}
+            {failed.failure === "load" ? t.loadFailed(failed.detail) : t.failure[failed.failure]}
           </p>
           <div className="row end">
             <button className="primary" autoFocus onClick={() => void run()}>
-              Retry
+              {t.retry}
             </button>
           </div>
         </div>
@@ -52,7 +55,7 @@ function Launcher({ failed }: { failed: Failed | null }) {
         <div className="modal card" role="status">
           <div className="modal-head">
             <span className="spinner" aria-hidden="true" />
-            <h2>Starting Dump Forge…</h2>
+            <h2>{t.starting}</h2>
           </div>
         </div>
       )}
@@ -75,8 +78,10 @@ async function run(): Promise<void> {
   try {
     [{ App }, client] = await Promise.all([import("./App"), import("./http-client")]);
   } catch (e) {
-    return show({ ok: false, failure: "load", message: `Couldn't load the page: ${e}` });
+    return show({ failure: "load", detail: String(e) });
   }
+  // The client's own messages in the UI's language, read when it says them.
+  client.setClientText((code) => msg().launch.client[code]);
   // The server's separator before anything renders a path, and its address for the header.
   // ponytail: a server that doesn't answer now (a LAN viewer while it's down) keeps "/", the
   // PS5's, and shows no address.
@@ -93,4 +98,5 @@ async function run(): Promise<void> {
   if (outcome.up) checkForUpdate();
 }
 
-void run();
+// The UI's language first: the launcher's own screens speak it.
+void initLang().then(run);

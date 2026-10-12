@@ -1,5 +1,5 @@
 //! PS5 Dump Forge: the Tauri shell over `ps5-dump-forge-core`. No settings file: what the UI
-//! remembers lives in memory until the app closes.
+//! remembers lives in memory until the app closes, except its language (WebView localStorage).
 //!
 //! All file access stays in these commands; the webview only gets the dialog plugin
 //! and the app's own commands (see `build.rs` and `capabilities/default.json`).
@@ -735,10 +735,8 @@ fn main() {
                 .title(concat!("PS5 Dump Forge v", env!("CARGO_PKG_VERSION")))
                 .inner_size(1200.0, 820.0)
                 .min_inner_size(900.0, 620.0);
-            // WebView data goes to `<app dir>/data/webview`, except on macOS where
-            // WKWebView storage can't be moved, so it stays in memory (the UI keeps no state).
-            #[cfg(target_os = "macos")]
-            let window = window.incognito(true);
+            // WebView data (the UI language's localStorage) goes to `<app dir>/data/webview`,
+            // except on macOS where WKWebView storage can't be moved: WebKit's own per-app store.
             #[cfg(not(target_os = "macos"))]
             let window = match webview_dir {
                 Some(dir) => window.data_directory(dir),

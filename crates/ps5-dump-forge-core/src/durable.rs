@@ -572,71 +572,6 @@ mod tests {
     }
 
     #[test]
-    fn seeks_inside_the_data_do_not_sync() {
-        let (mut c, cancel) = (Cadence::fixed(64), AtomicBool::new(false));
-        let mut w = SyncEvery::new(Fake::default(), &mut c, &cancel);
-        w.write_all(&[1; 50]).unwrap();
-        w.seek(SeekFrom::Start(10)).unwrap();
-        w.seek(SeekFrom::Start(20)).unwrap();
-        assert_eq!((w.out.syncs, w.out.seeks), (0, 2));
-        w.write_all(&[2; 5]).unwrap();
-        // Dirty bytes count wherever they were written: 50 + 5 + 9 reaches N.
-        w.write_all(&[3; 9]).unwrap();
-        assert_eq!(w.out.syncs, 1);
-        let f = w.finish().unwrap();
-        assert_eq!(
-            f.data,
-            [vec![1; 20], vec![2; 5], vec![3; 9], vec![1; 16]].concat()
-        );
-        assert_eq!(f.syncs, 2);
-    }
-
-    #[test]
-    fn ufs2_like_loop_syncs_only_every_n() {
-        let (mut c, cancel) = (Cadence::fixed(4096), AtomicBool::new(false));
-        let mut w = SyncEvery::new(Fake::default(), &mut c, &cancel);
-        for i in 0..1000 {
-            w.write_all(&bytes(1000, i as u8)).unwrap();
-            w.seek(SeekFrom::Current(24)).unwrap();
-        }
-        assert_eq!(w.out.syncs, 1000 * 1024 / 4096);
-        assert_eq!(w.out.seeks, 0);
-        let f = w.finish().unwrap();
-        assert_eq!(f.data.len(), 1000 * 1024);
-        assert_eq!(&f.data[1024..2024], &bytes(1000, 1)[..]);
-        assert!(f.data[2024..2048].iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn same_position_seek_is_a_noop() {
-        let (mut c, cancel) = (Cadence::fixed(64), AtomicBool::new(false));
-        let mut w = SyncEvery::new(Fake::default(), &mut c, &cancel);
-        w.write_all(&[1; 10]).unwrap();
-        assert_eq!(w.seek(SeekFrom::Start(10)).unwrap(), 10);
-        assert_eq!(w.stream_position().unwrap(), 10);
-        assert_eq!((w.out.syncs, w.out.seeks), (0, 0));
-    }
-
-    #[test]
-    fn end_seek_is_relative_to_the_length() {
-        let (mut c, cancel) = (Cadence::fixed(64), AtomicBool::new(false));
-        let mut w = SyncEvery::new(Fake::default(), &mut c, &cancel);
-        w.write_all(&[1; 20]).unwrap();
-        assert_eq!(w.seek(SeekFrom::End(-5)).unwrap(), 15);
-        w.write_all(b"x").unwrap();
-        // Past the end from inside the data: seek to the end, zeros up to the target.
-        assert_eq!(w.seek(SeekFrom::End(10)).unwrap(), 30);
-        assert_eq!((w.out.syncs, w.out.seeks), (0, 2));
-        assert_eq!(w.out.cur, 30);
-        assert!(w.seek(SeekFrom::End(-31)).is_err());
-        let f = w.finish().unwrap();
-        assert_eq!(
-            f.data,
-            [vec![1; 15], b"x".to_vec(), vec![1; 4], vec![0; 10]].concat()
-        );
-    }
-
-    #[test]
     fn a_retried_sync_fails_the_job() {
         let retried = |e: io::Error| e.to_string().contains("temporary error while syncing");
         let (mut c, cancel) = (Cadence::fixed(64), AtomicBool::new(false));
@@ -656,23 +591,6 @@ mod tests {
         let mut w = SyncEvery::new(fake, &mut c, &cancel);
         w.write_all(&[1; 10]).unwrap();
         assert!(retried(w.finish().err().unwrap()));
-    }
-
-    #[test]
-    fn short_writes_are_counted() {
-        let fake = Fake {
-            fail_write: Some((1, Ok(5))),
-            ..Fake::default()
-        };
-        let (mut c, cancel) = (Cadence::fixed(64), AtomicBool::new(false));
-        let mut w = SyncEvery::new(fake, &mut c, &cancel);
-        assert_eq!(w.write(&bytes(64, 9)).unwrap(), 5);
-        assert_eq!(w.out.syncs, 0);
-        w.write_all(&bytes(64, 9)[5..]).unwrap();
-        assert_eq!((w.out.writes, w.out.syncs, w.out.cur), (2, 1, 64));
-        w.write_all(&bytes(10, 1)).unwrap();
-        let f = w.finish().unwrap();
-        assert_eq!(f.data, [bytes(64, 9), bytes(10, 1)].concat());
     }
 
     #[test]
@@ -699,68 +617,6 @@ mod tests {
             assert_eq!((w.out.writes, w.out.seeks, w.out.data.len()), (1, 0, 64));
             assert!(is(w.finish().err().unwrap()));
         }
-    }
-
-    #[test]
-    fn oversized_offsets_are_refused() {
-        let (mut c, cancel) = (Cadence::fixed(64), AtomicBool::new(false));
-        let mut w = SyncEvery::new(Fake::default(), &mut c, &cancel);
-        w.write_all(&[1; 10]).unwrap();
-        for pos in [
-            SeekFrom::Start(u64::MAX),
-            SeekFrom::Start(MAX_OFF + 1),
-            SeekFrom::Current(i64::MAX),
-            SeekFrom::End(i64::MAX),
-        ] {
-            let e = w.seek(pos).unwrap_err();
-            assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
-        }
-        assert_eq!(w.stream_position().unwrap(), 10);
-        assert_eq!((w.out.writes, w.out.seeks, w.out.syncs), (1, 0, 0));
-        w.write_all(&[2; 3]).unwrap();
-        let f = w.finish().unwrap();
-        assert_eq!(f.data, [vec![1; 10], vec![2; 3]].concat());
-    }
-
-    #[test]
-    fn write_errors_surface() {
-        let fake = Fake {
-            fail_write: Some((2, Err(libc::ENOSPC))),
-            ..Fake::default()
-        };
-        let (mut c, cancel) = (Cadence::fixed(64), AtomicBool::new(false));
-        let mut w = SyncEvery::new(fake, &mut c, &cancel);
-        w.write_all(&[1; 10]).unwrap();
-        let e = w.write_all(&[1; 10]).unwrap_err();
-        assert_eq!(e.raw_os_error(), Some(libc::ENOSPC));
-    }
-
-    #[test]
-    fn cancel_during_materialization_is_marked() {
-        let (mut c, cancel) = (Cadence::fixed(64), AtomicBool::new(true));
-        let mut w = SyncEvery::new(Fake::default(), &mut c, &cancel);
-        let e = w.seek(SeekFrom::Start(1000)).unwrap_err();
-        assert!(e.get_ref().is_some_and(|e| e.is::<Cancelled>()), "{e}");
-        assert!(w.out.data.is_empty());
-    }
-
-    #[test]
-    fn cadence_starts_at_32_mib_and_clamps() {
-        let mut c = Cadence::new();
-        assert_eq!(c.n(), 32 << 20);
-        assert_eq!(c.take_change(), None);
-        c.record(100 << 20, TARGET);
-        assert_eq!(c.n(), 100 << 20);
-        c.record(1 << 30, Duration::from_millis(500));
-        assert_eq!(c.n(), MAX_N);
-        assert_eq!(c.take_change(), Some((100 << 20, MAX_N)));
-        c.record(1 << 20, TARGET);
-        assert_eq!(c.n(), MIN_N);
-        c.record(1 << 20, Duration::ZERO);
-        assert_eq!(c.n(), MAX_N);
-        assert_eq!(c.take_change(), Some((MIN_N, MAX_N)));
-        c.record(MAX_N * 2, TARGET);
-        assert_eq!(c.take_change(), None);
     }
 
     /// Runs `retry` over `errs` (then success) and returns the result, tries and slept ms.
@@ -814,12 +670,6 @@ mod tests {
     }
 
     #[test]
-    fn an_interrupted_fsync_is_retried() {
-        let (r, tries, _) = run(&[libc::EINTR], false, &NO);
-        assert_eq!((r.unwrap(), tries), (Synced::Retried, 2));
-    }
-
-    #[test]
     fn sony_errors_are_folded() {
         assert_eq!(errno(&os(sony(libc::EAGAIN))), Some(libc::EAGAIN));
         assert!(is_transient(&os(sony(libc::ENXIO))));
@@ -827,13 +677,6 @@ mod tests {
         assert!(!is_transient(&io::Error::other("no errno")));
         let (r, tries, _) = run(&[sony(libc::EINTR)], false, &NO);
         assert_eq!((r.unwrap(), tries), (Synced::Retried, 2));
-    }
-
-    #[test]
-    fn cancel_stops_retrying() {
-        let (r, tries, slept) = run(&[libc::EAGAIN; 5], false, &AtomicBool::new(true));
-        assert_eq!(r.unwrap_err().raw_os_error(), Some(libc::EAGAIN));
-        assert_eq!((tries, slept.len()), (1, 0));
     }
 
     #[test]

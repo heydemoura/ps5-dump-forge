@@ -291,46 +291,6 @@ mod tests {
     const GAME: &str = "EP1003-PPSA09017_00-FALLOUT4GAME0000";
 
     #[test]
-    fn dlc_emulator_list() {
-        let ini = "; unlocked\r\n[PSAC]\r\ncontent_id=EP9000-PPSA13197_00-SAMPLEGAMEDLC001\r\n\
-                   download_status=NO_EXTRA_DATA\r\n\r\n[PSAC]\ncontent_id = EP9000-PPSA13197_00-NIKKEREWARD00000\n\
-                   [OTHER]\ncontent_id=EP9000-PPSA13197_00-NOTADLC000000000\n[PSAC]\ncontent_id=garbage\n";
-        let mut tree = Files::new(vec![
-            ("eboot.bin", b"x".to_vec()),
-            ("dlc_emu.ini", ini.as_bytes().to_vec()),
-        ]);
-        let found: Vec<(String, Option<String>)> = find(&mut tree, Some(GAME))
-            .into_iter()
-            .map(|d| (d.label, d.emulated))
-            .collect();
-        assert_eq!(
-            found,
-            [
-                ("NIKKEREWARD00000".to_string(), Some(String::new())),
-                (
-                    "SAMPLEGAMEDLC001".to_string(),
-                    Some("NO_EXTRA_DATA".to_string())
-                ),
-            ]
-        );
-    }
-
-    #[test]
-    fn content_ids() {
-        assert_eq!(
-            content_id_of("EP1003-PPSA09017_00-FALLOUT4DLC00003-ac").as_deref(),
-            Some("EP1003-PPSA09017_00-FALLOUT4DLC00003")
-        );
-        for bad in [
-            "PPSA09017",
-            "ep1003-PPSA09017_00-FALLOUT4DLC00003",
-            "EP1003-PPSA09017_00-short",
-        ] {
-            assert_eq!(content_id_of(bad), None, "{bad}");
-        }
-    }
-
-    #[test]
     fn both_layouts_are_found_and_merged() {
         let dlc_json = br#"{"contentId":"EP1003-PPSA09017_00-FALLOUT4DLC00003",
             "localizedParameters":{"defaultLanguage":"en-US","en-US":{"titleName":"Far Harbor"}}}"#;

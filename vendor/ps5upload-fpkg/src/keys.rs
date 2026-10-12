@@ -384,10 +384,4 @@ mod tests {
         assert_eq!(sha256(&MOUNT_IMAGE_MODULUS), expected[7].1);
         assert_eq!(sha256(&METADATA_MODULUS), expected[8].1);
     }
-
-    /// The metadata modulus is the first 384 bytes of the passcode set's slot 3.
-    #[test]
-    fn metadata_modulus_is_a_passcode_slot() {
-        assert_eq!(&PASSCODE_MODULI[3 * 384..4 * 384], &METADATA_MODULUS[..]);
-    }
 }

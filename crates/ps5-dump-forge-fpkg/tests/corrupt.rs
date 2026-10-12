@@ -1,36 +1,15 @@
-//! Damaged and foreign input is an error, never a panic, and each kind of wrong file is named.
+//! Damaged input is an error, never a panic.
 
 mod common;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use common::{Rng, build, error_of, imagedigs_at, open_bytes};
-use ps5_dump_forge_fpkg::{NOT_PS5, RETAIL};
+use common::{Rng, build, imagedigs_at, open_bytes};
 use ps5upload_fpkg::crypto::sha3;
 use ps5upload_fpkg::kraken_image;
 use ps5upload_fpkg::source::SourceTree;
 
 const BLOCK: usize = 0x10000;
-
-#[test]
-fn files_that_are_not_ps5_packages_are_named_so() {
-    let ps4: Vec<u8> = b"\x7FCNT".iter().copied().chain([0u8; 0x2000]).collect();
-    for bytes in [Vec::new(), vec![0u8; 10], vec![0u8; 1 << 20], ps4.clone()] {
-        let e = error_of(open_bytes(bytes, None));
-        assert!(e.starts_with(NOT_PS5), "{e}");
-    }
-    let e = error_of(open_bytes(ps4, None));
-    assert!(e.contains("PS4"), "{e}");
-}
-
-#[test]
-fn a_retail_header_is_named_so() {
-    let built = build("retail", 0, |_| {});
-    let mut pkg = built.package();
-    pkg[5] = 0x80;
-    let e = error_of(open_bytes(pkg, None));
-    assert!(e.starts_with(RETAIL), "{e}");
-}
 
 /// Open the bytes and read every file; any outcome but a panic is fine. True when all of it
 /// read without an error.

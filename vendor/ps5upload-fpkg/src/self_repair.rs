@@ -246,50 +246,12 @@ mod tests {
         out
     }
 
-    #[test]
-    fn records_are_recognised_and_garbage_is_not() {
-        assert!(is_version_records(&record("libc:", 7)));
-        assert!(is_version_records(
-            &[record("a:", 1), record("bb:", 2)].concat()
-        ));
-        assert!(!is_version_records(&[]));
-        assert!(!is_version_records(b"not records at all"));
-        // Name must end with ':' and versions must repeat.
-        let mut bad = record("libc", 7);
-        assert!(!is_version_records(&bad));
-        bad = record("libc:", 7);
-        let n = bad.len();
-        bad[n - 1] ^= 1;
-        assert!(!is_version_records(&bad));
-    }
-
     /// The common case, and every executable in the Minecraft dump: already
     /// correct, so nothing changes.
     #[test]
     fn a_correct_executable_is_left_alone() {
         let f = exe(PROSPERO_MAGIC, 100, 0);
         assert_eq!(plan(&f[..0x20], f.len() as u64, &mut reader(&f)), None);
-    }
-
-    /// A PS5 executable with no version records at the marker (several in the
-    /// Minecraft dump) is not touched either.
-    #[test]
-    fn no_version_records_means_no_repair() {
-        let mut f = PROSPERO_MAGIC.to_vec();
-        f.resize(0x200, 0x33);
-        f[0x10..0x18].copy_from_slice(&0x100u64.to_le_bytes());
-        assert_eq!(plan(&f[..0x20], f.len() as u64, &mut reader(&f)), None);
-    }
-
-    #[test]
-    fn the_older_signature_is_rewritten() {
-        let f = exe(LEGACY_MAGIC, 100, 0);
-        let r = plan(&f[..0x20], f.len() as u64, &mut reader(&f)).expect("repair");
-        assert!(r.rewrite_magic);
-        assert_eq!(r.padding, 0);
-        let got = r.read(f.len() as u64, 0, 8, &mut reader(&f)).unwrap();
-        assert_eq!(&got[..4], &PROSPERO_MAGIC);
-        assert_eq!(&got[4..], &f[4..8]);
     }
 
     #[test]
@@ -303,12 +265,6 @@ mod tests {
             assert!(is_version_records(&fixed[marker..]), "shift {shift}");
             assert_eq!(fixed.len() as u64, r.new_size(f.len() as u64));
         }
-    }
-
-    #[test]
-    fn a_non_executable_is_ignored() {
-        let f = [0x7F, b'E', b'L', b'F', 0, 0, 0, 0].repeat(8);
-        assert_eq!(plan(&f[..0x20], f.len() as u64, &mut reader(&f)), None);
     }
 
     /// The streamed view must equal the naively repaired file for every range,

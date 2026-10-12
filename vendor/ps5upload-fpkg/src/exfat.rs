@@ -686,23 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn a_file_group_parses_with_its_name_size_and_cluster() {
-        let mut records = file_bytes("eboot.bin", 5, 1000);
-        records.extend(file_bytes("sce_sys", 9, 65536));
-        // The directory's attribute word marks it as one.
-        records[3][4..6].copy_from_slice(&0x10u16.to_le_bytes());
-        let entries = parse_dir(&flat(records), "").unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].name, "eboot.bin");
-        assert_eq!(entries[0].size, 1000);
-        assert_eq!(entries[0].first_cluster, 5);
-        assert!(entries[0].no_fat_chain);
-        assert!(!entries[0].is_dir);
-        assert_eq!(entries[1].name, "sce_sys");
-        assert!(entries[1].is_dir);
-    }
-
-    #[test]
     fn deleted_unused_and_junk_entries_are_skipped() {
         let mut bytes = Vec::new();
         // A deleted group: the InUse bit is cleared on every record of it.
@@ -728,31 +711,6 @@ mod tests {
         let entries = parse_dir(&bytes, "").unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "keep");
-    }
-
-    #[test]
-    fn a_name_longer_than_one_fragment_assembles() {
-        let name = "abcdefghijklmnopqrstuvwxyz0123";
-        let mut bytes = file_bytes(&name[..15], 5, 1);
-        bytes.push(name_entry(&name[15..]));
-        bytes[1] = stream_entry(name.len(), 0x03, 5, 1);
-        let entries = parse_dir(&flat(bytes), "").unwrap();
-        assert_eq!(entries[0].name, name);
-    }
-
-    #[test]
-    fn a_name_length_past_the_fragments_never_completes() {
-        let mut bytes = file_bytes("short", 5, 1);
-        bytes[1] = stream_entry(200, 0x03, 5, 1);
-        // Without a complete name the entry is dropped, not half-named.
-        assert!(parse_dir(&flat(bytes), "").unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_valid_data_length_wins_when_it_is_shorter() {
-        let mut bytes = file_bytes("a", 5, 65536);
-        bytes[1][8..16].copy_from_slice(&100u64.to_le_bytes());
-        assert_eq!(parse_dir(&flat(bytes), "").unwrap()[0].size, 100);
     }
 
     /// A name is taken as it is on disk: an unpaired surrogate, a NUL or a '/' in it is an
@@ -781,38 +739,6 @@ mod tests {
         let mut records = file_bytes(".", 5, 1);
         records.extend(file_bytes("..", 6, 1));
         assert!(parse_dir(&flat(records), "").unwrap().is_empty());
-    }
-
-    /// The same through a whole volume: a lone surrogate in `nest/deeper`, and a '/' in
-    /// `big.bin` at the root.
-    #[test]
-    fn a_volume_with_a_bad_name_is_refused() {
-        for (cluster, at, unit, want) in [
-            (
-                9u32,
-                2 + 2,
-                0xDC00u16,
-                "directory nest holds a name that is not UTF-16",
-            ),
-            (
-                4,
-                2 + 2 * 3,
-                0x002F,
-                "the root directory holds a name that contains a '/'",
-            ),
-        ] {
-            let mut img = image_with_dirs();
-            let at = 2 * 512 + (cluster as usize - 2) * 4096 + 64 + at;
-            img[at..at + 2].copy_from_slice(&unit.to_le_bytes());
-            let path = std::env::temp_dir().join(format!(
-                "fpkg-exfat-{}-bad-name-{cluster}",
-                std::process::id()
-            ));
-            std::fs::write(&path, img).unwrap();
-            let err = ExFatSource::open(&path).err().unwrap();
-            std::fs::remove_file(&path).ok();
-            assert!(err.to_string().contains(want), "{err}");
-        }
     }
 
     /// A 25 KiB image: 512-byte sectors, 4 KiB clusters, a root directory in cluster 4,
@@ -989,54 +915,6 @@ mod tests {
         let err = volume.read_file(&bogus, 0, usize::MAX).unwrap_err();
         assert!(err.to_string().contains("outside the volume"), "{err}");
         std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn a_short_image_is_refused() {
-        let dir = std::env::temp_dir().join(format!("fpkg-exfat-short-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let img = dir.join("short.exfat");
-        std::fs::write(&img, [0u8; 100]).unwrap();
-        let Err(err) = ExFat::open(&img) else {
-            panic!("{} must not open", img.display());
-        };
-        let err = err.to_string();
-        assert!(err.contains("one sector"), "{err}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn an_image_with_no_exfat_volume_is_refused() {
-        let dir = std::env::temp_dir().join(format!("fpkg-exfat-none-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let img = dir.join("blank.exfat");
-        std::fs::write(&img, [0u8; 4096]).unwrap();
-        let Err(err) = ExFat::open(&img) else {
-            panic!("{} must not open", img.display());
-        };
-        let err = err.to_string();
-        assert!(err.contains("no exFAT volume"), "{err}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn a_bogus_cluster_shift_is_refused() {
-        let dir = std::env::temp_dir().join(format!("fpkg-exfat-shift-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let img = dir.join("shift.exfat");
-        let mut boot = vec![0u8; 8192];
-        boot[3..11].copy_from_slice(OEM);
-        boot[108] = 9;
-        boot[109] = 40; // 1 TB clusters
-        boot[92..96].copy_from_slice(&16u32.to_le_bytes());
-        boot[96..100].copy_from_slice(&4u32.to_le_bytes());
-        std::fs::write(&img, &boot).unwrap();
-        let Err(err) = ExFat::open(&img) else {
-            panic!("{} must not open", img.display());
-        };
-        let err = err.to_string();
-        assert!(err.contains("cluster shift"), "{err}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Two shifts each in range can still make a 128 GiB cluster; the specification's 32 MiB

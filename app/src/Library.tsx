@@ -9,15 +9,17 @@ import { useEffect, useRef, useState } from "react";
 import { api, errorText, pick, runtimePlatform, type LibraryEntry, type LibraryScan, type RuntimePlatform } from "./api";
 import { basename, FormatPill, isWithin, notifyDeleted, onDeleted, PathLine } from "./common";
 import { confirmDelete } from "./delete";
+import { gameTitle, num, useMessages } from "./i18n";
 import { Icon } from "./icons";
 
-const name = (e: LibraryEntry) => e.title_name || e.title_id || basename(e.path);
+// Read at render: gameTitle follows the language, and the components re-render on a switch.
+const name = (e: LibraryEntry) => gameTitle(e.title_names, e.title_name) || e.title_id || basename(e.path);
 
 /** Storage in decimal GB as the console's Settings shows it: whole numbers, one decimal under 10 GB. */
 const gb = (bytes: number) => {
   // The precision follows the rounded value: 9.96 GB is "10 GB", not "10.0 GB".
   const tenths = Math.round(bytes / 1e8) / 10;
-  return `${tenths < 10 ? tenths.toFixed(1) : Math.round(bytes / 1e9)} GB`;
+  return `${tenths < 10 ? num(tenths, 1) : num(Math.round(bytes / 1e9))} GB`;
 };
 
 export function Library(props: {
@@ -25,6 +27,7 @@ export function Library(props: {
   onInspect: (entry: LibraryEntry) => void;
   onConvert: (entry: LibraryEntry) => void;
 }) {
+  const t = useMessages().library;
   const [platform, setPlatform] = useState<RuntimePlatform | null>(null);
   const [folder, setFolderState] = useState<string | null>(null); // the accepted folder (computer)
   const folderRef = useRef<string | null>(null); // the same, read at call time by scan
@@ -38,7 +41,7 @@ export function Library(props: {
   const [result, setResult] = useState<LibraryScan | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null); // the path just deleted
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [, setCoverVersion] = useState(0);
 
@@ -159,7 +162,7 @@ export function Library(props: {
 
   const choose = async () => {
     if (scanning.current) return;
-    const picked = await pick({ directory: true, title: "Choose a Library folder" });
+    const picked = await pick({ directory: true, title: t.pickTitle });
     if (!picked || scanning.current) return;
     void scan(picked, true);
   };
@@ -212,7 +215,7 @@ export function Library(props: {
       setDeleteError(null);
       await api.deletePath(path);
       notifyDeleted(path);
-      setNotice(`Deleted ${path}`);
+      setNotice(path);
     } catch (e) {
       setNotice(null);
       setDeleteError(errorText(e));
@@ -228,19 +231,19 @@ export function Library(props: {
   const body = busy ? (
     <div className="library-busy" role="status" aria-live="polite">
       <span className="spinner" aria-hidden="true" />
-      <span>{target ? `Scanning ${basename(target)}…` : "Scanning…"}</span>
+      <span>{target ? t.scanningIn(basename(target)) : t.scanning}</span>
     </div>
   ) : refused ? (
     <div className="empty library-empty" role="alert">
       <span className="empty-icon bad">
         <Icon name="alert" />
       </span>
-      <p className="empty-title">Can’t scan this folder</p>
+      <p className="empty-title">{t.cantScanFolder}</p>
       <p className="muted">{error}</p>
       <div className="row center">
         <button type="button" onClick={() => void choose()}>
           <Icon name="folder" />
-          Choose another folder…
+          {t.chooseAnother}
         </button>
       </div>
     </div>
@@ -249,11 +252,11 @@ export function Library(props: {
       <span className="empty-icon">
         <Icon name="folder" />
       </span>
-      <p className="empty-title">Pick a folder with your library to scan</p>
+      <p className="empty-title">{t.pickPrompt}</p>
       <div className="row center">
         <button type="button" className="primary" onClick={() => void choose()}>
           <Icon name="folder" />
-          Choose folder…
+          {t.choose}
         </button>
       </div>
     </div>
@@ -261,32 +264,27 @@ export function Library(props: {
     <>
       {error && (
         <p className="library-msg" role="alert">
-          <span className="tag orange">Can’t scan the Library:</span> {error}
+          <span className="tag orange">{t.cantScan}</span> {error}
         </p>
       )}
       {deleteError && (
         <p className="library-msg" role="alert">
-          <span className="tag orange">Can’t delete:</span> {deleteError}
+          <span className="tag orange">{t.cantDelete}</span> {deleteError}
         </p>
       )}
       {notice && (
         <p className="library-msg muted" role="status">
-          {notice}
+          {t.deleted(notice)}
         </p>
       )}
       {result && result.truncated && (
         <p className="library-msg" role="status">
-          <span className="tag orange">Scan limit reached. This list may be incomplete.</span>{" "}
-          <span className="muted">
-            Discovery stops at six folder levels and after about 15 seconds of scanning.
-          </span>
+          <span className="tag orange">{t.truncated}</span> <span className="muted">{t.limits}</span>
         </p>
       )}
-      {result && result.roots.length === 0 && <p className="muted">No folders are available to scan.</p>}
+      {result && result.roots.length === 0 && <p className="muted">{t.noRoots}</p>}
       {result && result.roots.length > 0 && entries.length === 0 && (
-        <p className="muted">
-          No game dumps found. Discovery checks up to six levels deep and skips system folders. Other sources can still be chosen in Inspect or Convert.
-        </p>
+        <p className="muted">{t.none}</p>
       )}
       {entries.length > 0 && (
         <ul className={view === "cards" ? "library-cards" : "library-rows"}>
@@ -297,7 +295,7 @@ export function Library(props: {
       )}
       {result && result.warnings.length > 0 && (
         <details className="fold library-note">
-          <summary>Skipped locations and files</summary>
+          <summary>{t.skipped}</summary>
           <ul className="muted">
             {result.warnings.map((w, i) => (
               <li key={i}>{w}</li>
@@ -305,7 +303,7 @@ export function Library(props: {
           </ul>
         </details>
       )}
-      {result && <p className="muted library-note">Results stay here until you press Refresh. New outputs appear after refreshing.</p>}
+      {result && <p className="muted library-note">{t.stays}</p>}
     </>
   );
 
@@ -315,16 +313,14 @@ export function Library(props: {
         <div className="library-head">
           <h2 id="library-title">
             <Icon name="library" />
-            Library
-            {result && <span className="count">{entries.length}</span>}
+            {t.library}
+            {result && <span className="count">{num(entries.length)}</span>}
           </h2>
           <div className="library-ctl">
             {storage && (
-              <span className="library-storage" title="Free space on the console's internal storage (/data), as of the last scan">
+              <span className="library-storage" title={t.storageTip}>
                 <Icon name="drive" />
-                <span>
-                  Free <b>{gb(storage.free)}</b> of {gb(storage.total)}
-                </span>
+                <span>{t.free(gb(storage.free), gb(storage.total))}</span>
               </span>
             )}
             {host && folder && (
@@ -335,26 +331,26 @@ export function Library(props: {
             {(platform !== null || error !== null) && !empty && !refused && (
               <button type="button" className="small" ref={refreshRef} disabled={busy} onClick={() => void refresh()}>
                 <Icon name="refresh" />
-                Refresh
+                {t.refresh}
               </button>
             )}
             {host && folder && (
               <button type="button" className="small" disabled={busy} onClick={() => void choose()}>
                 <Icon name="folder" />
-                Choose folder…
+                {t.choose}
               </button>
             )}
             {platform !== null && !empty && !refused && <div className="library-views">
-              <button type="button" className="small icon-only" aria-pressed={view === "cards"} aria-label="Card view" title="Card view" onClick={() => setView("cards")}>
+              <button type="button" className="small icon-only" aria-pressed={view === "cards"} aria-label={t.cards} title={t.cards} onClick={() => setView("cards")}>
                 <Icon name="grid" />
               </button>
-              <button type="button" className="small icon-only" aria-pressed={view === "list"} aria-label="List view" title="List view" onClick={() => setView("list")}>
+              <button type="button" className="small icon-only" aria-pressed={view === "list"} aria-label={t.list} title={t.list} onClick={() => setView("list")}>
                 <Icon name="list" />
               </button>
             </div>}
           </div>
         </div>
-        <div className="library-well" ref={wellRef} tabIndex={0} aria-busy={busy} aria-label="Game dumps">
+        <div className="library-well" ref={wellRef} tabIndex={0} aria-busy={busy} aria-label={t.games}>
           {body}
         </div>
       </section>
@@ -370,6 +366,7 @@ function Item(props: {
   onConvert: (e: LibraryEntry) => void;
   remove: (e: LibraryEntry) => void;
 }) {
+  const t = useMessages().library;
   const { entry: e } = props;
   const n = name(e);
   const cover = props.cover ? (
@@ -381,13 +378,13 @@ function Item(props: {
   );
   const actions = (
     <span className="library-actions">
-      <button type="button" className="small icon-only" aria-label={`Inspect ${n}`} title={`Inspect ${n}`} onClick={() => props.onInspect(e)}>
+      <button type="button" className="small icon-only" aria-label={t.inspect(n)} title={t.inspect(n)} onClick={() => props.onInspect(e)}>
         <Icon name="search" />
       </button>
-      <button type="button" className="small icon-only" aria-label={`Convert ${n}`} title={`Convert ${n}`} onClick={() => props.onConvert(e)}>
+      <button type="button" className="small icon-only" aria-label={t.convert(n)} title={t.convert(n)} onClick={() => props.onConvert(e)}>
         <Icon name="convert" />
       </button>
-      <button type="button" className="small icon-only danger" aria-label={`Delete ${n}`} title={`Delete ${n}`} onClick={() => props.remove(e)}>
+      <button type="button" className="small icon-only danger" aria-label={t.remove(n)} title={t.remove(n)} onClick={() => props.remove(e)}>
         <Icon name="trash" />
       </button>
     </span>
@@ -432,9 +429,10 @@ function Item(props: {
 
 /** An LZ4 packed dump's badge: "LZ4" in LZ4 yellow on a liquid-glass pill. */
 function Lz4Badge() {
+  const t = useMessages().library;
   return (
-    <span className="lz4-badge" title="LZ4 packed: ampr_emu asset packs">
-      LZ4<span className="visually-hidden"> packed</span>
+    <span className="lz4-badge" title={t.lz4Tip}>
+      LZ4<span className="visually-hidden">{t.lz4Packed}</span>
     </span>
   );
 }

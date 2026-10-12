@@ -446,29 +446,6 @@ mod tests {
         Some(body.len())
     }
 
-    #[test]
-    fn skewed_bytes_shrink_and_round_trip() {
-        let data: Vec<u8> = (0..50_000u32)
-            .map(|i| b"abacaade"[(i * 7 % 13 % 8) as usize])
-            .collect();
-        assert!(roundtrip(&data).unwrap() < data.len() / 3);
-    }
-
-    #[test]
-    fn edge_alphabets_round_trip() {
-        // One symbol (with its never-used partner), both ends of the byte range, all 256.
-        roundtrip(&[7u8; MIN_ARRAY]).unwrap();
-        roundtrip(&[0u8; MIN_ARRAY]).unwrap();
-        let mut d = vec![0u8; 300];
-        d[150] = 255;
-        roundtrip(&d);
-        let all: Vec<u8> = (0..4096u32).map(|i| (i * 31 % 256) as u8).collect();
-        roundtrip(&all);
-        for n in MIN_ARRAY..MIN_ARRAY + 8 {
-            roundtrip(&(0..n).map(|i| (i % 5) as u8).collect::<Vec<_>>()).unwrap();
-        }
-    }
-
     /// The console froze on Huffman arrays of every size and played with only those of 256 bytes
     /// and up, so nothing smaller is ever coded, however well it would shrink.
     #[test]

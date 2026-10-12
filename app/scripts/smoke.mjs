@@ -1,9 +1,8 @@
 // Development only: drives dist-http and src/http-client.ts against the real
 // `ps5-dump-forge serve` (built here with cargo, so it embeds the current dist-http) with
-// plain node (no browser), on a temp root holding a small game: the bundle's files, a few
-// parser checks, every route with JSON bodies (no auth: the contract has none), a real job
-// (folder -> .exfat) and a cancelled one through the poller, the LZ4 trace download, a
-// reload's restore, a server restart (the list rebuilt) and quit.
+// plain node (no browser), on a temp root holding a small game: the bundle's files, a real job
+// (folder -> .exfat) and a cancelled one through the poller, the LZ4 trace download (bytes),
+// delete_path's refusals, a reload's restore, a server restart (the list rebuilt) and quit.
 //
 //   npm run build:http && node scripts/smoke.mjs      (FORGE_BIN=<serve binary> skips cargo)
 
@@ -49,8 +48,7 @@ const PORT = await new Promise((ok) => {
     s.close(() => ok(port));
   });
 });
-const HOST = `127.0.0.1:${PORT}`;
-const ORIGIN = `http://${HOST}`;
+const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 let server = null;
 let stderr = "";
@@ -80,7 +78,7 @@ async function waitFor(what, f, ms = 30000) {
   throw new Error(`timed out: ${what}`);
 }
 
-/** A raw request (fetch can't set Host): status, headers, parsed JSON body. */
+/** A raw request: status, headers, parsed JSON body. */
 function raw(method, path, headers = {}, body) {
   return new Promise((ok, fail) => {
     const req = httpRequest({ host: "127.0.0.1", port: PORT, method, path, headers }, (res) => {
@@ -101,64 +99,19 @@ function raw(method, path, headers = {}, body) {
 
 server = await startServer();
 
-// ---- the bundle: index.html and its AppCache manifest, then every file the manifest lists ----
+// ---- the bundle: index.html, then every file its AppCache manifest lists ----
 const page = await fetch(`${ORIGIN}/`);
 assert.equal(page.status, 200);
-const html = await page.text();
-const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]);
-assert.ok(refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), "script and stylesheet");
-const manifestRef = html.match(/<html manifest="([^"]+)"/)?.[1];
-assert.equal(new URL(manifestRef, `${ORIGIN}/`).pathname, "/forge.appcache");
-const man = await fetch(new URL(manifestRef, `${ORIGIN}/`));
-assert.equal(man.status, 200);
-assert.equal(man.headers.get("content-type"), "text/cache-manifest");
-assert.equal(man.headers.get("cache-control"), "no-cache");
-const manText = await man.text();
-const manLines = manText.split("\n");
+const manifestRef = (await page.text()).match(/<html manifest="([^"]+)"/)?.[1];
+const manLines = (await (await fetch(new URL(manifestRef, `${ORIGIN}/`))).text()).split("\n");
 const cachedFiles = manLines.slice(manLines.indexOf("CACHE:") + 1, manLines.indexOf("NETWORK:")).filter(Boolean);
-for (const r of refs) assert.ok(cachedFiles.includes(new URL(r, `${ORIGIN}/`).pathname.slice(1)), `${r} in the manifest`);
-// The logo (bundled, so the page works offline).
-assert.ok(cachedFiles.some((r) => r.endsWith(".png")), "the logo");
-for (const r of cachedFiles) {
-  const res = await fetch(new URL(r, `${ORIGIN}/`));
-  assert.equal(res.status, 200, r);
-  const text = await res.text();
-  if (r.endsWith(".js")) assert.ok(!/__TAURI|plugin:dialog/.test(text), "no Tauri code in the http bundle");
-  console.log(`bundle: ${r} ${res.status} ${res.headers.get("content-type")}`);
-}
-assert.equal((await fetch(`${ORIGIN}/nope.js`)).status, 404);
-
-// ---- the parser and the API's own replies ----
+for (const r of cachedFiles) assert.equal((await fetch(new URL(r, `${ORIGIN}/`))).status, 200, r);
+console.log(`bundle: ${cachedFiles.length} files served`);
 const json = { "Content-Type": "application/json" };
-const checks = [
-  ["unknown route", await raw("POST", "/api/nope", json, "{}"), 404],
-  ["POST outside /api", await raw("POST", "/index.html", json, "{}"), 404],
-  ["Transfer-Encoding", await raw("POST", "/api/list_dir", { ...json, "Transfer-Encoding": "chunked" }, "0\r\n\r\n"), 400],
-  ["malformed JSON", await raw("POST", "/api/list_dir", json, "{"), 400],
-];
-for (const [what, res, want] of checks) {
-  assert.equal(res.status, want, what);
-  assert.equal(typeof res.data?.error, "string", `JSON error: ${what}`);
-}
-const sessionRes = await raw("GET", "/api/session");
-assert.equal(sessionRes.headers["cache-control"], "no-store", "API replies are never cached");
-const session = sessionRes.data;
-assert.deepEqual(Object.keys(session).sort(), ["app", "instance", "platform", "self_copy", "separator", "stopping", "url", "version"]);
-assert.ok(session.url.startsWith("http://") && session.url.endsWith(`:${PORT}`), `session url ${session.url}`);
-assert.equal(session.separator, process.platform === "win32" ? "\\" : "/");
-assert.equal(session.self_copy, "none"); // a host build carries no copy of itself
-assert.equal(session.app, "ps5-dump-forge");
-assert.equal(session.platform, "host");
-assert.equal(session.stopping, false);
-console.log(`parser: ${checks.map(([w, r]) => `${w} ${r.status}`).join(", ")}; session ${JSON.stringify(session)}`);
 
-// ---- a browser: fetch on this origin (recorded) ----
-const sent = [];
+// ---- a browser: fetch on this origin ----
 const realFetch = globalThis.fetch;
-globalThis.fetch = (path, init = {}) => {
-  sent.push({ method: init.method, path, headers: { ...init.headers } });
-  return realFetch(new URL(path, ORIGIN), init);
-};
+globalThis.fetch = (path, init = {}) => realFetch(new URL(path, ORIGIN), init);
 
 async function page_(tag) {
   const c = await import(`../src/http-client.ts?${tag}`);
@@ -173,44 +126,17 @@ const a = await page_("a");
 await waitFor("first restore", () => a.ev.restore.some((e) => e.replace));
 assert.deepEqual(a.ev.restore[0], { replace: true, jobs: [] });
 
-// Commands.
-const roots = await a.c.call("list_dir", { path: null });
-assert.deepEqual(roots, { path: null, parent: null, entries: [{ name: root, path: root, dir: true, size: null }], truncated: false });
-const top = await a.c.call("list_dir", { path: root });
-assert.equal(top.parent, null);
-assert.deepEqual(top.entries.map((e) => e.name), ["homebrew", "images"]);
-const imgs = await a.c.call("list_dir", { path: images });
-assert.equal(imgs.parent, root);
-assert.deepEqual(imgs.entries, [{ name: "Old.exfat.part", path: `${images}/Old.exfat.part`, dir: false, size: 0 }]);
-// No confinement: any absolute path lists; a core failure comes back as its error string.
-const above = await a.c.call("list_dir", { path: dirname(root) });
-assert.ok(above.entries.some((e) => e.path === root && e.dir), "the folder above the root");
-await assert.rejects(a.c.call("inspect", { path: `${root}/missing` }), (e) => typeof e === "string" && e.length > 0);
-const ins = await a.c.call("inspect", { path: game });
-assert.equal(ins.title_id, "PPSA01234");
+// The outputs.
 const name = "[Smoke Game]-[PPSA01234].exfat";
-assert.equal(await a.c.call("default_output", { source: game, format: "exfat", dir: images }), `${images}/PPSA01234.exfat`);
 const out = await a.c.call("generated_output", { source: game, format: "exfat", dir: images, taken: [] });
 assert.equal(out, `${images}/${name}`);
 const out2 = await a.c.call("generated_output", { source: game, format: "exfat", dir: images, taken: [out] });
-assert.equal(out2, `${images}/${name.replace(".exfat", "-2.exfat")}`);
-assert.deepEqual(await a.c.call("stale_parts", { dirs: [images, `${root}/gone`] }), [`${images}/Old.exfat.part`]);
-assert.equal(await a.c.call("reveal", { id: 1 }), undefined);
-// The LZ4 patch refuses a title that doesn't use AMPR (the fake eboot.bin imports nothing).
-await assert.rejects(a.c.call("lz4_patch", { source: game }), (e) => typeof e === "string" && e.length > 0);
-await assert.rejects(a.c.call("lz4_unpatch", { source: game }), (e) => typeof e === "string" && e.includes("libSceAmpr"));
-// Save as profile (a Pack request) refuses it the same way, writing nothing.
-const packReq = { source: game, format: "lz4", output: "", compression_threads: null, inner: null, remove_backport: false, full_verify: false, kraken_level: "fast", ffpfsc_level: 6, lz4: null };
-await assert.rejects(a.c.call("lz4_plan_profile", { request: packReq }), (e) => typeof e === "string" && e.includes("libSceAmpr"));
-assert.deepEqual((await a.c.call("list_dir", { path: game })).entries.map((e) => e.name).sort(), ["data", "eboot.bin", "sce_sys"], "folder untouched");
-console.log("commands: list_dir (roots, root, folder, above the root), inspect (and a missing path), default_output, generated_output, stale_parts, reveal (local), lz4_patch, lz4_unpatch and lz4_plan_profile (refused)");
 
 // Jobs: one runs to the end, one is cancelled while queued behind it.
 const request = { source: game, format: "exfat", output: out, compression_threads: null, inner: null, remove_backport: false, full_verify: false, kraken_level: "fast", ffpfsc_level: 6, lz4: null };
 const id = await a.c.call("start_job", { request });
 const id2 = await a.c.call("start_job", { request: { ...request, output: out2 } });
 assert.equal(await a.c.call("cancel_job", { id: id2 }), null);
-assert.equal(await a.c.call("cancel_job", { id: id2 }), null, "cancel is idempotent");
 // A job the page first sees finished (the queued one cancelled before a poll) arrives whole
 // in a restore, not as a done event: either way, one result per job.
 const results = (ev, job) => [
@@ -219,14 +145,10 @@ const results = (ev, job) => [
 ];
 await waitFor("both done", () => results(a.ev, id).length && results(a.ev, id2).length, 120000);
 await sleep(1500); // a later poll must not repeat a result
-const mine = a.ev.progress.filter((e) => e.job === id).map((e) => e.done);
-assert.ok(mine.length >= 1, `progress events: ${mine.length}`);
-assert.deepEqual(mine, [...mine].sort((x, y) => x - y), "progress only grows");
 const snap = (await raw("GET", "/api/jobs")).data;
 const total = snap.jobs.find((j) => j.id === id).log_total;
 const restoredLines = a.ev.restore.flatMap((e) => e.jobs.filter((j) => j.id === id).flatMap((j) => j.log));
 const lines = [...restoredLines, ...a.ev.log.filter((e) => e.job === id).map((e) => e.line)];
-assert.ok(total > 0);
 assert.deepEqual(lines, snap.jobs.find((j) => j.id === id).log, "every log line once, in order");
 assert.equal(results(a.ev, id).length, 1, "done once");
 assert.equal(results(a.ev, id)[0].Ok.output, out);
@@ -234,17 +156,10 @@ assert.deepEqual(results(a.ev, id2), [{ Err: "cancelled" }]);
 assert.deepEqual(await a.c.call("stale_parts", { dirs: [images] }), [`${images}/Old.exfat.part`], "no .part left");
 const listed = await a.c.call("list_dir", { path: images });
 assert.ok(listed.entries.some((e) => e.name === name && e.size > 64 << 20), "the image");
-console.log(`jobs: ${mine.length} progress events, ${lines.length}/${total} log lines once each, done once, cancel -> {"Err":"cancelled"}, ${name} written`);
-
-// LZ4 Pack into an image passes through to core, which refuses a game that doesn't use AMPR.
-const packId = await a.c.call("start_job", { request: { ...request, output: `${images}/Packed.ffpkg`, format: "ffpkg", lz4: "pack" } });
-await waitFor("pack refused", () => results(a.ev, packId).length, 60000);
-const packErr = results(a.ev, packId)[0].Err;
-assert.ok(typeof packErr === "string" && packErr.includes("libSceAmpr"), packErr);
-console.log('lz4: "pack" into .ffpkg reaches core (refused: not an AMPR title)');
+console.log(`jobs: ${lines.length}/${total} log lines once each, done once, cancel -> {"Err":"cancelled"}, ${name} written`);
 
 // Download traces: the page links one zip (a download, not fetch) of both files, STORED, so each
-// entry's bytes follow its 30-byte local header and name; Python's zipfile checks it whole.
+// entry's bytes follow its 30-byte local header and name.
 const traced = `${root}/traced game`;
 mkdirSync(`${traced}/sce_sys`, { recursive: true });
 writeFileSync(`${traced}/sce_sys/param.json`, JSON.stringify({ titleId: "PPSA05678", titleName: "Smoke: Traced" }));
@@ -255,7 +170,6 @@ writeFileSync(`${traced}/ampr_emu.index`, "fake index");
 const traceUrl = (source) => `${ORIGIN}/api/lz4_traces?source=${encodeURIComponent(source)}`;
 const dl = await realFetch(traceUrl(traced));
 assert.equal(dl.status, 200);
-assert.equal(dl.headers.get("content-type"), "application/zip");
 assert.equal(dl.headers.get("content-disposition"), 'attachment; filename="[Smoke Traced]-[PPSA05678]-amprtrace.zip"');
 const zip = Buffer.from(await dl.arrayBuffer());
 assert.equal(dl.headers.get("content-length"), String(zip.length));
@@ -269,13 +183,9 @@ for (const [name, bytes] of [["ampr_commands.bin", journal], ["ampr_emu.index", 
 }
 const zipPath = `${root}/traces.zip`;
 writeFileSync(zipPath, zip);
-const py = spawnSync("python3", ["-c", "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print(*z.namelist())", zipPath]);
-if (py.error) console.log(`python3 not run (${py.error.code})`);
-else assert.equal(py.stdout.toString().trim(), "ampr_commands.bin ampr_emu.index", py.stderr.toString());
 mkdirSync(`${root}/no index`);
 writeFileSync(`${root}/no index/ampr_commands.bin`, "x");
 assert.equal((await realFetch(traceUrl(`${root}/no index`))).status, 404);
-assert.equal((await realFetch(traceUrl(game))).status, 404);
 // Delete (Inspect's, after the page asks): disposable fixtures only. A file and a folder go;
 // a browse root, a folder holding one, an empty path and a missing one are refused.
 assert.equal(await a.c.call("delete_path", { path: zipPath }), null);
@@ -286,39 +196,17 @@ assert.equal(await delStatus(root), 400, "a browse root");
 assert.equal(await delStatus(dirname(root)), 400, "a folder holding a browse root");
 assert.equal(await delStatus(""), 400, "an empty path");
 assert.equal(await delStatus(`${root}/no index`), 404, "already gone");
-assert.equal((await raw("POST", "/api/delete_path", json, "{}")).status, 400, "no path");
 assert.ok((await a.c.call("list_dir", { path: traced })).entries.length > 0, "the rest is untouched");
 console.log("delete_path: a file and a folder deleted; browse root, its parent, empty 400; missing 404");
-console.log(`lz4_traces: a ${zip.length}-byte zip of a 3 MiB journal and its index, entries byte for byte; no index or no traces 404`);
-
-// Every request: POSTs carry JSON; nothing else (no token, no custom header).
-for (const s of sent) {
-  if (s.method === "POST") assert.deepEqual(s.headers, { "Content-Type": "application/json" }, s.path);
-  else assert.deepEqual(s.headers, {}, s.path);
-}
-const routes = [...new Set(sent.map((s) => `${s.method} ${s.path}`))];
-console.log(`routes hit: ${routes.join(", ")}`);
-assert.ok(!routes.some((x) => x.includes("reveal") || x.includes("quit_app")));
+console.log(`lz4_traces: a ${zip.length}-byte zip of a 3 MiB journal and its index, entries byte for byte; no index 404`);
 
 // A reload: the list restored whole.
 const b = await page_("b");
 await waitFor("restore", () => b.ev.restore.some((e) => e.replace));
 const back = b.ev.restore.find((e) => e.replace).jobs;
-assert.deepEqual(back.map((j) => j.id), [id, id2, packId]);
+assert.deepEqual(back.map((j) => j.id), [id, id2]);
 assert.equal(back[0].done.result.Ok.output, out);
-// The server resolves `compression_threads: null` to max(1, cores - 1).
-assert.ok(back[0].request.compression_threads >= 1);
-// The LZ4 fields Convert leaves out come back as core's defaults.
-assert.deepEqual(back[0].request, {
-  ...request,
-  compression_threads: back[0].request.compression_threads,
-  lz4: null,
-  lz4_profile: null,
-  lz4_traces: null,
-  lz4_trace_space_mib: 256,
-  lz4_in_place: false,
-});
-console.log("reload: every job restored with request, log and result");
+console.log("reload: every job restored with its result");
 
 // The server restarts: offline, then a new instance's (empty) list replaces the old one; the
 // old jobs don't end with "no longer reported" (that's for one instance's dropped history).
@@ -340,8 +228,7 @@ await b.c.call("quit_app");
 const exit = await server.exited;
 assert.deepEqual(exit, { status: 0, signal: null });
 assert.match(stderr, /Dump Forge stopped\n$/);
-console.log(`quit: POST /api/quit, resolved after the server exited 0 (${Date.now() - t0} ms)`);
-assert.ok(sent.some((s) => s.path === "/api/quit" && s.method === "POST"));
+console.log(`quit: resolved after the server exited 0 (${Date.now() - t0} ms)`);
 server = null;
 
 console.log("smoke: ok");

@@ -12,6 +12,7 @@ mod api;
 #[cfg(target_env = "ps5")]
 mod debug;
 mod http;
+mod notice;
 mod paths;
 // The payload's copy of its own ELF (`ps5/build.sh` stage 2).
 #[cfg(any(all(test, unix), target_env = "ps5"))]
@@ -118,10 +119,10 @@ pub fn serve(opts: Options) -> io::Result<()> {
                 opts.platform,
             );
             if is_forge(opts.port) {
-                (opts.notify)(&format!("Dump Forge: already running at {url}"));
+                (opts.notify)(&notice::already_running(notice::console_lang(), &url));
                 Ok(())
             } else {
-                let line = format!("Dump Forge: port {} is used by another program", opts.port);
+                let line = notice::port_in_use(notice::console_lang(), opts.port);
                 (opts.notify)(&line);
                 Err(io::Error::new(io::ErrorKind::AddrInUse, line))
             }
@@ -192,11 +193,11 @@ pub fn serve_on(listener: TcpListener, opts: Options) -> io::Result<()> {
     Ok(())
 }
 
-/// The notice once serving. The console's own browser opens the page from the tile; the
+/// The notice once serving. The console's own browser opens the page from the icon; the
 /// address is in the page's header (and the log) for anyone else on the network.
 fn started(url: &str, ps5: bool) -> String {
     match ps5 {
-        true => "Dump Forge is running: open the Dump Forge tile".into(),
+        true => notice::started(notice::console_lang()).into(),
         false => format!("Dump Forge: open {url}"),
     }
 }
@@ -275,19 +276,4 @@ fn random_hex(n: usize) -> io::Result<String> {
     let mut bytes = vec![0u8; n];
     getrandom::fill(&mut bytes).map_err(|e| io::Error::other(format!("no randomness: {e}")))?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn started_notice() {
-        let url = "http://192.168.1.20:8095";
-        assert_eq!(
-            super::started(url, false),
-            "Dump Forge: open http://192.168.1.20:8095"
-        );
-        let ps5 = super::started(url, true);
-        assert!(ps5.contains("open the Dump Forge tile"), "{ps5}");
-        assert!(!ps5.contains("http"), "{ps5}");
-    }
 }

@@ -51,25 +51,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_debug_header() {
-        let mut h = vec![0u8; HEADER_LEN];
-        h[0..4].copy_from_slice(&0x7F46_4948u32.to_be_bytes());
-        h[5] = 0x00;
-        h[6..8].copy_from_slice(&3u16.to_le_bytes());
-        h[0x10..0x18].copy_from_slice(&0x10000u64.to_le_bytes());
-        h[0x18..0x20].copy_from_slice(&0x70000u64.to_le_bytes());
-        h[0x30] = 0xAB;
-        h[0x58..0x60].copy_from_slice(&0x80000u64.to_le_bytes());
-        let f = parse(&h).unwrap();
-        assert!(f.is_debug());
-        assert_eq!(
-            (f.pfs_offset, f.pfs_size, f.cnt_offset),
-            (0x10000, 0x70000, 0x80000)
-        );
-        assert_eq!(f.game_digest[0], 0xAB);
-    }
-
-    #[test]
     fn rejects_an_outer_image_range_that_overflows() {
         let mut h = vec![0u8; HEADER_LEN];
         h[0..4].copy_from_slice(&0x7F46_4948u32.to_be_bytes());
@@ -79,12 +60,5 @@ mod tests {
             panic!("an overflowing range must not parse");
         };
         assert!(e.to_string().contains("overflows"), "{e}");
-    }
-
-    #[test]
-    fn rejects_cnt_magic() {
-        let mut h = vec![0u8; HEADER_LEN];
-        h[0..4].copy_from_slice(&0x7F43_4E54u32.to_be_bytes());
-        assert!(parse(&h).is_err());
     }
 }

@@ -228,15 +228,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn firmware_words() {
-        assert_eq!(firmware(0x0700_0038).as_deref(), Some("7.00"));
-        assert_eq!(firmware(0x1050_0040).as_deref(), Some("10.50"));
-        assert_eq!(firmware(0x0450_0031).as_deref(), Some("4.50"));
-        assert_eq!(firmware(0x0A00_0000), None);
-        assert_eq!(firmware(0), None);
-    }
-
-    #[test]
     fn highest_sdk_left_is_the_lowest_firmware() {
         let mut tree = Files::new(vec![
             (

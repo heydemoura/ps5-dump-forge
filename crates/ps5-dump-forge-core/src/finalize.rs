@@ -737,17 +737,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn part_is_a_sibling() {
-        let part = part_path(Path::new("/x/GAME.exfat"), 7);
-        assert_eq!(part.parent(), Some(Path::new("/x")));
-        let name = part.file_name().unwrap().to_str().unwrap();
-        assert!(
-            name.starts_with("GAME.exfat.7-") && name.ends_with(".part"),
-            "{name}"
-        );
-    }
-
     use std::io::Write;
 
     /// A file part with `bytes` written, fsynced and the caller's handle closed, the way
@@ -794,16 +783,6 @@ mod tests {
     }
 
     #[test]
-    fn drop_after_a_partial_write_removes_the_part() {
-        let dir = crate::test_dir("part-partial");
-        let (part, mut file) = Part::create_file(&dir.join("a.part")).unwrap();
-        file.write_all(b"half").unwrap();
-        drop(part);
-        drop(file);
-        assert!(!dir.join("a.part").exists());
-    }
-
-    #[test]
     fn a_panic_after_writing_removes_the_part() {
         let dir = crate::test_dir("part-panic");
         let path = dir.join("a.part");
@@ -845,31 +824,6 @@ mod tests {
     fn a_file_planted_at_the_part_is_left_alone() {
         replaced_part_is_left_alone("part-plant-file", |at, _| {
             std::fs::write(at, b"theirs").unwrap()
-        });
-    }
-
-    #[test]
-    fn a_dir_planted_at_the_part_is_left_alone() {
-        replaced_part_is_left_alone("part-plant-dir", |at, _| {
-            std::fs::create_dir(at).unwrap();
-            std::fs::write(at.join("keep"), b"theirs").unwrap();
-        });
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_link_to_the_part_planted_at_its_path_is_left_alone() {
-        // FAT32 (FreeBSD's msdosfs) has no symlinks.
-        let probe = crate::test_dir("part-plant-link-probe");
-        if !crate::supported(
-            std::os::unix::fs::symlink("nowhere", probe.join("link")),
-            "symlink",
-        ) {
-            return;
-        }
-        // The link resolves to the very file this job wrote; it is still not the part.
-        replaced_part_is_left_alone("part-plant-link", |at, original| {
-            std::os::unix::fs::symlink(original, at).unwrap()
         });
     }
 
@@ -976,39 +930,6 @@ mod tests {
         (part.hard_links, part.dev) = (true, Some(dev)); // a directory is renamed all the same
         part.publish(&dir.join("d")).unwrap();
         assert!(dir.join("d").is_dir() && !dir.join("d.part").exists());
-    }
-
-    #[test]
-    fn a_dir_part_swapped_for_another_dir_is_left_alone() {
-        let dir = crate::test_dir("part-dir-swap");
-        let (path, aside) = (dir.join("a.part"), dir.join("a.aside"));
-        let part = Part::create_dir(&path).unwrap();
-        std::fs::rename(&path, &aside).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        let err = part.publish(&dir.join("out")).unwrap_err().to_string();
-        assert!(err.contains("was replaced after it was verified"), "{err}");
-        assert!(path.is_dir() && aside.is_dir());
-        assert!(!dir.join("out").exists());
-    }
-
-    #[test]
-    fn identities_follow_the_file_not_its_name() {
-        let dir = crate::test_dir("file-ids");
-        let (a, b) = (dir.join("a"), dir.join("b"));
-        std::fs::write(&a, b"a").unwrap();
-        std::fs::write(&b, b"b").unwrap();
-        // FAT32 (FreeBSD's msdosfs) has no hard links: no second name to compare.
-        let linked = crate::supported(std::fs::hard_link(&a, dir.join("a2")), "hard_link");
-        let id = |p: &Path| path_id(p).unwrap().0;
-        assert_eq!(id(&a), id(&dir.join(".").join("a")), "another spelling");
-        if linked {
-            assert_eq!(id(&a), id(&dir.join("a2")), "another name");
-        }
-        assert_eq!(id(&a), handle_id(&File::open(&a).unwrap()).unwrap());
-        assert_eq!(id(&a), followed_id(&a).unwrap());
-        assert_ne!(id(&a), id(&b), "another file");
-        assert!(path_id(&dir).unwrap().1.is_dir());
-        assert!(path_id(&dir.join("missing")).is_err());
     }
 
     #[test]

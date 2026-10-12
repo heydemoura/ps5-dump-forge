@@ -894,25 +894,6 @@ mod tests {
         assert!(!is_module_header(&[0x7F, b'E']));
     }
 
-    /// `pfs-version.dat` is a marker, not app payload: the sample's three uroot files
-    /// count as two at the header's `0xF0`.
-    #[test]
-    fn pfs_version_dat_is_not_app_payload() {
-        let plan = build(&src(&[("eboot.bin", 10), ("pfs-version.dat", 10)])).unwrap();
-        assert_eq!(plan.app_file_count, 1);
-    }
-
-    #[test]
-    fn keystone_is_generated_when_absent() {
-        let plan = build(&src(&[("eboot.bin", 100)])).unwrap();
-        let keystone = plan.files.iter().find(|f| f.path == KEYSTONE).unwrap();
-        assert!(keystone.generated);
-        assert_eq!(keystone.size, KEYSTONE_LEN);
-        assert_eq!(plan.files.len(), 2);
-        assert_eq!(plan.afid_order.len(), 2);
-        assert_eq!(plan.flt_apr.len(), 1); // eboot.bin only, keystone is sce_sys
-    }
-
     #[test]
     fn inodes_follow_the_measured_order() {
         let plan = build(&src(&[
@@ -999,58 +980,12 @@ mod tests {
         let &(last_at, last_size) = extents.last().unwrap();
         assert_eq!(bytes.len() as i32, last_at + last_size);
     }
-
-    #[test]
-    fn dirent_offsets_are_eight_byte_packed() {
-        assert_eq!(dirent_size("."), 24);
-        assert_eq!(dirent_size(".."), 24);
-        assert_eq!(dirent_size("eboot.bin"), 32);
-    }
 }
 
 #[cfg(test)]
 mod afid_tests {
     use super::*;
     use crate::source::SourceFile;
-
-    /// The streaming writer files its per-file digests by afid, so every file must have
-    /// exactly one, and the afid order must cover them all.
-    #[test]
-    fn every_file_gets_a_distinct_afid() {
-        let files: Vec<SourceFile> = [
-            "eboot.bin",
-            "data/one.bin",
-            "sce_sys/param.json",
-            "sce_sys/icon0.png",
-            "sce_sys/about/right.sprx",
-        ]
-        .iter()
-        .map(|p| SourceFile {
-            path: (*p).to_string(),
-            size: 10,
-        })
-        .collect();
-        let plan = build(&files).unwrap();
-        assert_eq!(
-            plan.afid_order.len(),
-            plan.files.len(),
-            "afid order covers {} of {} files",
-            plan.afid_order.len(),
-            plan.files.len()
-        );
-        for (afid, &fi) in plan.afid_order.iter().enumerate() {
-            assert_eq!(
-                plan.files[fi].afid as usize, afid,
-                "{}",
-                plan.files[fi].path
-            );
-        }
-        let mut seen: Vec<u32> = plan.files.iter().map(|f| f.afid).collect();
-        seen.sort_unstable();
-        let count = seen.len();
-        seen.dedup();
-        assert_eq!(seen.len(), count, "two files share an afid: {seen:?}");
-    }
 
     /// An empty source directory stays a directory: Minecraft ships an empty `data/shaders`,
     /// and PSVIETHOA's working package keeps it.

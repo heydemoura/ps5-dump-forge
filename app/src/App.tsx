@@ -10,6 +10,8 @@ import logo from "./assets/logo.png";
 import { basename, closeOverlays, dirname, panelId, tabId, TabList, type SourceSelection } from "./common";
 import { Convert } from "./Convert";
 import { Formats, openConnect } from "./Formats";
+import { useMessages } from "./i18n";
+import type { Messages } from "./locales/en";
 import { Icon } from "./icons";
 import { Inspect } from "./Inspect";
 import { Library } from "./Library";
@@ -20,6 +22,7 @@ import { jobsReducer, type Job } from "./jobs";
 type Tab = "convert" | "library" | "lz4" | "inspect" | "formats";
 
 export function App() {
+  const t = useMessages().app;
   const [tab, setTab] = useState<Tab>("convert");
   const [jobs, dispatch] = useReducer(jobsReducer, []);
   const [closing, setClosing] = useState<"ask" | "stopping" | "stopped" | "failed" | null>(null);
@@ -101,7 +104,7 @@ export function App() {
                 <button
                   type="button"
                   className="address-btn"
-                  aria-label={`Address: http://${address}. Show how to connect, with a QR code`}
+                  aria-label={t.address(`http://${address}`)}
                   onClick={openConnect}
                 >
                   <span className="address">{address}</span>
@@ -109,7 +112,7 @@ export function App() {
               )}
             </div>
             <TabList
-              label="Screens"
+              label={t.screens}
               prefix="screen"
               className="nav"
               value={tab}
@@ -119,43 +122,43 @@ export function App() {
                   id: "convert",
                   label: (
                     <>
-                      Convert
+                      {t.convert}
                       {active > 0 && (
                         <>
                           <span className="count" aria-hidden="true">
                             {active}
                           </span>
-                          <span className="visually-hidden">, {active} active</span>
+                          <span className="visually-hidden">{t.active(active)}</span>
                         </>
                       )}
                     </>
                   ),
                 },
-                { id: "inspect", label: "Inspect" },
+                { id: "inspect", label: t.inspect },
                 { id: "lz4", label: "LZ4", className: "tab-lz4", sep: true },
                 {
                   id: "library",
                   label: (
                     <>
                       <Icon name="library" />
-                      Library
+                      {t.library}
                     </>
                   ),
                   sep: true,
                 },
-                { id: "formats", label: "About", sep: true },
+                { id: "formats", label: t.about, sep: true },
               ]}
             />
             <div className="top-actions">
               {web && offline && (
                 <span className="tag orange" role="status">
-                  Offline, retrying…
+                  {t.offline}
                 </span>
               )}
               {web && (
                 <button className="small" onClick={askStop}>
                   <Icon name="power" />
-                  <span className="stop-label">Stop Dump Forge</span>
+                  <span className="stop-label">{t.stop}</span>
                 </button>
               )}
               <GitHubLink />
@@ -235,37 +238,27 @@ export function App() {
                   <span className="head-icon warn">
                     <Icon name="alert" />
                   </span>
-                  <h2 id="quit-title">
-                    {unfinished.length === 1 ? "A job is" : `${unfinished.length} jobs are`} still
-                    running
-                  </h2>
+                  <h2 id="quit-title">{t.stillRunning(unfinished.length)}</h2>
                 </div>
                 <div id="quit-text">
                   <ul className="quit-jobs">
                     {unfinished.map((j) => (
                       <li key={j.id}>
                         <span className="quit-name">
-                          {j.request ? basename(j.request.output) : `Job ${j.id}`}
+                          {j.request ? basename(j.request.output) : t.job(j.id)}
                         </span>
-                        <span className="muted">{jobState(j)}</span>
+                        <span className="muted">{jobState(j, t)}</span>
                       </li>
                     ))}
                   </ul>
-                  <p className="muted">
-                    {web ? "Stopping Dump Forge" : "Quitting"} stops{" "}
-                    {unfinished.length === 1 ? "it" : "them"} and deletes the unfinished output.
-                  </p>
+                  <p className="muted">{t.quitNote(web, unfinished.length)}</p>
                 </div>
                 <div className="row end">
                   <button autoFocus onClick={() => setClosing(null)}>
-                    Keep running
+                    {t.keepRunning}
                   </button>
                   <button className="danger" onClick={quit}>
-                    {web
-                      ? "Stop Dump Forge"
-                      : unfinished.length === 1
-                        ? "Stop job and quit"
-                        : "Stop jobs and quit"}
+                    {web ? t.stop : t.stopAndQuit(unfinished.length)}
                   </button>
                 </div>
               </>
@@ -274,7 +267,7 @@ export function App() {
                 <span className="spinner" aria-hidden="true" />
                 <h2 id="quit-title">
                   <span id="quit-text">
-                    {active > 0 || !web ? "Stopping jobs and cleaning up…" : "Stopping Dump Forge…"}
+                    {active > 0 || !web ? t.stoppingJobs : t.stoppingForge}
                   </span>
                 </h2>
               </div>
@@ -284,17 +277,17 @@ export function App() {
                   <span className="head-icon warn">
                     <Icon name="alert" />
                   </span>
-                  <h2 id="quit-title">Couldn't stop Dump Forge</h2>
+                  <h2 id="quit-title">{t.couldntStop}</h2>
                 </div>
                 <p className="muted" id="quit-text">
                   {quitError}
                 </p>
                 <div className="row end">
                   <button autoFocus onClick={() => setClosing(null)}>
-                    Close
+                    {t.close}
                   </button>
                   <button className="danger" onClick={quit}>
-                    Try again
+                    {t.tryAgain}
                   </button>
                 </div>
               </>
@@ -305,11 +298,11 @@ export function App() {
                     <Icon name="power" />
                   </span>
                   <h2 id="quit-title" tabIndex={-1} ref={(el) => el?.focus()}>
-                    Dump Forge has stopped
+                    {t.stopped}
                   </h2>
                 </div>
                 <p className="muted" id="quit-text">
-                  Start the payload on the PS5 again to use it, then reload this page.
+                  {t.startAgain}
                 </p>
               </>
             )}
@@ -325,12 +318,13 @@ const REPO = "https://github.com/quer3q/ps5-dump-forge";
 /** The project on GitHub: a link in the http build, the default browser in the app (a link
  * there would open inside its window). */
 function GitHubLink() {
+  const t = useMessages().app;
   const mark = (
     <svg className="icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false">
       <path d="M8 0c4.42 0 8 3.58 8 8a8.01 8.01 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A8 8 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
     </svg>
   );
-  const label = `${APP_NAME} on GitHub`;
+  const label = t.github(APP_NAME);
   return web ? (
     <a className="gh-link" href={REPO} target="_blank" rel="noreferrer" aria-label={label} title={label}>
       {mark}
@@ -343,8 +337,7 @@ function GitHubLink() {
 }
 
 /** How far an unfinished job got, for the quit prompt. */
-function jobState(j: Job): string {
-  if (j.stage === undefined) return "queued";
-  const left = j.etaMs !== undefined ? `, ${prettyDuration(j.etaMs)} left` : "";
-  return `${Math.floor(100 * j.shown)}% done${left}`;
+function jobState(j: Job, t: Messages["app"]): string {
+  if (j.stage === undefined) return t.queued;
+  return t.progress(Math.floor(100 * j.shown), j.etaMs !== undefined ? prettyDuration(j.etaMs) : null);
 }

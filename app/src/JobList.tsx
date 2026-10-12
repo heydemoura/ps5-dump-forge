@@ -16,9 +16,13 @@ import {
   type VerifyReport,
 } from "./api";
 import { basename, CardHead, FormatPill, kindLabel, PathLine } from "./common";
+import { useMessages } from "./i18n";
+import type { Messages } from "./locales/en";
 import { Icon, type IconName } from "./icons";
 import type { Action, Job } from "./jobs";
 import { running } from "./target";
+
+type T = Messages["jobs"];
 
 /** Below all the cards, full width: a new job shows next to the choices that made it, and the
  * queue grows to fill the rest of the window (scrolling inside itself). `started`: jobs this
@@ -29,12 +33,13 @@ export function JobsCard(props: {
   started: MutableRefObject<Set<JobId>>;
   prefix: string;
 }) {
+  const t = useMessages().jobs;
   const pending = running(props.jobs).length;
   return (
     <section className="card jobs" aria-labelledby={`${props.prefix}-jobs`}>
-      <CardHead icon="jobs" title="Jobs" id={`${props.prefix}-jobs`}>
+      <CardHead icon="jobs" title={t.jobs} id={`${props.prefix}-jobs`}>
         <span className="muted head-note">
-          {pending > 0 ? `${pending} running or queued` : "all finished"}
+          {pending > 0 ? t.pending(pending) : t.allFinished}
         </span>
       </CardHead>
       <div className="job-list">
@@ -51,51 +56,34 @@ export function JobsCard(props: {
   );
 }
 
-/** Core's stage ids; one bar spans them all, the label says which pass is running. */
-const STAGES: Record<string, string> = {
-  scan: "Reading the source",
-  preflight: "Checking",
-  check: "Checking",
-  plan: "Planning",
-  compress: "Compressing",
-  write: "Writing",
-  measure: "Measuring packs",
-  pack: "Packing",
-  verify: "Verifying",
-  finalize: "Finishing",
-};
-
 /** What a stage's byte rate measures: verify reads the output back, compress and measure
  * (packing without writing, to size the packs) count the uncompressed bytes they took in, the
  * rest write. */
-function rateLabel(stage: string): string {
-  if (stage === "verify") return "read";
-  if (stage === "compress" || stage === "measure") return "compress";
-  if (stage === "pack") return "pack";
-  return "write";
+function rateLabel(t: T, stage: string): string {
+  if (stage === "verify") return t.rate.read;
+  if (stage === "compress" || stage === "measure") return t.rate.compress;
+  if (stage === "pack") return t.rate.pack;
+  return t.rate.write;
 }
 
 /** A finished job's button names the platform's file manager; only Finder gets its face. The
  * http build has none on the console: it shows the path, selected, to copy. */
 const IS_MAC = !web && navigator.userAgent.includes("Mac");
 const REVEAL_ICON: IconName = IS_MAC ? "finder" : web ? "file" : "folder";
-function revealLabel(): string {
-  if (web) return "Show path";
-  if (IS_MAC) return "Show in Finder";
-  return navigator.userAgent.includes("Windows") ? "Show in Explorer" : "Show in folder";
+function revealLabel(t: T): string {
+  if (web) return t.showPath;
+  if (IS_MAC) return t.showFinder;
+  return navigator.userAgent.includes("Windows") ? t.showExplorer : t.showFolder;
 }
 
-/** What a job does with LZ4, for its row: the label, and whether it is an LZ4 tab job (the
- * yellow accent). A legacy `lz4` target is a pack into a folder. Convert's runtime
- * replacement (`unpatch` without `lz4_in_place`) is no LZ4 tab job and never "packing". */
-function lz4Job(r: ConvertRequest | undefined): { label: string; tab: boolean } | null {
+/** What a job does with LZ4, for its row: its tag (a key of the `lz4` messages), and whether it
+ * is an LZ4 tab job (the yellow accent). A legacy `lz4` target is a pack into a folder. Convert's
+ * runtime replacement (`unpatch` without `lz4_in_place`) is no LZ4 tab job and never "packing". */
+function lz4Job(r: ConvertRequest | undefined): { id: keyof T["lz4"]; tab: boolean } | null {
   if (!r) return null;
   const mode = r.lz4 ?? (r.format === "lz4" ? "pack" : null);
-  if (mode === "pack") return { label: "LZ4 pack", tab: true };
-  if (mode === "unpack") return { label: "LZ4 unpack", tab: true };
-  if (mode === "trace") return { label: "LZ4 trace", tab: true };
-  if (mode === "unpatch")
-    return r.lz4_in_place ? { label: "LZ4 unpatch", tab: true } : { label: "AMPR runtime", tab: false };
+  if (mode === "pack" || mode === "unpack" || mode === "trace") return { id: mode, tab: true };
+  if (mode === "unpatch") return r.lz4_in_place ? { id: "unpatch", tab: true } : { id: "runtime", tab: false };
   return null;
 }
 
@@ -106,6 +94,7 @@ function targetKind(r: ConvertRequest): string {
 
 function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => void }) {
   const { job, fresh, dispatch } = props;
+  const t = useMessages().jobs;
   const [cancelling, setCancelling] = useState(false);
   // A running job's Cancel asks once ("Stop job?") for a few seconds; a second click stops it.
   const [confirming, setConfirming] = useState(false);
@@ -119,7 +108,7 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
     el.focus();
     window.getSelection()?.selectAllChildren(el);
   }, [pathShown]);
-  const name = job.request ? basename(job.request.output) : `Job ${job.id}`;
+  const name = job.request ? basename(job.request.output) : t.job(job.id);
   const result = job.result;
   const cancel = async () => {
     if (job.stage !== undefined && !confirming) {
@@ -160,16 +149,16 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
   let status: string;
   let tone: string;
   if (result) {
-    status = "Ok" in result ? "Done" : result.Err === "cancelled" ? "Cancelled" : "Failed";
+    status = "Ok" in result ? t.done : result.Err === "cancelled" ? t.cancelled : t.failed;
     tone = "Ok" in result ? "green" : result.Err === "cancelled" ? "" : "red";
-  } else if (cancelling) [status, tone] = ["Cancelling…", ""];
-  else if (job.stage === undefined) [status, tone] = ["Queued", ""];
-  else [status, tone] = [STAGES[job.stage] ?? job.stage, "blue"];
+  } else if (cancelling) [status, tone] = [t.cancelling, ""];
+  else if (job.stage === undefined) [status, tone] = [t.queued, ""];
+  else [status, tone] = [(t.stages as Record<string, string | undefined>)[job.stage] ?? job.stage, "blue"];
   const running = !result && job.stage !== undefined;
   const lz4 = lz4Job(job.request);
   // Packing straight into an image: its write pass packs too.
-  if (running && job.stage === "write" && lz4?.label === "LZ4 pack" && targetKind(job.request!) !== "lz4")
-    status = "Packing and writing";
+  if (running && job.stage === "write" && lz4?.id === "pack" && targetKind(job.request!) !== "lz4")
+    status = t.packingWriting;
 
   // A job just started here scrolls into view inside the job list, which may already be
   // scrolled; restored ones (a reload) leave the list at its top, the newest job.
@@ -182,20 +171,20 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
     <article className={lz4?.tab ? "job lz4" : "job"} aria-label={name} ref={ref}>
       <header className="job-head">
         {job.request && <FormatPill kind={targetKind(job.request)} />}
-        {lz4 && <span className={lz4.tab ? "tag lz4" : "tag"}>{lz4.label}</span>}
+        {lz4 && <span className={lz4.tab ? "tag lz4" : "tag"}>{t.lz4[lz4.id]}</span>}
         <div className="job-name">
           <strong title={job.request?.output}>{name}</strong>
-          {job.request && <PathLine path={job.request.source} prefix="from " />}
+          {job.request && <PathLine path={job.request.source} prefix={t.from} />}
         </div>
         {result && "Ok" in result && (
           <button className="small" onClick={reveal}>
             <Icon name={REVEAL_ICON} />
-            {revealLabel()}
+            {revealLabel(t)}
           </button>
         )}
         {result ? (
           <button className="small" onClick={() => dispatch({ type: "dismiss", id: job.id })}>
-            Dismiss
+            {t.dismiss}
           </button>
         ) : (
           <button
@@ -203,12 +192,12 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
             onClick={cancel}
             disabled={cancelling}
           >
-            {confirming ? "Stop job?" : "Cancel"}
+            {confirming ? t.stopJob : t.cancel}
           </button>
         )}
         {/* Says what the second click does when the button turns into "Stop job?". */}
         <span className="visually-hidden" role="status">
-          {confirming ? "Click Stop job? again within 4 seconds to stop it." : ""}
+          {confirming ? t.stopHint : ""}
         </span>
       </header>
       {running && <progress value={job.shown} max={1} aria-label={`${name}: ${status}`} />}
@@ -217,19 +206,19 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
         {running && job.total > 0 && (
           <span className="meta">
             <strong>{Math.floor(100 * job.shown)}%</strong>
-            {job.speed !== undefined && ` · ${rateLabel(job.stage ?? "")} ${prettyBytes(job.speed)}/s`}
-            {job.etaMs !== undefined && ` · ${prettyDuration(job.etaMs)} left`}
+            {job.speed !== undefined && ` · ${rateLabel(t, job.stage ?? "")} ${prettyBytes(job.speed)}/s`}
+            {job.etaMs !== undefined && ` · ${t.left(prettyDuration(job.etaMs))}`}
           </span>
         )}
         {result && "Ok" in result && (
           <span>
-            {prettyBytes(result.Ok.bytes)}, {result.Ok.files.toLocaleString()} files →{" "}
+            {t.result(prettyBytes(result.Ok.bytes), result.Ok.files)}{" "}
             <span className="path">{result.Ok.output}</span>
           </span>
         )}
       </p>
       {pathShown && result && "Ok" in result && (
-        <p className="out-box path-shown" ref={pathBox} tabIndex={-1} aria-label="Output path">
+        <p className="out-box path-shown" ref={pathBox} tabIndex={-1} aria-label={t.outputPath}>
           {result.Ok.output}
         </p>
       )}
@@ -242,13 +231,13 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
         <details className="fold verified">
           <summary>
             <Icon name="checkCircle" />
-            {verifiedTitle(result.Ok)}
+            {verifiedTitle(t, result.Ok)}
           </summary>
-          <ul className="checks" aria-label="Checks">
+          <ul className="checks" aria-label={t.checks}>
             {result.Ok.verify?.mode === "fast" && (
               <li>
                 <Icon name="check" />
-                <span>{coverage(result.Ok.verify)}</span>
+                <span>{coverage(t, result.Ok.verify)}</span>
               </li>
             )}
             {result.Ok.checks.map((c, i) => (
@@ -269,15 +258,15 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
 }
 
 /** The verified fold's title: the mode (when the report has one) and the checks passed. */
-function verifiedTitle(r: JobReport): string {
-  const n = `${r.checks.length} check${r.checks.length === 1 ? "" : "s"}`;
-  if (!r.verify) return `Verified: ${n} passed`;
-  return `${r.verify.mode === "full" ? "Full" : "Fast"} verification passed: ${n}`;
+function verifiedTitle(t: T, r: JobReport): string {
+  const n = r.checks.length;
+  if (!r.verify) return t.verifiedPlain(n);
+  return r.verify.mode === "full" ? t.verifiedFull(n) : t.verifiedFast(n);
 }
 
 /** Fast verification's coverage: "checked 2.1 GiB of 80.9 GiB in 41 samples". */
-function coverage(v: VerifyReport): string {
-  return `Checked ${prettyBytes(v.checked_bytes)} of ${prettyBytes(v.total_bytes)} in ${v.samples.toLocaleString()} sample${v.samples === 1 ? "" : "s"}`;
+function coverage(t: T, v: VerifyReport): string {
+  return t.coverage(prettyBytes(v.checked_bytes), prettyBytes(v.total_bytes), v.samples);
 }
 
 /** How long "Stop job?" waits for the second click. */
@@ -285,13 +274,12 @@ const CONFIRM_MS = 4000;
 
 /** A failed job's error: core's text verbatim, under a plain title for a preflight failure. */
 function FailureText({ err, format }: { err: string; format?: Format }) {
+  const t = useMessages().jobs;
   const pre = /^preflight failed:\n?/.exec(err);
   if (!pre) return <p className="error-box">{err}</p>;
   return (
     <div className="error-box">
-      <strong className="error-title">
-        Can't build this game{format && <> as <b>{kindLabel(format)}</b></>}:
-      </strong>
+      <strong className="error-title">{format ? t.cantBuildAs(kindLabel(format)) : t.cantBuild}</strong>
       {err.slice(pre[0].length)}
     </div>
   );
@@ -299,6 +287,7 @@ function FailureText({ err, format }: { err: string; format?: Format }) {
 
 /** Collapsed until asked for: the job's row stays short in the list. */
 function Log({ lines }: { lines: string[] }) {
+  const t = useMessages().jobs;
   const [el, setEl] = useState<HTMLPreElement | null>(null);
   // Follow the tail as lines arrive.
   useEffect(() => {
@@ -306,8 +295,8 @@ function Log({ lines }: { lines: string[] }) {
   }, [el, lines]);
   return (
     <details className="fold">
-      <summary>Log ({lines.length})</summary>
-      <pre className="log" ref={setEl} tabIndex={0} aria-label="Log">
+      <summary>{t.log(lines.length)}</summary>
+      <pre className="log" ref={setEl} tabIndex={0} aria-label={t.logLabel}>
         {lines.join("\n")}
       </pre>
     </details>

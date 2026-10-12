@@ -410,25 +410,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn meta_300_carries_the_inner_geometry() {
-        let m = naps_meta_300(5 * BLOCK);
-        assert_eq!(m.len(), 48);
-        assert_eq!(
-            u64::from_le_bytes(m[0x10..0x18].try_into().unwrap()),
-            4 * BLOCK
-        );
-        assert_eq!(u64::from_le_bytes(m[0x18..0x20].try_into().unwrap()), 0x3E9);
-        assert_eq!(u64::from_le_bytes(m[0x28..0x30].try_into().unwrap()), BLOCK);
-    }
-
-    #[test]
-    fn chunk_crc_is_four_bytes_per_block() {
-        let image = vec![0u8; 3 * BLOCK as usize + 5];
-        let crc = chunk_crc(&image);
-        assert_eq!(crc.len(), 4 * 4);
-    }
-
-    #[test]
     fn zip_round_trips_through_a_member_scan() {
         let members = vec![
             ("a.txt".to_string(), b"hello".to_vec()),

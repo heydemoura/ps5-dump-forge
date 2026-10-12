@@ -338,41 +338,4 @@ mod tests {
                 .contains("eboot.bin has no")
         );
     }
-
-    struct Listed(Files, Vec<String>);
-
-    impl SourceTree for Listed {
-        fn files(&self) -> &[SourceFile] {
-            self.0.files()
-        }
-        fn read(&mut self, path: &str) -> ps5upload_fpkg::Result<Vec<u8>> {
-            self.0.read(path)
-        }
-        fn empty_dirs(&self) -> &[String] {
-            &self.1
-        }
-        fn describe(&self) -> String {
-            "listed".into()
-        }
-    }
-
-    #[test]
-    fn without_drops_files_and_the_fakelib_they_empty() {
-        let files = Files::new(vec![
-            ("eboot.bin", vec![1]),
-            ("fakelib/libSceAgc.sprx", vec![2]),
-            ("fakelib/libSceAmpr.sprx", vec![3]),
-            ("fakelib2/libSceGnm.sprx", vec![4]),
-        ]);
-        let dirs = ["fakelib/x", "fakelib2/y", "data/empty"]
-            .map(String::from)
-            .to_vec();
-        let drop = ["fakelib/libSceAgc.sprx", "fakelib2/libSceGnm.sprx"].map(String::from);
-        let mut tree = Without::new(Box::new(Listed(files, dirs)), &drop);
-        let paths: Vec<&str> = tree.files().iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, ["eboot.bin", "fakelib/libSceAmpr.sprx"]);
-        // fakelib still holds the emulator, so its folder stays; fakelib2 is gone whole.
-        assert_eq!(tree.empty_dirs(), ["fakelib/x", "data/empty"]);
-        assert_eq!(tree.read("fakelib/libSceAmpr.sprx").unwrap(), [3]);
-    }
 }

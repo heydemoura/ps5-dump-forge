@@ -2,6 +2,7 @@
 // asks; the caller makes the api call and owns the errors and the operation guards.
 
 import { Modal, openOverlay } from "./common";
+import { useMessages } from "./i18n";
 import { Icon } from "./icons";
 
 /** Asks before deleting `path` for good; true: Yes. Two buttons, No first and focused. */
@@ -10,43 +11,49 @@ export function confirmDelete(path: string, folder: boolean): Promise<boolean> {
     let yes = false;
     openOverlay(
       (close) => (
-        <Modal
+        <DeleteDialog
+          path={path}
+          folder={folder}
           close={close}
-          className="modal card"
-          role="alertdialog"
-          labelledBy="del-title"
-          describedBy="del-text"
-        >
-          <div className="modal-head">
-            <span className="head-icon warn">
-              <Icon name="trash" />
-            </span>
-            <h2 id="del-title">Delete this {folder ? "folder" : "image"}?</h2>
-          </div>
-          <div id="del-text">
-            <p className="out-box path">{path}</p>
-            <p className="muted">
-              {folder ? "The folder and everything in it" : "The image file"} will be deleted for
-              good: no Trash, no undo. If deleting stops part way, some of it may already be gone.
-            </p>
-          </div>
-          <div className="row end">
-            <button autoFocus onClick={close}>
-              No
-            </button>
-            <button
-              className="danger"
-              onClick={() => {
-                yes = true;
-                close();
-              }}
-            >
-              Yes, delete
-            </button>
-          </div>
-        </Modal>
+          onYes={() => {
+            yes = true;
+            close();
+          }}
+        />
       ),
       () => resolve(yes),
     );
   });
+}
+
+function DeleteDialog(props: { path: string; folder: boolean; close: () => void; onYes: () => void }) {
+  const t = useMessages().delete;
+  return (
+    <Modal
+      close={props.close}
+      className="modal card"
+      role="alertdialog"
+      labelledBy="del-title"
+      describedBy="del-text"
+    >
+      <div className="modal-head">
+        <span className="head-icon warn">
+          <Icon name="trash" />
+        </span>
+        <h2 id="del-title">{t.title(props.folder)}</h2>
+      </div>
+      <div id="del-text">
+        <p className="out-box path">{props.path}</p>
+        <p className="muted">{t.text(props.folder)}</p>
+      </div>
+      <div className="row end">
+        <button autoFocus onClick={props.close}>
+          {t.no}
+        </button>
+        <button className="danger" onClick={props.onYes}>
+          {t.yes}
+        </button>
+      </div>
+    </Modal>
+  );
 }

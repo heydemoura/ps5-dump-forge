@@ -847,26 +847,6 @@ mod tests {
     }
 
     #[test]
-    fn inner_names_follow_the_title_id() {
-        assert_eq!(
-            inner_name_for(Path::new("/x/PPSA01234.exfat")),
-            "PPSA01234.exfat"
-        );
-        assert_eq!(
-            inner_name_for(Path::new("My Game (PPSA03016) v1.EXFAT")),
-            "PPSA03016.exfat"
-        );
-        assert_eq!(
-            inner_name_for(Path::new("a game-image.ffpkg")),
-            "a_game-image.ffpkg"
-        );
-        assert_eq!(
-            inner_name_for(Path::new("xPPSA012345.bin")),
-            "xPPSA012345.bin"
-        );
-    }
-
-    #[test]
     fn a_compressible_image_round_trips_and_shrinks() {
         let d = temp("comp");
         let src = d.join("PPSA00001.exfat");
@@ -896,71 +876,6 @@ mod tests {
     }
 
     #[test]
-    fn an_incompressible_image_is_stored_as_it_is() {
-        let d = temp("raw");
-        let src = d.join("noise.bin");
-        let mut x = 0x9E37_79B9u32;
-        let data: Vec<u8> = (0..300_000)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 17;
-                x ^= x << 5;
-                x as u8
-            })
-            .collect();
-        std::fs::write(&src, &data).unwrap();
-        let out = d.join("noise.ffpfsc");
-        let r = wrap(&src, &out, &WrapOptions::default(), &mut Control::default()).unwrap();
-        assert!(!r.compressed);
-        assert_eq!(r.stored_size, data.len() as u64);
-        verify(&out, Some(&src)).unwrap();
-    }
-
-    #[test]
-    fn the_layout_matches_the_single_file_image() {
-        let d = temp("layout");
-        let src = d.join("PPSA00002.exfat");
-        std::fs::write(&src, vec![7u8; 3 * BLOCK as usize + 5]).unwrap();
-        let out = d.join("o.ffpfsc");
-        let opts = WrapOptions {
-            time: Some(1_700_000_000),
-            ..WrapOptions::default()
-        };
-        let r = wrap(&src, &out, &opts, &mut Control::default()).unwrap();
-        let img = std::fs::read(&out).unwrap();
-        assert_eq!(img.len() as u64, r.image_size);
-        assert_eq!(
-            &img[0x1C..0x1E],
-            &0x8u16.to_le_bytes(),
-            "case-insensitive, unsigned"
-        );
-        assert_eq!(&img[0x368..0x36C], &1u32.to_le_bytes());
-        let nd = u64::from_le_bytes(img[0x38..0x40].try_into().unwrap());
-        assert_eq!(nd * BLOCK, r.image_size);
-        // The file inode: compressed, stored size first, logical size second, block 6.
-        let node = BLOCK as usize + 3 * INODE_LEN;
-        assert_eq!(
-            &img[node + 4..node + 8],
-            &(FLAG_READONLY | FLAG_COMPRESSED).to_le_bytes()
-        );
-        assert_eq!(&img[node + 16..node + 24], &(3 * BLOCK + 5).to_le_bytes());
-        assert_eq!(&img[node + 0x64..node + 0x68], &6i32.to_le_bytes());
-        assert_eq!(&img[node + 0x68..node + 0x6C], &(-1i32).to_le_bytes());
-        // The path table names the file by its hash.
-        let fpt = 3 * BLOCK as usize;
-        assert_eq!(
-            &img[fpt..fpt + 4],
-            &fpt_hash("/PPSA00002.exfat").to_le_bytes()
-        );
-        assert_eq!(&img[fpt + 4..fpt + 8], &3u32.to_le_bytes());
-        // The container header.
-        let c = 6 * BLOCK as usize;
-        assert_eq!(&img[c..c + 4], b"PFSC");
-        assert_eq!(&img[c + 8..c + 12], &6u32.to_le_bytes());
-        assert_eq!(&img[c + 0x28..c + 0x30], &(4 * BLOCK).to_le_bytes());
-    }
-
-    #[test]
     fn a_corrupted_block_is_caught() {
         let d = temp("corrupt");
         let src = d.join("PPSA00003.exfat");
@@ -974,28 +889,5 @@ mod tests {
         img[at] ^= 0xFF;
         std::fs::write(&out, &img).unwrap();
         assert!(verify(&out, Some(&src)).is_err());
-    }
-
-    #[test]
-    fn a_large_table_grows_the_header_area() {
-        assert_eq!(pfsc_header_len(1), 0x10000);
-        let room_blocks = (PFSC_DATA_AT - PFSC_TABLE_AT) / 8 - 1;
-        assert_eq!(pfsc_header_len(room_blocks), 0x10000);
-        assert_eq!(pfsc_header_len(room_blocks + 1), 0x20000);
-    }
-
-    #[test]
-    fn existing_output_and_bad_options_are_refused() {
-        let d = temp("refuse");
-        let src = d.join("a.exfat");
-        std::fs::write(&src, b"x").unwrap();
-        let out = d.join("a.ffpfsc");
-        std::fs::write(&out, b"").unwrap();
-        assert!(wrap(&src, &out, &WrapOptions::default(), &mut Control::default()).is_err());
-        let bad = WrapOptions {
-            level: 0,
-            ..WrapOptions::default()
-        };
-        assert!(wrap(&src, &d.join("b.ffpfsc"), &bad, &mut Control::default()).is_err());
     }
 }

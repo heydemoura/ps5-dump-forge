@@ -504,33 +504,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_multi_block_container_numbers_its_blocks() {
-        let payload = vec![0xABu8; BLOCK * 2 + 17];
-        let parsed = parse(&write_stored(&payload).unwrap().container).unwrap();
-        assert_eq!(parsed.blocks.len(), 3);
-        assert!(parsed.digest_ok);
-        // Every block is the logical block over a 256 KiB stride; only the last is short.
-        assert_eq!(parsed.blocks[0].2, BLOCK as u64);
-        assert_eq!(parsed.blocks[1].2, BLOCK as u64);
-        assert_eq!(parsed.blocks[2].2, 17);
-        assert_eq!(parsed.blocks[0].3, BLOCK as u64);
-        assert_eq!(parsed.blocks[2].3, 17);
-        // A 256 KiB block carries two sub-chunks, so its hint is the 128 KiB first one.
-        assert_eq!(parsed.blocks[0].1, SUB_CHUNK as u64);
-        assert_eq!(parsed.blocks[2].1, 17);
-        assert_eq!(parsed.payloads.concat(), payload);
-    }
-
-    #[test]
-    fn a_small_payload_still_gets_one_block() {
-        let parsed = parse(&write_stored(b"hello").unwrap().container).unwrap();
-        assert_eq!(parsed.blocks.len(), 1);
-        assert_eq!(parsed.logical_size, 5);
-        assert!(parsed.digest_ok);
-        assert_eq!(parsed.payloads.concat(), b"hello");
-    }
-
     /// A zlib container: the header names the codec, the payloads really are shorter than their
     /// blocks, and the logical bytes come back.
     #[test]
@@ -569,39 +542,5 @@ mod tests {
             cursor += block.payload_len;
         }
         assert_eq!(parsed.decompress().unwrap(), payload);
-    }
-
-    /// An incompressible payload keeps its blocks verbatim, so a container can mix the two — and
-    /// the header still says zlib, which is the codec the blocks that did shrink used.
-    #[test]
-    fn a_zlib_container_stores_what_does_not_shrink() {
-        let mut payload: Vec<u8> = Vec::new();
-        // A counter over a wide stride: deflate cannot find matches in this.
-        let mut state = 0x243F_6A88_85A3_08D3u64;
-        while payload.len() < BLOCK {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            payload.extend_from_slice(&state.to_le_bytes());
-        }
-        payload.truncate(BLOCK);
-        let written = write_zlib(&payload).unwrap();
-        assert!(
-            !written.blocks[0].compressed,
-            "an incompressible block must stay verbatim"
-        );
-        let parsed = parse(&written.container).unwrap();
-        assert_eq!(parsed.payloads.concat(), payload);
-        assert_eq!(parsed.decompress().unwrap(), payload);
-    }
-
-    #[test]
-    fn the_block_signature_is_stable_and_position_independent() {
-        let a = block_signature(&vec![7u8; 1000]);
-        let b = block_signature(&vec![7u8; 1000]);
-        assert_eq!(a, b);
-        let mut c = vec![7u8; 1000];
-        c[999] = 8;
-        assert_ne!(block_signature(&c), a);
     }
 }

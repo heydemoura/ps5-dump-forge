@@ -1,6 +1,7 @@
 <p align="center"><img src="app/src-tauri/icons/128x128@2x.png" width="128" alt="PS5 Dump Forge"></p>
 
 Runs on everything (including your PS5) and converts everything: **folder**, **exfat**, **ffpfs**, **ffpfsc**, **pkg** and can utilize **LZ4 compression**.
+Supoort more than a 10 different languages.
 
 | Platform | Runs on | You get |
 |---|---|---|
@@ -78,7 +79,7 @@ WebView data, so keep it in any folder you can write to.
 
 - **Load it** with any ELF loader: send `ps5-dump-forge-<version>-ps5.elf` to elfldr's port 9021
   (`nc -w 3 <ps5-ip> 9021 < ps5-dump-forge-<version>-ps5.elf`), or list it in an autoloader's
-  `autoload.txt`. A notification says to open the Dump Forge tile.
+  `autoload.txt`. A notification says Dump Forge is launched; open it from its icon.
 - **Open the UI** from the Dump Forge tile, or in any browser on the same network:
   `http://<ps5-ip>:8095`.
 

@@ -139,8 +139,8 @@ admission first (`start_job` → 409); on a computer SIGINT/SIGTERM does the sam
 Forge notifies "already running at <url>" and exits 0; by anything else, exits 1.
 
 - The URL (session `url`, the page header, the host's start notice, the PS5 serve log) uses the address of
-  a UDP `connect` toward the internet (no packet sent). On the PS5 the start notification only says to
-  open the Dump Forge tile.
+  a UDP `connect` toward the internet (no packet sent). On the PS5 the start notification only says
+  "Dump Forge is launched", in the console's language (`notice.rs`).
 - The web bundle: `npm run build:http` (Vite mode `http`) writes `app/dist-http` with `transport-http.tsx`
   in place of Tauri (`Picker.tsx` for the dialogs, `http-client.ts`'s poller for the events); `build.rs`
   embeds it, or a placeholder page with a warning (`FORGE_REQUIRE_WEB=1`, set by `ps5/build.sh`, makes that

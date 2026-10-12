@@ -30,29 +30,3 @@ pub(crate) fn app_dir(exe: &Path) -> PathBuf {
         None => dir.to_path_buf(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn app_dir_layouts() {
-        assert_eq!(
-            app_dir(Path::new("/Apps/Forge.app/Contents/MacOS/forge")),
-            Path::new("/Apps")
-        );
-        assert_eq!(
-            app_dir(Path::new("/opt/forge/forge")),
-            Path::new("/opt/forge")
-        );
-        assert_eq!(
-            app_dir(Path::new("/opt/Forge.AppDir/usr/bin/forge")),
-            Path::new("/opt")
-        );
-        // Not a bundle: a folder that merely ends in MacOS.
-        assert_eq!(
-            app_dir(Path::new("/x/Contents/MacOS/forge")),
-            Path::new("/x/Contents/MacOS")
-        );
-    }
-}

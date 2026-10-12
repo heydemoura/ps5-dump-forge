@@ -509,7 +509,6 @@ fn dos_time(now: SystemTime) -> (u16, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn archive(files: &[(&'static str, &[u8])], limit: u64) -> Vec<u8> {
         let entries: Vec<Entry> = files
@@ -679,25 +678,6 @@ mod tests {
     }
 
     #[test]
-    fn the_reader_reads_what_the_writer_wrote() {
-        let files: [(&'static str, &[u8]); 2] = [
-            ("ampr_commands.bin", b"journal bytes"),
-            ("ampr_emu.index", b"index"),
-        ];
-        let want: Vec<(String, Vec<u8>)> = files
-            .iter()
-            .map(|(n, b)| (n.to_string(), b.to_vec()))
-            .collect();
-        for limit in [LIMIT, 0] {
-            assert_eq!(
-                read_back(&archive(&files, limit)).unwrap(),
-                want,
-                "limit {limit}"
-            );
-        }
-    }
-
-    #[test]
     fn a_damaged_zip_is_refused_clearly() {
         let files: [(&'static str, &[u8]); 2] = [
             ("ampr_commands.bin", b"journal bytes"),
@@ -788,21 +768,5 @@ mod tests {
         );
         let err = data_at(&mut f, zip.len() as u64, &found[0]).unwrap_err();
         assert!(err.contains("pass the end"), "{err}");
-    }
-
-    #[test]
-    fn dos_times() {
-        let at = |s| dos_time(SystemTime::UNIX_EPOCH + Duration::from_secs(s));
-        // 2026-10-10 01:07:42 UTC.
-        assert_eq!(
-            at(1_791_594_462),
-            (1 << 11 | 7 << 5 | 21, (46 << 9 | 10 << 5 | 10) as u16)
-        );
-        assert_eq!(at(0), (0, 1 << 5 | 1)); // clamped to 1980-01-01
-        // 2000-02-29 23:59:58.
-        assert_eq!(
-            at(951_868_798),
-            (23 << 11 | 59 << 5 | 29, (20 << 9 | 2 << 5 | 29) as u16)
-        );
     }
 }

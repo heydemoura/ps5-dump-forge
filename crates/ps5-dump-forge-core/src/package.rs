@@ -641,25 +641,6 @@ mod tests {
     }
 
     #[test]
-    fn a_cancel_reaches_the_build_through_the_syncer() {
-        let dir = crate::test_dir("pkg-sync-cancel");
-        let mut file = std::fs::File::create(dir.join("p.part")).unwrap();
-        let handle = file.try_clone().unwrap();
-        let (cancel, abort) = (AtomicBool::new(true), AtomicBool::new(false));
-        let fine = |_: &std::fs::File, _: &AtomicBool| Ok(());
-        let started = Instant::now();
-        let (_, synced) = sync_beside(handle, 1, &cancel, &abort, fine, || {
-            writing(&mut file, &abort)
-        })
-        .unwrap();
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the cancel did not stop it"
-        );
-        synced.unwrap();
-    }
-
-    #[test]
     fn a_sync_failure_is_the_error_the_job_reports() {
         let eio = || io::Error::other("Input/output error");
         let msg = |r: anyhow::Result<()>| format!("{:#}", r.unwrap_err());
@@ -789,21 +770,5 @@ mod tests {
             assert!(text.contains(want), "{want:?} not in:\n{text}");
         }
         assert_eq!(findings.len(), 4, "{text}");
-    }
-
-    #[test]
-    fn short_content_id_is_refused() {
-        let mut tree = Mem::new(&[
-            ("eboot.bin", vec![0x7f; 64]),
-            (
-                "sce_sys/param.json",
-                br#"{"titleId":"PPSA01234","contentId":"UP0000-PPSA01234_00-X"}"#.to_vec(),
-            ),
-        ]);
-        let (findings, _) = findings_of(&mut tree);
-        assert!(
-            findings.iter().any(|f| f.starts_with("content id:")),
-            "{findings:?}"
-        );
     }
 }

@@ -8,6 +8,8 @@ import { createRoot } from "react-dom/client";
 
 import { errorText, prettyBytes } from "./api";
 import { call } from "./http-client";
+import { useMessages } from "./i18n";
+import type { Messages } from "./locales/en";
 import { Icon } from "./icons";
 import type { PickOptions } from "./transport";
 
@@ -72,16 +74,15 @@ function isImage(name: string): boolean {
   return IMAGES.includes(name.slice(name.lastIndexOf(".") + 1).toLowerCase());
 }
 
-/** The files a file mode lists, for its empty listing: "PS5 images", ".zip files". */
-function fileKinds(o: PickOptions): string {
+/** A file mode's empty listing names what it lists: PS5 images, or ".zip files". */
+function noFiles(t: Messages["picker"], o: PickOptions): string {
   const ext = o.extensions ?? [];
-  if (ext.some((e) => IMAGES.includes(e))) return "PS5 images";
-  return `${ext.map((e) => `.${e}`).join(" or ")} files`;
+  return ext.some((e) => IMAGES.includes(e)) ? t.noImages : t.noFiles(ext);
 }
 
 /** "Drives", then the root holding `path`, then each folder below it. */
-function crumbs(path: string | null, roots: string[]): { label: string; path: string | null }[] {
-  const out: { label: string; path: string | null }[] = [{ label: "Drives", path: null }];
+function crumbs(drives: string, path: string | null, roots: string[]): { label: string; path: string | null }[] {
+  const out: { label: string; path: string | null }[] = [{ label: drives, path: null }];
   if (path === null) return out;
   const root = roots
     .filter((r) => path === r || path.startsWith(r.endsWith("/") ? r : `${r}/`))
@@ -99,6 +100,7 @@ function crumbs(path: string | null, roots: string[]): { label: string; path: st
 const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => void }) {
+  const t = useMessages().picker;
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [roots, setRoots] = useState<string[]>([]);
@@ -177,7 +179,7 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
 
   const here = listing?.path ?? null;
   const entries = listing ? listing.entries.filter((e) => shows(o, e)) : [];
-  const trail = crumbs(here, roots);
+  const trail = crumbs(t.drives, here, roots);
 
   return (
     <div
@@ -200,7 +202,7 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
           </span>
           <h2 id="pick-title">{o.title}</h2>
         </div>
-        <nav className="crumbs" aria-label="Location">
+        <nav className="crumbs" aria-label={t.location}>
           {trail.map((c, i) => (
             <Fragment key={i}>
               {i > 0 && (
@@ -220,12 +222,12 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
             </Fragment>
           ))}
         </nav>
-        <ul className="rows pick-list" ref={list} aria-label={here ?? "Drives"} aria-busy={!listing}>
+        <ul className="rows pick-list" ref={list} aria-label={here ?? t.drives} aria-busy={!listing}>
           {here !== null && (
             <li>
               <button type="button" className="pick-row" onClick={() => go(listing?.parent ?? null)}>
                 <Icon name="up" />
-                <span className="pick-name">{listing?.parent ? "Parent folder" : "All drives"}</span>
+                <span className="pick-name">{listing?.parent ? t.parent : t.allDrives}</span>
               </button>
             </li>
           )}
@@ -244,15 +246,11 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
               </button>
             </li>
           ))}
-          {listing?.truncated && <li className="muted">Only the first 10,000 entries are shown.</li>}
-          {!listing && !error && <li className="muted">Loading…</li>}
+          {listing?.truncated && <li className="muted">{t.truncated(10000)}</li>}
+          {!listing && !error && <li className="muted">{t.loading}</li>}
           {listing && entries.length === 0 && (
             <li className="muted">
-              {here === null
-                ? "No drives found."
-                : o.directory
-                  ? "No folders here."
-                  : `No folders or ${fileKinds(o)} here.`}
+              {here === null ? t.noDrives : o.directory ? t.noFolders : noFiles(t, o)}
             </li>
           )}
         </ul>
@@ -263,7 +261,7 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
         )}
         <div className="row end pick-foot">
           <button type="button" ref={cancel} onClick={() => done(null)}>
-            Cancel
+            {t.cancel}
           </button>
           {(o.directory || o.folderToo) && (
             <button
@@ -272,7 +270,7 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
               disabled={here === null}
               onClick={() => here !== null && done(here)}
             >
-              Choose this folder
+              {t.chooseFolder}
             </button>
           )}
         </div>

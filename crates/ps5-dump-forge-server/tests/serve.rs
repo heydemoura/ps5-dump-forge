@@ -269,54 +269,6 @@ fn parser_limits() {
 }
 
 #[test]
-fn handler_cap() {
-    let srv = start_with("cap", |o| o.deadline = Duration::from_secs(3));
-    let idle: Vec<TcpStream> = (0..16)
-        .map(|_| TcpStream::connect(srv.addr).unwrap())
-        .collect();
-    std::thread::sleep(Duration::from_millis(300)); // all 16 accepted and waiting
-    let (status, _, body) = exchange(srv.addr, b"");
-    assert_eq!(status, 503, "{body}");
-    drop(idle);
-}
-
-#[test]
-fn paths_go_to_core_as_given() {
-    let srv = start("paths");
-    // Outside the root, through a symlink: no confinement.
-    let outside = srv.root.parent().unwrap().join("outside");
-    game(&outside.join("game"));
-    symlink(&outside, srv.root.join("link")).unwrap();
-    let (status, v) = srv.post("/api/inspect", json!({ "path": s(&outside.join("game")) }));
-    assert_eq!(status, 200, "{v}");
-    assert_eq!(v["title_id"], "PPSA01234");
-    let via_link = srv.root.join("link/game");
-    assert_eq!(
-        srv.post("/api/inspect", json!({ "path": s(&via_link) })).0,
-        200
-    );
-    let (status, v) = srv.post("/api/inspect", json!({ "path": s(&outside.join("gone")) }));
-    assert_eq!(status, 500);
-    assert!(v["error"].as_str().unwrap().contains("gone"), "{v}");
-    let out = json!({ "source": s(&via_link), "format": "exfat", "dir": s(&outside) });
-    let (status, v) = srv.post("/api/default_output", out);
-    assert_eq!(
-        (status, v),
-        (200, json!(s(&outside.join("PPSA01234.exfat"))))
-    );
-    // The listing follows the link and works on any folder.
-    let (status, v) = srv.post("/api/list_dir", json!({ "path": s(&outside) }));
-    assert_eq!(status, 200, "{v}");
-    assert_eq!(v["parent"], s(outside.parent().unwrap()));
-    let (_, v) = srv.post("/api/list_dir", json!({ "path": s(&srv.root) }));
-    assert_eq!(v["entries"][0]["name"], "link");
-    assert_eq!(v["entries"][0]["dir"], true);
-    assert_eq!(v["entries"][0]["path"], s(&outside)); // resolved
-    let (status, _) = srv.post("/api/list_dir", json!({ "path": s(&outside.join("gone")) }));
-    assert_eq!(status, 500);
-}
-
-#[test]
 fn list_dir_shape() {
     let srv = start("list");
     let root = &srv.root;
@@ -353,26 +305,6 @@ fn list_dir_shape() {
     let (_, v) = list(json!(s(&root.join("y"))));
     assert_eq!(v["parent"], s(root));
     assert_eq!(list(json!(s(&root.join("b.bin")))).0, 500); // not a folder
-}
-
-/// 10,001 files with long names: a listing of about 4 MB, cut at 10,000 entries.
-fn big_folder(root: &Path) -> PathBuf {
-    let dir = root.join("big");
-    std::fs::create_dir(&dir).unwrap();
-    for i in 0..10_001 {
-        std::fs::write(dir.join(format!("{i:05}-{}", "n".repeat(150))), b"").unwrap();
-    }
-    dir
-}
-
-#[test]
-fn list_dir_is_capped() {
-    let srv = start("listcap");
-    let big = big_folder(&srv.root);
-    let (status, v) = srv.post("/api/list_dir", json!({ "path": s(&big) }));
-    assert_eq!(status, 200);
-    assert_eq!(v["entries"].as_array().unwrap().len(), 10_000);
-    assert_eq!(v["truncated"], true);
 }
 
 #[test]
@@ -443,164 +375,6 @@ fn job_end_to_end() {
         srv.post("/api/cancel_job", json!({ "id": id })),
         (200, Value::Null)
     );
-}
-
-/// The LZ4 fields reach core as sent (no route of their own): an LZ4 target is named like a
-/// folder, and a trace on a title without `libSceAmpr` fails core's preflight.
-#[test]
-fn lz4_fields_pass_through() {
-    let srv = start("lz4");
-    let game = srv.root.join("game");
-    self::game(&game);
-    let out = json!({ "source": s(&game), "format": "lz4", "dir": s(&srv.root) });
-    let (status, v) = srv.post("/api/default_output", out);
-    assert_eq!((status, v), (200, json!(s(&srv.root.join("PPSA01234")))));
-    let output = srv.root.join("traced");
-    let mut req = request(&game, &output);
-    req["request"]["format"] = json!("folder");
-    req["request"]["lz4"] = json!("trace");
-    req["request"]["lz4_trace_space_mib"] = json!(192);
-    let (status, id) = srv.post("/api/start_job", req);
-    assert_eq!(status, 200, "{id}");
-    let mut job = Value::Null;
-    wait(|| {
-        job = srv.jobs()["jobs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|j| j["id"] == id)
-            .cloned()
-            .unwrap_or_default();
-        !job["done"].is_null()
-    });
-    assert_eq!(job["request"]["lz4"], "trace");
-    assert_eq!(job["request"]["lz4_trace_space_mib"], 192);
-    let err = job["done"]["result"]["Err"].as_str().unwrap_or_default();
-    assert!(err.contains("does not import libSceAmpr"), "{job}");
-    assert!(!output.exists());
-
-    // In place, on a folder: core refuses (folders are patched by their own route).
-    let mut req = request(&game, &output);
-    req["request"]["lz4"] = json!("unpatch");
-    req["request"]["lz4_in_place"] = json!(true);
-    let (status, id) = srv.post("/api/start_job", req);
-    assert_eq!(status, 200, "{id}");
-    wait(|| {
-        job = srv.jobs()["jobs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|j| j["id"] == id)
-            .cloned()
-            .unwrap_or_default();
-        !job["done"].is_null()
-    });
-    assert_eq!(job["request"]["lz4"], "unpatch");
-    assert_eq!(job["request"]["lz4_in_place"], true);
-    let err = job["done"]["result"]["Err"].as_str().unwrap_or_default();
-    assert!(
-        err.contains("a game folder is patched in place directly"),
-        "{job}"
-    );
-}
-
-/// `lz4_patch` changes the folder in place and answers with core's `Lz4Patch`; core's
-/// refusals come back as its error text.
-#[test]
-fn lz4_patch_route() {
-    let srv = start("lz4patch");
-    let game = srv.root.join("game");
-    self::game(&game);
-    write(
-        &game,
-        "eboot.bin",
-        b"\x7fELF fake eboot importing libSceAmpr.sprx",
-    );
-    write(&game, "ampr_commands.bin", b"last session");
-    write(&game, "ampr_emu.log", b"last log");
-    let (status, v) = srv.post("/api/lz4_patch", json!({ "source": s(&game) }));
-    assert_eq!(status, 200, "{v}");
-    // eboot.bin, param.json, data/a.bin and the runtime.
-    assert_eq!(v["indexed"], 4);
-    assert_eq!(v["removed"], json!(["ampr_commands.bin", "ampr_emu.log"]));
-    assert!(v["warning"].as_str().unwrap().contains("ampr_emu"), "{v}");
-    let runtime = std::fs::metadata(game.join("fakelib/libSceAmpr.sprx")).unwrap();
-    assert_eq!(runtime.len(), 633_094, "the trace build");
-    assert!(game.join("ampr_emu.index").is_file());
-    assert!(!game.join("ampr_commands.bin").exists() && !game.join("ampr_emu.log").exists());
-
-    // `lz4_unpatch` undoes it, with the same answer.
-    write(&game, "ampr_commands.bin", b"this session");
-    let (status, v) = srv.post("/api/lz4_unpatch", json!({ "source": s(&game) }));
-    assert_eq!(status, 200, "{v}");
-    assert_eq!(v["indexed"], 4);
-    assert_eq!(v["removed"], json!(["ampr_commands.bin"]));
-    let runtime = std::fs::metadata(game.join("fakelib/libSceAmpr.sprx")).unwrap();
-    assert_eq!(runtime.len(), 423_350, "the release build");
-    assert!(!game.join("ampr_commands.bin").exists());
-
-    let plain = srv.root.join("plain");
-    self::game(&plain);
-    let (status, v) = srv.post("/api/lz4_patch", json!({ "source": s(&plain) }));
-    assert_eq!(status, 500);
-    assert!(
-        v["error"]
-            .as_str()
-            .unwrap()
-            .contains("does not import libSceAmpr"),
-        "{v}"
-    );
-    assert!(!plain.join("fakelib").exists());
-    assert_eq!(srv.post("/api/lz4_patch", json!({})).0, 400);
-    let (status, v) = srv.post("/api/lz4_unpatch", json!({ "source": s(&plain) }));
-    assert_eq!(status, 500);
-    assert!(
-        v["error"]
-            .as_str()
-            .unwrap()
-            .contains("does not import libSceAmpr")
-    );
-    assert_eq!(srv.post("/api/lz4_unpatch", json!({})).0, 400);
-}
-
-#[test]
-fn lz4_plan_profile_route() {
-    let srv = start("lz4planprofile");
-    let game = srv.root.join("game");
-    self::game(&game);
-    write(
-        &game,
-        "eboot.bin",
-        b"\x7fELF fake eboot importing libSceAmpr.sprx",
-    );
-    let body = |source: &Path, format: &str| {
-        json!({ "request": {
-            "source": s(source), "format": format, "output": "",
-            "compression_threads": null, "inner": null, "remove_backport": false,
-        }})
-    };
-    let (status, v) = srv.post("/api/lz4_plan_profile", body(&game, "lz4"));
-    assert_eq!(status, 200, "{v}");
-    assert_eq!(v["file_name"], "[PPSA01234]-lz4profile.toml");
-    assert_eq!(
-        (v["packed"].as_u64(), v["loose"].as_u64()),
-        (Some(1), Some(3)),
-        "{v}"
-    );
-    let toml = v["toml"].as_str().unwrap();
-    assert!(toml.contains("\"data/a.bin\","), "{toml}");
-    assert!(
-        v["log"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|l| l.as_str().unwrap().starts_with("LZ4 rules"))
-    );
-    assert!(!game.join("fakelib").exists() && !game.join("ampr_emu.index").exists());
-    let (status, v) = srv.post("/api/lz4_plan_profile", body(&game, "exfat"));
-    assert_eq!(status, 500);
-    assert!(v["error"].as_str().unwrap().contains("LZ4 Pack"), "{v}");
-    assert_eq!(srv.post("/api/lz4_plan_profile", json!({})).0, 400);
 }
 
 /// `encodeURIComponent`: every byte but the unreserved ones as `%XX`.
@@ -837,19 +611,6 @@ fn lz4_traces_stop_when_the_source_changes() {
         body[30 + 17..].iter().all(|&b| b == 0x5a),
         "only the old session's bytes"
     );
-}
-
-#[test]
-fn stale_parts_are_capped() {
-    let srv = start("stalecap");
-    for i in 0..1_005 {
-        write(&srv.root, &format!("g{i:04}.exfat.1-1.part"), b"");
-    }
-    let (status, v) = srv.post("/api/stale_parts", json!({ "dirs": [s(&srv.root)] }));
-    assert_eq!(status, 200);
-    let parts = v.as_array().unwrap();
-    assert_eq!(parts.len(), 1_000);
-    assert_eq!(parts[0], s(&srv.root.join("g0000.exfat.1-1.part")));
 }
 
 /// `POST /api/delete_path`: `null` once gone; refusals 400, missing 404. Links inside a

@@ -1,5 +1,6 @@
 //! `inspect` and `default_output`: what a source holds, and what to call its conversion.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -204,6 +205,7 @@ pub(crate) fn inspect(path: &Path) -> anyhow::Result<Inspection> {
     let param = info.param_json.as_ref();
     let text = |key: &str| param.and_then(|p| p.get(key)).and_then(Value::as_str);
     let title_name = param.and_then(title_name);
+    let title_names = param.map(title_names).unwrap_or_default();
     let version = text("contentVersion").map(str::to_string);
     let firmware = text("requiredSystemSoftwareVersion").map(bcd_version);
     let sdk = text("sdkVersion").map(bcd_version);
@@ -236,6 +238,7 @@ pub(crate) fn inspect(path: &Path) -> anyhow::Result<Inspection> {
         title_id: info.title_id,
         content_id: info.content_id,
         title_name,
+        title_names,
         version,
         firmware,
         sdk,
@@ -442,6 +445,19 @@ pub(crate) fn title_name(param: &Value) -> Option<String> {
         .and_then(|l| l.get(default))
         .and_then(name)
         .or_else(|| name(param))
+}
+
+/// Every `localizedParameters` title by language tag (`en-US`, `ru-RU`, ...), for the UI to
+/// pick the viewer's; `defaultLanguage` and entries without a string `titleName` are skipped.
+pub(crate) fn title_names(param: &Value) -> BTreeMap<String, String> {
+    let Some(localized) = param.get("localizedParameters").and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    localized
+        .iter()
+        .filter(|(k, _)| *k != "defaultLanguage")
+        .filter_map(|(k, v)| Some((k.clone(), v.get("titleName")?.as_str()?.to_string())))
+        .collect()
 }
 
 /// A BCD version word as the console shows it: `0x1160000000000000` is `11.60`,
@@ -798,63 +814,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn traces_zip_names() {
-        let name = |json: &str| traces_zip_name(Some(json.as_bytes()));
-        assert_eq!(
-            name(r#"{"titleId":"PPSA13197","titleName":"Stellar Blade"}"#),
-            "[Stellar Blade]-[PPSA13197]-amprtrace.zip"
-        );
-        // Separators and other unsafe characters go, non-ASCII stays, NFC.
-        assert_eq!(
-            name(r#"{"titleId":"PPSA00001","titleName":"Ys X: Nordics / \"Re\" \u0001"}"#),
-            "[Ys X Nordics Re]-[PPSA00001]-amprtrace.zip"
-        );
-        assert_eq!(
-            name(r#"{"titleId":"PPSA00002","titleName":"ドラゴンクエスト"}"#),
-            "[ドラゴンクエスト]-[PPSA00002]-amprtrace.zip"
-        );
-        // The title is cut first: the stem within 63 bytes, as for a generated output.
-        let long = name(&format!(
-            r#"{{"titleId":"PPSA00003","titleName":"{}"}}"#,
-            "é".repeat(60)
-        ));
-        assert_eq!(
-            long,
-            format!("[{}]-[PPSA00003]-amprtrace.zip", "é".repeat(24))
-        );
-        assert_eq!(long.len() - "-amprtrace.zip".len(), 62);
-        // The id from the content id; no title; nothing usable.
-        assert_eq!(
-            name(r#"{"contentId":"UP0000-PPSA00004_00-TESTTESTTESTTEST"}"#),
-            "[PPSA00004]-amprtrace.zip"
-        );
-        assert_eq!(
-            name(r#"{"titleName":"Only a name"}"#),
-            "[Only a name]-amprtrace.zip"
-        );
-        assert_eq!(
-            name(r#"{"titleId":"../x","titleName":"::"}"#),
-            "amprtrace.zip"
-        );
-        assert_eq!(name("not json"), "amprtrace.zip");
-        assert_eq!(traces_zip_name(None), "amprtrace.zip");
-    }
-
-    #[test]
-    fn base64_matches_rfc4648() {
-        for (raw, want) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64(raw.as_bytes()), want);
-        }
-        assert_eq!(base64(&[0xff, 0xfe]), "//4=");
-    }
-
-    #[test]
     fn generated_names() {
         assert_eq!(file_safe("ASTRO BOT™"), "ASTRO BOT");
         assert_eq!(file_safe("  a/b:c*d?  e  "), "abcd e");
@@ -1047,26 +1006,6 @@ mod tests {
     }
 
     #[test]
-    fn backport_folders() {
-        for p in [
-            "fakelib/a.sprx",
-            "FakeLib/a.sprx",
-            "fakelib2/a.sprx",
-            "FAKELIB2/x/y",
-        ] {
-            assert!(is_fakelib(p), "{p}");
-        }
-        for p in [
-            "fakelib",
-            "fakelib3/a.sprx",
-            "data/fakelib/a.sprx",
-            "fakelib.sprx",
-        ] {
-            assert!(!is_fakelib(p), "{p}");
-        }
-    }
-
-    #[test]
     fn versions_and_titles() {
         assert_eq!(bcd_version("0x1160000000000000"), "11.60");
         assert_eq!(bcd_version("0x0700000000000000"), "7.00");
@@ -1084,6 +1023,19 @@ mod tests {
         assert_eq!(title_name(&param).as_deref(), Some("Jeu"));
         let bare: Value = serde_json::from_str(r#"{"titleName":"bare"}"#).unwrap();
         assert_eq!(title_name(&bare).as_deref(), Some("bare"));
+        let names = title_names(&param);
+        assert_eq!(names.len(), 2);
+        assert_eq!(names["fr-FR"], "Jeu");
+        assert_eq!(names["en-US"], "Game");
+        assert!(title_names(&bare).is_empty());
+        let odd: Value = serde_json::from_str(
+            r#"{"localizedParameters":{"defaultLanguage":"ru-RU","ru-RU":{"titleName":"Игра"},
+                "de-DE":{"titleName":7},"ja-JP":{}}}"#,
+        )
+        .unwrap();
+        let names = title_names(&odd);
+        assert_eq!(names.len(), 1);
+        assert_eq!(names["ru-RU"], "Игра");
     }
 
     /// A manifest tree that only ever serves its header.

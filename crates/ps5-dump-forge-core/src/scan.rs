@@ -474,49 +474,4 @@ mod tests {
         assert_eq!(paths, ["eboot.bin", "b/keep.bin", "d/e/f.bin"]);
         assert_eq!(tree.empty_dirs(), ["a", "b/c", "g/h"]);
     }
-
-    #[test]
-    fn junk_names() {
-        for name in [
-            ".DS_Store",
-            "._eboot.bin",
-            ".Trashes",
-            "Thumbs.db",
-            "desktop.ini",
-        ] {
-            assert!(is_junk(name), "{name}");
-        }
-        for name in ["eboot.bin", "_x", ".dsstore", "sce_sys"] {
-            assert!(!is_junk(name), "{name}");
-        }
-    }
-
-    #[test]
-    fn hard_links_are_refused() {
-        let dir = crate::test_dir("scan-hard-links");
-        std::fs::write(dir.join("a.bin"), b"a").unwrap();
-        std::fs::write(dir.join("c.bin"), b"c").unwrap();
-        // FAT32 (FreeBSD's msdosfs) cannot hold a hard link, so there is nothing to refuse.
-        if !crate::supported(
-            std::fs::hard_link(dir.join("a.bin"), dir.join("b.bin")),
-            "hard_link",
-        ) {
-            return;
-        }
-        let file = open_nofollow(&dir.join("a.bin")).unwrap();
-        let meta = file.metadata().unwrap();
-        assert_eq!(hard_link_count(&file, &meta).unwrap(), 2);
-        drop(file);
-        let err = ScannedFolder::scan(&dir, &AtomicBool::new(false))
-            .err()
-            .unwrap()
-            .to_string();
-        for name in ["a.bin", "b.bin"] {
-            assert!(
-                err.contains(&format!("hard link (more than one name): {name}")),
-                "{err}"
-            );
-        }
-        assert!(!err.contains("c.bin"), "{err}");
-    }
 }

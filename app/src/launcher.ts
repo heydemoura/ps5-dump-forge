@@ -14,10 +14,11 @@ export interface Deps {
   nonce(): string;
 }
 
+/** Why a launch failed; the page words it (main-http.tsx). */
 export type Failure = "loader" | "missing" | "timeout";
 
 /** `up`: the session answered healthy (an AppCache update check is worth it). */
-export type Outcome = { ok: true; up: boolean } | { ok: false; failure: Failure; message: string };
+export type Outcome = { ok: true; up: boolean } | { ok: false; failure: Failure };
 
 export const ELFLDR = "http://127.0.0.1:9021";
 /** Where the payload saves itself, where earlier versions did (the payload renames that folder
@@ -34,16 +35,7 @@ export const LOADER_TIMEOUT_MS = 10000;
 export const POLL_MS = 1000;
 export const START_WAIT_MS = 30000;
 
-export const MESSAGES: Record<Failure, string> = {
-  loader:
-    "Can't reach the payload loader on port 9021. Run your autoloader (jailbreak) first, then open Dump Forge again.",
-  missing:
-    "No saved copy of Dump Forge was found (in /data/dumpforge/ or on a USB drive). Load it once from a PC; it saves a copy for this tile.",
-  timeout:
-    "Dump Forge was started but hasn't answered after 30 seconds. It may still be starting (a console waking from rest mode is slow).",
-};
-
-const fail = (failure: Failure): Outcome => ({ ok: false, failure, message: MESSAGES[failure] });
+const fail = (failure: Failure): Outcome => ({ ok: false, failure });
 
 /** The tile's page: only the console's own browser may start the payload. */
 export function isLoopback(hostname: string): boolean {

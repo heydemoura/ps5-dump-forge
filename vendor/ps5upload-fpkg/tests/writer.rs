@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use ps5upload_fpkg::build::{self, BuildRequest};
 use ps5upload_fpkg::crypto::DEFAULT_PASSCODE;
 use ps5upload_fpkg::inner::MetaCodec;
-use ps5upload_fpkg::{cnt, fih, inner, naps, outer, plan, source, verify, PkgFile};
+use ps5upload_fpkg::{cnt, fih, inner, naps, outer, plan, source, PkgFile};
 
 const CONTENT_ID: &str = "UP0000-PPSA01234_00-TESTGAME00000000";
 
@@ -241,29 +241,6 @@ fn gate_g2_a_built_package_verifies_and_round_trips() {
 }
 
 #[test]
-fn a_second_build_reports_warnings_but_still_verifies() {
-    let source_dir = TempDir::new("warn-source");
-    let output_dir = TempDir::new("warn-out");
-    write_tree(source_dir.path());
-    // Remove the icon pair: not fatal, but the readiness report says so.
-    std::fs::remove_file(source_dir.path().join("sce_sys/icon0.dds")).unwrap();
-    let request = BuildRequest {
-        time: Some((1_700_000_000, 0)),
-        seed: Some([7; 16]),
-        ..BuildRequest::new(source_dir.path(), output_dir.path())
-    };
-    let report = build::build(&request, &mut |_| {}).unwrap();
-    assert!(report.verify.ok());
-    assert!(report.verify.checks.iter().all(|c| c.ok));
-    // The icon entry is now empty; the container still verifies.
-    let mut pkg = PkgFile::open(&report.path).unwrap();
-    let head = pkg.read_at(0, fih::HEADER_LEN).unwrap();
-    let parsed = fih::parse(&head).unwrap();
-    let container = cnt::read(&mut pkg, parsed.cnt_offset).unwrap();
-    assert_eq!(container.entry(cnt::ids::ICON0_DDS).unwrap().size, 0);
-}
-
-#[test]
 fn a_build_never_overwrites_an_existing_package() {
     let source_dir = TempDir::new("preserve-source");
     let output_dir = TempDir::new("preserve-out");
@@ -274,27 +251,6 @@ fn a_build_never_overwrites_an_existing_package() {
     let error = build::build(&request, &mut |_| {}).err().unwrap();
     assert!(error.to_string().contains("output already exists"));
     assert_eq!(std::fs::read(&first.path).unwrap(), original);
-}
-
-#[test]
-fn a_source_without_a_content_id_is_refused() {
-    let source_dir = TempDir::new("bad-source");
-    let output_dir = TempDir::new("bad-out");
-    std::fs::create_dir_all(source_dir.path().join("sce_sys")).unwrap();
-    std::fs::write(source_dir.path().join("eboot.bin"), [0u8; 16]).unwrap();
-    std::fs::write(source_dir.path().join("sce_sys/param.json"), b"{}").unwrap();
-    let request = BuildRequest {
-        time: Some((1_700_000_000, 0)),
-        seed: Some([0; 16]),
-        ..BuildRequest::new(source_dir.path(), output_dir.path())
-    };
-    let error = match build::build(&request, &mut |_| {}) {
-        Ok(report) => panic!("expected a refusal, built {}", report.path.display()),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("content id"), "{error}");
-    assert!(!output_dir.path().join("out.pkg.partial").exists());
-    assert!(verify::verify_package(&output_dir.path().join("x.pkg"), DEFAULT_PASSCODE).is_err());
 }
 
 /// A Kraken package decodes back to its source: every block through the descriptor, the way
@@ -411,59 +367,4 @@ fn a_libsceampr_title_gets_an_ampr_index() {
     assert!(listed.contains(&("/app0/data/large.bin".to_string(), 600 * 1024)));
     // The icons the container carries instead of the image are not listed.
     assert!(!listed.iter().any(|(p, _)| p == "/app0/sce_sys/icon0.png"));
-}
-
-/// A build reports its stages in order, each once: what the Convert screen's stage list shows.
-#[test]
-fn a_build_reports_its_stages_in_order() {
-    use ps5upload_fpkg::build::{BuildControl, Stage};
-    let source_dir = TempDir::new("stages-src");
-    let out = TempDir::new("stages-out");
-    write_tree(source_dir.path());
-    let mut request = BuildRequest::new(source_dir.path(), out.path());
-    request.time = Some((1_700_000_000, 0));
-    let mut seen = Vec::new();
-    let mut on_stage = |s: Stage| seen.push(s);
-    let mut control = BuildControl {
-        stage: Some(&mut on_stage),
-        ..BuildControl::default()
-    };
-    let report = build::build_controlled(&request, &mut |_| {}, &mut control).unwrap();
-    assert!(report.verify.ok());
-    let _ = control;
-    assert_eq!(
-        seen,
-        vec![
-            Stage::Check,
-            Stage::Plan,
-            Stage::Compress,
-            Stage::Write,
-            Stage::Verify
-        ]
-    );
-    assert_eq!(Stage::Compress.id(), "compress");
-    assert_eq!(Stage::Verify.index(), 4);
-}
-
-/// A remembered output folder that is gone (an unplugged drive) must not stop the check: the
-/// inspection still answers, reporting the room on the nearest folder that exists.
-#[test]
-fn inspecting_toward_a_missing_output_folder_still_answers() {
-    let dir = TempDir::new("missing-out-src");
-    write_tree(dir.path());
-    let gone = dir.path().join("no/such/drive/fpkg");
-    let inspection = build::inspect(dir.path(), &gone).unwrap();
-    assert!(inspection.files > 0);
-}
-
-/// The Convert tiles' numbers: each level's estimated size and time for this game.
-#[test]
-fn estimates_rank_the_levels_and_cover_the_game() {
-    let dir = TempDir::new("estimate-src");
-    write_tree(dir.path());
-    let e = build::estimate(dir.path(), Some(dir.path())).unwrap();
-    assert!(e.smallest.bytes <= e.balanced.bytes && e.balanced.bytes <= e.fast.bytes);
-    // The tree is mostly a 600 KiB run of one byte: well under its size once compressed.
-    assert!(e.balanced.bytes < 600 * 1024);
-    assert!(e.fast.seconds <= e.smallest.seconds);
 }

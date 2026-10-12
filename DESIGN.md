@@ -121,6 +121,16 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   its folder on the `.out-dir` line below; a file name is never clipped. A typed name that can't work
   (another image extension, or longer than core's name limit) is refused in `.field-error` under the
   box, and Build stays off.
+- **Right-to-left** (Arabic, `<html dir="rtl">`): the layout mirrors through flexbox and logical
+  properties (`margin-inline-*`, `padding-inline-*`, `text-align: start/end`); the few physical
+  positions (switch knob, menus, the LZ4 badge, the LZ4 job edge, the select's chevron) have
+  `[dir="rtl"]` overrides at the end of styles.css. Paths, file names and the output name stay
+  left-to-right, isolated from the text around them.
+- **Language select** (`select.lang-select`, right in the About card's header after a muted
+  "Language" label, `.head-lang`): the one dropdown. A native `<select>` drawn as a small pill
+  (`button.small`'s 30px and 12.5px, `--inset`, `--line-hi` border, `--focus` ring), `appearance: none`
+  with the `chevron` icon in `--muted` as its background; options are System, then each language in its
+  own words (`lang` set), so it holds any number of languages.
 - **Switch** (`.switch`): a native checkbox drawn as a switch, blue when on. Disabled, only the track
   dims; the reason sits under it as a `.note-line.warn`. Remove backport (only for a source with
   backport libraries) and Full verification (off by default) each sit in their own inset box
@@ -207,7 +217,7 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   the internal storage's free space first (`.library-storage`: drive icon, "Free **312 GB** of 825 GB"
   in decimal GB, `--muted` 6.5:1 with the free amount in `--fg-2`), then Refresh and the view buttons.
   Under the head the scrolling well (`.library-well`: `--inset`, 14px padding, 160px minimum, height to
-  the viewport, focusable, `aria-label` "Game dumps"); the list scrolls inside it, never the page.
+  the viewport, focusable, `aria-label` "Games"); the list scrolls inside it, never the page.
   - **Cards** (`.library-cards`, `minmax(240px, 1fr)` columns, 16px gaps): each card (`--card`, 14px
     radius, no glow, no outline) has a square cover (10px radius, a `padding-top: 100%` box for older
     WebKit), the name (600, wraps anywhere), the title ID muted, and a foot with the format pill and

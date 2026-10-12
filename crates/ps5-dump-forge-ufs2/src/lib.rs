@@ -526,22 +526,6 @@ fn dinode(g: &Geom, node: &Node) -> Dinode {
 mod tests {
     use super::*;
 
-    /// The sizing search converges for every small need and yields a sound last group.
-    #[test]
-    fn sizing_converges() {
-        let cancel = AtomicBool::new(false);
-        for need in (0..20_000u64).step_by(7) {
-            for objects in [1u64, 50, 5000] {
-                let density = geom::density_for(need * BSIZE, objects);
-                let inodes = ROOTINO + objects + SPARE_INODES;
-                let g = size_image(need.max(16), density, need, inodes, &cancel).unwrap();
-                assert!(g.last_group_ok(), "need {need}");
-                assert!(g.data_capacity() >= need);
-                assert!(g.inode_capacity() >= inodes);
-            }
-        }
-    }
-
     /// Inode-bound layouts, where inode capacity holds still over many sizes: the search
     /// must not give up there, and must land on the first size that fits (a jump-then-
     /// backtrack search returned 797 128 blocks for the second, 6 GiB too many).

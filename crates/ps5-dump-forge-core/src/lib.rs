@@ -292,6 +292,8 @@ pub struct Inspection {
     pub content_id: Option<String>,
     /// From `param.json`: the title in its default language.
     pub title_name: Option<String>,
+    /// From `param.json`: every `localizedParameters` title by language tag (`en-US`, ...).
+    pub title_names: std::collections::BTreeMap<String, String>,
     /// From `param.json`: `contentVersion`, e.g. `01.000.000`.
     pub version: Option<String>,
     /// The firmware `param.json` declares (`requiredSystemSoftwareVersion`), e.g. `7.00`.
@@ -540,7 +542,7 @@ impl DataDirs {
         }
     }
 
-    /// WebView data on Windows and Linux (macOS keeps it in memory).
+    /// WebView data on Windows and Linux (macOS: WebKit's own store in ~/Library/WebKit).
     pub fn webview(&self) -> PathBuf {
         self.root.join("data").join("webview")
     }

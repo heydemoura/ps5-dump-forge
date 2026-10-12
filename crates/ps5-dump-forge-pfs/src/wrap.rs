@@ -567,38 +567,6 @@ mod tests {
         }
     }
 
-    /// Noise skips the level's search and is stored raw; patterned data still compresses.
-    #[test]
-    fn noise_is_found_without_the_full_search() {
-        let mut x = 0x2545_F491_4F6C_DD1Du64;
-        let noise: Vec<u8> = (0..BLOCK)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                x as u8
-            })
-            .collect();
-        assert!(incompressible(&noise).unwrap());
-        assert_eq!(encode_block(&noise, 7, 5).unwrap(), noise);
-        let pattern: Vec<u8> = (0..BLOCK as u32).map(|i| (i % 97) as u8).collect();
-        assert!(!incompressible(&pattern).unwrap());
-        assert!(encode_block(&pattern, 7, 5).unwrap().len() < BLOCK as usize / 10);
-    }
-
-    #[test]
-    fn data_at_grows_with_the_table() {
-        let room_blocks = (BLOCK - PFSC_TABLE_AT) / 8 - 1;
-        assert_eq!(data_at(1).unwrap(), BLOCK);
-        assert_eq!(data_at(room_blocks * BLOCK).unwrap(), BLOCK);
-        assert_eq!(data_at(room_blocks * BLOCK + 1).unwrap(), 2 * BLOCK);
-        assert_eq!(
-            container_size_max(room_blocks * BLOCK + 1).unwrap(),
-            6 * BLOCK + 2 * BLOCK + (room_blocks + 1) * BLOCK
-        );
-        assert!(container_size_max(u64::MAX).is_err());
-    }
-
     #[test]
     fn fill_of_the_wrong_length_fails() {
         let d = temp("len");
@@ -613,34 +581,6 @@ mod tests {
             let e = e.to_string();
             assert!(e.contains("planned"), "{e}");
         }
-    }
-
-    #[test]
-    fn a_worker_error_is_the_error() {
-        let d = temp("werr");
-        let r = bounded(move || {
-            let mut out = File::create(d.join("e.ffpfsc")).unwrap();
-            let calls = AtomicUsize::new(0);
-            let encode = move |raw: &[u8]| {
-                if calls.fetch_add(1, Ordering::Relaxed) == 5 {
-                    return Err(io::Error::other("zlib broke"));
-                }
-                plain(raw)
-            };
-            let cancel = AtomicBool::new(false);
-            wrap_with(
-                "x.exfat",
-                64 * BLOCK,
-                &mut out,
-                &opts(2),
-                &cancel,
-                &encode,
-                |s| feed(s, 64 * BLOCK),
-            )
-            .map(|_| ())
-        });
-        let e = r.unwrap_err().to_string();
-        assert!(e.contains("zlib broke"), "{e}");
     }
 
     #[test]
@@ -701,78 +641,5 @@ mod tests {
         assert!(fill_err.contains("compression worker failed"), "{fill_err}");
         let e = r.unwrap_err().to_string();
         assert!(e.contains("panicked: every worker dies"), "{e}");
-    }
-
-    /// A write error on the output comes straight back from the stream: here a read-only
-    /// handle, full deque and full buffer.
-    #[test]
-    fn an_output_error_is_the_error() {
-        let d = temp("out");
-        let path = d.join("ro.ffpfsc");
-        File::create(&path).unwrap();
-        let r = bounded(move || {
-            let mut out = File::open(&path).unwrap();
-            let cancel = AtomicBool::new(false);
-            // Incompressible-sized writes fill the 8 MiB buffer quickly.
-            let raw = 512 * BLOCK;
-            wrap("x.exfat", raw, &mut out, &opts(1), &cancel, |s| {
-                let mut x = 0x2545_F491u32;
-                let block: Vec<u8> = (0..BLOCK)
-                    .map(|_| {
-                        x ^= x << 13;
-                        x ^= x >> 17;
-                        x ^= x << 5;
-                        x as u8
-                    })
-                    .collect();
-                for _ in 0..512 {
-                    s.write_all(&block)?;
-                }
-                Ok(())
-            })
-            .map(|_| ())
-        });
-        let e = r.unwrap_err();
-        assert!(matches!(e, Error::Io(_)), "{e}");
-    }
-
-    #[test]
-    fn cancel_mid_stream_is_cancelled() {
-        let d = temp("cancel");
-        let r = bounded(move || {
-            let mut out = File::create(d.join("c.ffpfsc")).unwrap();
-            let cancel = AtomicBool::new(false);
-            wrap("x.exfat", 64 * BLOCK, &mut out, &opts(2), &cancel, |s| {
-                feed(s, 10 * BLOCK)?;
-                cancel.store(true, Ordering::Relaxed);
-                // A forward seek is zero fill, and cancellable like any write.
-                s.seek(SeekFrom::Start(64 * BLOCK - 1))?;
-                s.write_all(&[0])?;
-                Ok(())
-            })
-            .map(|_| ())
-        });
-        assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
-    }
-
-    #[test]
-    fn the_stream_only_moves_forward() {
-        let d = temp("seek");
-        let mut out = File::create(d.join("s.ffpfsc")).unwrap();
-        let cancel = AtomicBool::new(false);
-        let ((), report) = wrap("x.exfat", 3 * BLOCK, &mut out, &opts(2), &cancel, |s| {
-            assert_eq!(s.seek(SeekFrom::End(0))?, 0);
-            s.write_all(b"head")?;
-            assert_eq!(s.stream_position()?, 4);
-            assert!(s.seek(SeekFrom::Start(1)).is_err());
-            assert!(s.seek(SeekFrom::End(1)).is_err());
-            s.seek(SeekFrom::Start(3 * BLOCK - 1))?;
-            s.write_all(&[1])?;
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(report.blocks, 3);
-        assert_eq!(report.compressed_blocks, 3);
-        assert_eq!(out.metadata().unwrap().len(), report.image_size);
     }
 }

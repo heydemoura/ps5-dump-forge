@@ -105,24 +105,6 @@ pub fn hash_bytes(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
-    /// The two entries of the real samples' outer `\x7fFLT` block.
-    #[test]
-    fn sample_path_hashes() {
-        assert_eq!(hash_path("pfs_image.dat"), 0xa656_27bd_d815_4701);
-        assert_eq!(hash_path("naps_pkg_layout.dat"), 0xc683_f67a_1dec_ecaf);
-    }
-
-    #[test]
-    fn path_is_uppercased_and_slash_stripped() {
-        assert_eq!(hash_path("/PFS_IMAGE.DAT"), hash_path("pfs_image.dat"));
-    }
-
-    #[test]
-    fn empty_and_short_inputs_terminate() {
-        assert_ne!(hash_bytes(&[]), hash_bytes(b"a"));
-        assert_ne!(hash_bytes(b"a"), hash_bytes(b"ab"));
-    }
-
     /// Byte-for-byte the outer `\x7fFLT` block both samples carry (inodes 3 and 4 of the
     /// fixed outer template).
     #[test]

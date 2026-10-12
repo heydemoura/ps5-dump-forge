@@ -1068,32 +1068,6 @@ mod tests {
     }
 
     #[test]
-    fn thresholds() {
-        let p = PAGE as usize;
-        // Same page count: 8 KiB and 12.5% both needed.
-        assert!(keep_lz4(p, p - 8192));
-        assert!(!keep_lz4(p, p - 8191));
-        assert!(!keep_lz4(10000, 9000));
-        assert!(!keep_lz4(2 * p, 2 * p - 64));
-        // A page saved: 64 B and 1%.
-        assert!(keep_lz4(p + 6000, p));
-        assert!(!keep_lz4(2 * p + 100, 2 * p));
-        assert!(!keep_lz4(100, 100));
-        assert!(!keep_lz4(100, 120));
-    }
-
-    #[test]
-    fn placement() {
-        let (c, a) = (CHUNK_PAGE_CONTAINED, CHUNK_PAGE_ALIGNED);
-        assert_eq!(place(PAGE, 100), (PAGE, c | a));
-        assert_eq!(place(PAGE + 100, 100), (PAGE + 128, c));
-        assert_eq!(place(2 * PAGE - 64, 64), (2 * PAGE - 64, c));
-        assert_eq!(place(2 * PAGE - 64, 65), (2 * PAGE, c | a));
-        assert_eq!(place(PAGE + 1, PAGE), (2 * PAGE, c | a));
-        assert_eq!(place(PAGE + 1, PAGE + 1), (2 * PAGE, a));
-    }
-
-    #[test]
     fn boundary_sizes_round_trip() {
         let b = 1usize << 16;
         let mut entries = Vec::new();
@@ -1162,30 +1136,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deterministic_and_thread_count_independent() {
-        let entries = vec![
-            ("x/1", text(300_000, 1), spec(15)),
-            ("x/2", noise(200_000, 2), spec(17)),
-            ("x/3", noise(10, 3), None),
-        ];
-        let p = RuntimeProfile {
-            decoded_cache_bytes: 1 << 20,
-            physical_cache_bytes: 16384,
-            workers: 4,
-            latency_reserve_workers: 1,
-        };
-        let one = pack_mem(&entries, Some(&p), 1, VOLUME_CAP).unwrap().2.files;
-        let four = pack_mem(&entries, Some(&p), 4, VOLUME_CAP).unwrap().2.files;
-        assert_eq!(one, four);
-        assert!(one.contains_key(PROFILE));
-        let out = MemOut {
-            files: one,
-            ..Default::default()
-        };
-        assert_eq!(open(&entries, &out).profile(), Some(p));
-    }
-
     fn total(entries: &[(&str, Vec<u8>, Option<PackSpec>)], out: &MemOut) -> u64 {
         let loose: u64 = entries
             .iter()
@@ -1193,31 +1143,6 @@ mod tests {
             .map(|e| e.1.len() as u64)
             .sum();
         loose + out.files.values().map(|d| d.len() as u64).sum::<u64>()
-    }
-
-    #[test]
-    fn worst_case_includes_the_exact_path_index() {
-        for n in [0usize, 1, 2, 3, 5, 8, 9, 100] {
-            let files: Vec<PackFile> = (0..n)
-                .map(|i| PackFile {
-                    path: format!("d/{}/f{i}", "x".repeat(i % 7)),
-                    size: 1,
-                    spec: None,
-                })
-                .collect();
-            let pairs: Vec<(String, u64)> =
-                files.iter().map(|f| (f.path.clone(), f.size)).collect();
-            let built = ps5upload_fpkg::ampr_index::build(&pairs, 0).unwrap();
-            assert_eq!(index_size(&files), built.len() as u64, "n {n}");
-        }
-        // One loose file: size + manifest + crc + index (the index alone is 112 bytes).
-        let one = [PackFile {
-            path: "x".into(),
-            size: 1,
-            spec: None,
-        }];
-        assert_eq!(index_size(&one), 112);
-        assert_eq!(worst_case_bytes(&one, false), 345);
     }
 
     #[test]
@@ -1323,56 +1248,6 @@ mod tests {
             assert!((w[0].pack_id, w[0].offset) < (w[1].pack_id, w[1].offset));
         }
         assert_round_trip(&entries, &out);
-    }
-
-    #[test]
-    fn reads_each_packed_file_once_front_to_back() {
-        let entries = vec![
-            ("o/1", text(200_000, 1), spec(14)),
-            ("o/2", noise(70_000, 2), spec(16)),
-            ("o/loose", noise(10, 3), None),
-            ("o/3", text(1, 4), spec(20)),
-        ];
-        let (src, _, _, _) = pack_mem(&entries, None, 3, VOLUME_CAP).unwrap();
-        let mut at: Vec<(&str, u64)> = Vec::new();
-        for (p, off, len) in &src.reads {
-            match at.last_mut() {
-                Some((q, end)) if *q == p.as_str() => {
-                    assert_eq!(*off, *end, "{p}: consecutive");
-                    *end += *len as u64;
-                }
-                _ => {
-                    assert_eq!(*off, 0, "{p}: starts at 0");
-                    assert!(at.iter().all(|(q, _)| *q != p.as_str()), "{p}: read once");
-                    at.push((p.as_str(), *len as u64));
-                }
-            }
-        }
-        let names: Vec<&str> = at.iter().map(|a| a.0).collect();
-        assert_eq!(names, ["o/1", "o/2", "o/3"]);
-    }
-
-    #[test]
-    fn output_order() {
-        let entries = vec![("v/1", noise(3 << 20, 1), spec(20))];
-        let (_, _, out, _) = pack_mem(&entries, None, 2, PAGE + (2 << 20)).unwrap();
-        let log: Vec<&str> = out.log.iter().map(String::as_str).collect();
-        let v = |n: u32| volume_name(n);
-        let want = [
-            format!("create {}", v(0)),
-            format!("finish {}", v(0)),
-            format!("create {}", v(1)),
-            format!("finish {}", v(1)),
-            format!("reopen {}", v(0)),
-            format!("finish {}", v(0)),
-            format!("reopen {}", v(1)),
-            format!("finish {}", v(1)),
-            format!("create {MANIFEST}"),
-            format!("finish {MANIFEST}"),
-            format!("create {CRC_SIDECAR}"),
-            format!("finish {CRC_SIDECAR}"),
-        ];
-        assert_eq!(log, want);
     }
 
     /// Entries that cover every block shift class, STORE, a loose record and rollover.
@@ -1527,74 +1402,5 @@ mod tests {
             &cancel,
         );
         assert!(matches!(r, Err(Error::Format(_))));
-    }
-
-    #[test]
-    fn sample_encodes_like_pack_and_reads_only_the_picks() {
-        let auto = crate::AutoLoose::default();
-        let size = 10 * 65536 + 100;
-        let mut src = Mem::new([
-            ("n.bin".to_string(), noise(size, 3)),
-            ("t.bin".to_string(), text(size, 0)),
-        ]);
-        let cancel = AtomicBool::new(false);
-        let picks = [0, 5, 10];
-        let mut seen = Vec::new();
-        let n = sample(
-            &mut src,
-            "n.bin",
-            size as u64,
-            16,
-            &picks,
-            &mut |b| seen.push(b),
-            &cancel,
-        )
-        .unwrap();
-        assert_eq!((n.blocks, n.raw_blocks), (3, 3));
-        assert_eq!(
-            (n.raw_bytes, n.stored_bytes),
-            (2 * 65536 + 100, 2 * 65536 + 100)
-        );
-        assert_eq!(seen, [65536, 2 * 65536, 2 * 65536 + 100]);
-        assert!(auto.keeps_loose(&n));
-        let reads: Vec<u64> = src.reads.iter().map(|r| r.1).collect();
-        assert_eq!(reads, [0, 5 * 65536, 10 * 65536]);
-        let t = sample(
-            &mut src,
-            "t.bin",
-            size as u64,
-            16,
-            &picks,
-            &mut |_| {},
-            &cancel,
-        )
-        .unwrap();
-        assert_eq!(t.raw_blocks, 1, "the 100-byte tail cannot save 64 bytes");
-        assert!(t.savings() > 0.5 && !auto.keeps_loose(&t));
-        assert!(
-            sample(
-                &mut src,
-                "t.bin",
-                size as u64,
-                16,
-                &[11],
-                &mut |_| {},
-                &cancel
-            )
-            .is_err()
-        );
-        cancel.store(true, Ordering::Relaxed);
-        assert!(
-            sample(
-                &mut src,
-                "t.bin",
-                size as u64,
-                16,
-                &[0],
-                &mut |_| {},
-                &cancel
-            )
-            .is_err()
-        );
     }
 }

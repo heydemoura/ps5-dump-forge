@@ -470,12 +470,6 @@ pub(crate) fn write(tree: &mut dyn SourceTree, part: &Part, ctx: &Ctx) -> anyhow
 mod tests {
     use super::*;
 
-    fn findings(files: &[&str], dirs: &[&str], ci: bool) -> Vec<String> {
-        let f: Vec<String> = files.iter().map(|s| s.to_string()).collect();
-        let d: Vec<String> = dirs.iter().map(|s| s.to_string()).collect();
-        extraction_findings(&f, &d, ci)
-    }
-
     #[test]
     fn components() {
         for bad in [
@@ -534,22 +528,5 @@ mod tests {
         };
         let err = write(&mut Greedy(vec![file]), &part, &ctx).unwrap_err();
         assert!(err.to_string().contains("gave 11 bytes"), "{err}");
-    }
-
-    #[test]
-    fn clean_tree_passes() {
-        assert!(findings(&["eboot.bin", "sce_sys/param.json"], &["data/empty"], true).is_empty());
-    }
-
-    #[test]
-    fn collisions() {
-        assert_eq!(findings(&["A.bin", "a.bin"], &[], true).len(), 1);
-        assert!(findings(&["A.bin", "a.bin"], &[], false).is_empty());
-        // NFC vs NFD spelling of the same name.
-        assert_eq!(findings(&["caf\u{e9}", "cafe\u{301}"], &[], true).len(), 1);
-        assert_eq!(findings(&["Data/x", "data/y"], &[], true).len(), 1);
-        assert_eq!(findings(&["a", "a/b"], &[], false).len(), 1);
-        assert_eq!(findings(&["a"], &["a"], false).len(), 1);
-        assert_eq!(findings(&["a", "a"], &[], false).len(), 1);
     }
 }

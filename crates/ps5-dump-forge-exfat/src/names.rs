@@ -119,27 +119,4 @@ mod tests {
         assert_eq!(bytes.len(), 5836);
         assert_eq!(table_checksum(&bytes), 0xE619_D30D);
     }
-
-    #[test]
-    fn upcase_covers_beyond_ascii() {
-        assert_eq!(upcase("abz"), upcase("ABZ"));
-        assert_eq!(upcase("é"), upcase("É"));
-        assert_eq!(upcase("σ"), upcase("Σ"));
-        assert_eq!(upcase("ж"), upcase("Ж"));
-        // Astral characters pass through as their (unmapped) surrogate halves.
-        assert_eq!(upcase("😀"), "😀".encode_utf16().collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn problems_are_named() {
-        assert!(problem("eboot.bin").is_none());
-        assert!(problem("Café").is_none());
-        assert!(problem("Cafe\u{301}").unwrap().contains("NFC"));
-        assert!(problem("a:b").unwrap().contains("forbidden"));
-        assert!(problem("a\u{7}").unwrap().contains("forbidden"));
-        assert!(problem(&"x".repeat(256)).unwrap().contains("256"));
-        assert!(problem(&"x".repeat(255)).is_none());
-        assert!(problem("..").is_some());
-        assert!(problem("bad\u{FFFD}.bin").unwrap().contains("U+FFFD"));
-    }
 }

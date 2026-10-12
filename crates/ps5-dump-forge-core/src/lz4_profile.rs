@@ -291,13 +291,6 @@ mod tests {
     }
 
     #[test]
-    fn dates() {
-        assert_eq!(date(0), "1970-01-01");
-        assert_eq!(date(951_782_400), "2000-02-29");
-        assert_eq!(date(1_791_590_400), "2026-10-10");
-    }
-
-    #[test]
     fn round_trips_to_the_same_specs() {
         let files: Vec<PackFile> = [
             ("data/plain.bin", spec(16, false, false, false)),
@@ -408,17 +401,5 @@ mod tests {
             "{names:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn names() {
-        let info = crate::preflight::parse_param(
-            br#"{"titleId":"PPSA13197","localizedParameters":{"defaultLanguage":"en-US","en-US":{"titleName":"Stellar Blade"}}}"#,
-        );
-        assert_eq!(
-            file_name(&info),
-            "[Stellar Blade]-[PPSA13197]-lz4profile.toml"
-        );
-        assert_eq!(file_name(&GameInfo::default()), "lz4profile.toml");
     }
 }

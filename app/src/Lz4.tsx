@@ -5,6 +5,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { msg, num, useMessages } from "./i18n";
+
 import {
   api,
   errorText,
@@ -37,7 +39,7 @@ import { JobsCard } from "./JobList";
 import { dirname } from "./paths";
 import type { Action, Job } from "./jobs";
 import {
-  FORMAT_INFO,
+  formatInfo,
   GenerateSwitch,
   Lead,
   OutputField,
@@ -46,14 +48,12 @@ import {
   VerifySwitch,
 } from "./target";
 
-type Scenario = "trace" | "pack";
+export type Scenario = "trace" | "pack";
 const SCENARIOS: Scenario[] = ["pack", "trace"];
-const SCENARIO_LABEL: Record<Scenario, string> = { trace: "Trace", pack: "Pack/Unpack" };
 
 /** What Trace does to the source. */
-type TraceAct = "patch" | "unpatch";
+export type TraceAct = "patch" | "unpatch";
 const TRACE_ACTS: TraceAct[] = ["patch", "unpatch"];
-const TRACE_LABEL: Record<TraceAct, string> = { patch: "Patch", unpatch: "Unpatch" };
 
 /** Sources Trace changes: a folder in place, these images rebuilt and replaced. The others are
  * read-only on the console, so a game there can't write its trace. */
@@ -63,37 +63,17 @@ const WRITABLE_IMAGES: Format[] = ["exfat", "ffpkg"];
  * `DEFAULT_LZ4_TRACE_SPACE_MIB`). */
 const DEFAULT_TRACE_MIB = 256;
 
-const traceLabel = (mib: number) => (mib >= 1024 ? `${mib / 1024} GiB` : `${mib} MiB`);
+const traceLabel = (mib: number) => (mib >= 1024 ? `${num(mib / 1024)} GiB` : `${num(mib)} MiB`);
 
-/** Forge's release build of the AMPR runtime (what Unpatch installs). */
-const RELEASE = "Forge's release runtime (0.4.2.1)";
-
-/** One line under the scenario picker. */
-function scenarioInfo(s: Scenario, packed: boolean): string {
-  if (s === "trace")
-    return "Makes this game record which assets it reads while you play (ampr_commands.bin), for Pack to use. Unpatch puts the release runtime back.";
-  return packed
-    ? "Unpack: writes the game's LZ4 packs back as plain files, into a folder or a plain image."
-    : "Pack: packs the game's assets into LZ4 volumes that the bundled AMPR emulator (ampr_emu) reads while the game runs, into a folder or a plain image. A packed source is unpacked instead.";
-}
-
-/** One line under the Patch / Unpatch picker. */
-function traceInfo(a: TraceAct, image: boolean): string {
-  if (a === "patch")
-    return image
-      ? "Rebuilds this image with the trace runtime and room for the trace, then replaces it."
-      : "Installs the trace runtime in this folder where it is: no copy is written.";
-  return image
-    ? `Rebuilds this image with ${RELEASE}, without the recorded traces, then replaces it.`
-    : `Puts ${RELEASE} back in this folder where it is: no copy is written.`;
-}
+export type Lz4Action = TraceAct | "pack" | "unpack";
 
 /** Why a scenario doesn't apply to this source; null when it does. */
 function scenarioWhy(s: Scenario, lz4: Lz4Facts | null): string | null {
-  if (s === "pack") return lz4?.imports_ampr || lz4?.packed ? null : "the game doesn't use AMPR";
-  if (!lz4?.imports_ampr) return "the game doesn't use AMPR";
-  if (lz4.packed) return "the source is LZ4 packed: unpack it first";
-  if (lz4.manifest_error !== null) return "its LZ4 packs are damaged";
+  const t = msg().lz4;
+  if (s === "pack") return lz4?.imports_ampr || lz4?.packed ? null : t.noAmpr;
+  if (!lz4?.imports_ampr) return t.noAmpr;
+  if (lz4.packed) return t.packedFirst;
+  if (lz4.manifest_error !== null) return t.damaged;
   return null;
 }
 
@@ -107,7 +87,6 @@ function defaultScenario(lz4: Lz4Facts | null): Scenario | null {
  * (core and the CLI still do): Convert turns the folder into any format. */
 const PACK_FORMATS: Format[] = ["lz4", "ffpkg", "exfat", "ffpfs"];
 const UNPACK_FORMATS: Format[] = ["folder", "ffpkg", "exfat", "ffpfs"];
-const ANY_FORMAT = "Need ffpfsc or fpkg? Write a folder here, then convert it to any format on the Convert tab.";
 
 /** Pack's or Unpack's target: Unpack starts on a folder, Pack on its chosen target. */
 function packTarget(lz4: Lz4Facts | null, packFormat: Format): Format {
@@ -121,6 +100,7 @@ function ownTraces(lz4: Lz4Facts | null): boolean {
 }
 
 export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
+  const t = useMessages().lz4;
   const [source, setSource] = useState<string | null>(null);
   const [sourceIsImage, setSourceIsImage] = useState(false);
   const [ins, setIns] = useState<Inspection | null>(null);
@@ -159,7 +139,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const lz4 = ins?.lz4 ?? null;
   const kind = ins?.kind ?? (sourceIsImage ? "" : "folder");
   const why = (s: Scenario) =>
-    !source ? "choose a source first" : !ins ? "the source isn't read yet" : scenarioWhy(s, lz4);
+    !source ? t.chooseFirst : !ins ? t.notRead : scenarioWhy(s, lz4);
   const usable = SCENARIOS.filter((s) => why(s) === null);
   const scenario: Scenario | null =
     chosen && usable.includes(chosen) ? chosen : ins ? defaultScenario(lz4) : null;
@@ -274,15 +254,15 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     const choice = out.choiceSeq.current;
     const p = await pick(
       what === "profile"
-        ? { directory: false, title: "LZ4 profile", filterName: "LZ4 profile (TOML)", extensions: ["toml"] }
+        ? { directory: false, title: t.pickProfile, filterName: t.profileFilter, extensions: ["toml"] }
         : what === "folder"
-          ? { directory: true, title: "LZ4 traces (a folder with ampr_commands.bin and ampr_emu.index)" }
+          ? { directory: true, title: t.pickTracesFolder }
           : {
               directory: false,
               folderToo: what === "either",
               title:
-                what === "either" ? "LZ4 traces: the zip, or a folder with both files" : "LZ4 traces (zip)",
-              filterName: "LZ4 traces (zip)",
+                what === "either" ? t.pickTracesEither : t.pickTracesZip,
+              filterName: t.pickTracesZip,
               extensions: ["zip"],
             },
     );
@@ -302,19 +282,18 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const folderTrace = scenario === "trace" && !sourceIsImage;
   const imageTrace = scenario === "trace" && writableImage;
   const job = scenario === "pack" || imageTrace;
-  const verb = scenario === "trace" ? TRACE_LABEL[traceAct] : packed ? "Unpack" : "Pack";
+  const action: Lz4Action = scenario === "trace" ? traceAct : packed ? "unpack" : "pack";
   const replacing = props.jobs.some(
     (j) => !j.result && j.request?.lz4_in_place && j.request.source === source,
   );
-  const v = verb.toLowerCase();
   const blockReason = insError
-    ? "Can't start: this source couldn't be read (see Source)."
+    ? t.unreadable
     : folderTrace && pending > 0
-      ? `Can't ${v} while a job is running or queued: ${v} once they have finished.`
+      ? t.pending(traceAct)
       : imageTrace && replacing
-        ? "A job is already rebuilding this image: wait for it to finish."
+        ? t.replacing
         : (job || folderTrace) && hard.length > 0
-          ? `Can't ${v}: ${hard[0]}${hard.length > 1 ? ` (and ${hard.length - 1} more, see Source)` : ""}.`
+          ? t.blocked(action, hard[0], hard.length - 1)
           : null;
 
   // Trace on a folder: one request, not a job.
@@ -436,67 +415,55 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
         />
 
         <section className="card" aria-labelledby="l-lz4">
-          <CardHead icon="compress" title="LZ4 asset packs" id="l-lz4">
+          <CardHead icon="compress" title={t.title} id="l-lz4">
             <button type="button" className="small help-btn" onClick={openLz4Help}>
               <Icon name="info" />
-              How LZ4 works
+              {t.help}
             </button>
           </CardHead>
           <SegPicker
             name="l-scenario"
-            label="LZ4 scenario"
+            label={t.scenario}
             options={SCENARIOS}
-            labels={SCENARIO_LABEL}
+            labels={t.scenarios}
             value={scenario}
             onChange={chooseScenario}
             why={why}
           />
           {scenario && (
             <p className="muted desc">
-              <Lead text={scenarioInfo(scenario, packed)} />
+              <Lead note={{ text: t.scenarioInfo(scenario, packed) }} />
             </p>
           )}
           {!source ? (
-            <p className="muted hint lz4-why">Choose a game folder or image first.</p>
+            <p className="muted hint lz4-why">{t.chooseGame}</p>
           ) : ins && usable.length === 0 ? (
             <p className="note-line warn lz4-why">
               <Icon name="warn" />
-              <span>
-                Nothing to do here: this game doesn't use AMPR (its eboot.bin doesn't import
-                libSceAmpr), and it isn't LZ4 packed.
-              </span>
+              <span>{t.nothing}</span>
             </p>
           ) : (
             ins &&
             unusable.length > 0 && (
-              <p className="muted hint lz4-why">
-                Not for this source:{" "}
-                {unusable.map((s) => `${SCENARIO_LABEL[s]} (${why(s)})`).join("; ")}.
-              </p>
+              <p className="muted hint lz4-why">{t.unavailable(unusable.map((s) => `${t.scenarios[s]} (${why(s)})`))}</p>
             )
           )}
           {readOnly && (
             <p className="note-line warn lz4-why">
               <Icon name="warn" />
-              <span>
-                Can't patch or unpatch <b>{kindLabel(kind)}</b>: it is read-only on the console, so
-                the game can't write its trace there. Convert it to <b>ffpkg</b> (or <b>exfat</b>) on
-                the Convert tab, then patch that.
-              </span>
+              <span>{t.readOnly(kindLabel(kind))}</span>
             </p>
           )}
           {scenario === "trace" && !readOnly && ins && source && (
             <>
               {journal !== null && <RecordedTraces source={source} ins={ins} />}
-              <span className="label target-label" aria-hidden="true">
-                Action
-              </span>
+              <span className="label target-label" aria-hidden="true">{t.action}</span>
               <SegPicker
                 name="l-trace-act"
-                label="Trace action"
+                label={t.traceAction}
                 className="inner"
                 options={TRACE_ACTS}
-                labels={TRACE_LABEL}
+                labels={t.actions}
                 value={traceAct}
                 onChange={(a) => {
                   setAct(a);
@@ -504,33 +471,15 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                 }}
                 why={() => null}
               />
-              <p className="muted desc">{traceInfo(traceAct, sourceIsImage)}</p>
+              <p className="muted desc">{t.traceInfo(traceAct, sourceIsImage)}</p>
               <div className="field lz4">
-                {traceAct === "patch" ? (
-                  <p className="muted hint">
-                    Changes this {sourceIsImage ? "image" : "folder"}: the trace runtime
-                    replaces fakelib/libSceAmpr.sprx (no backup kept) and a fresh ampr_emu.index
-                    lists its files.
-                  </p>
-                ) : (
-                  <p className="muted hint">
-                    Changes this {sourceIsImage ? "image" : "folder"}: {RELEASE} replaces
-                    fakelib/libSceAmpr.sprx (no backup kept), ampr_commands.bin and the trace logs
-                    are deleted, and a fresh ampr_emu.index lists its files.
-                  </p>
-                )}
-                {traceAct === "patch" && (
-                  <p className="muted hint">
-                    Play, then pick this source again: Pack/Unpack uses the traces it recorded
-                    {web && ", and Trace offers them as a zip for a computer"}. Each launch
-                    overwrites the previous session's trace.
-                  </p>
-                )}
+                <p className="muted hint">{t.changes(traceAct, sourceIsImage)}</p>
+                {traceAct === "patch" && <p className="muted hint">{t.replay(web)}</p>}
                 {traceAct === "patch" && <FakelibWarning />}
                 {traceAct === "patch" && sourceIsImage && (
                   <>
                     <label className="label range-label" htmlFor="l-trace-mib">
-                      <span>Room for the trace</span>
+                      <span>{t.room}</span>
                       <span className="range-value">{traceLabel(traceMib)}</span>
                     </label>
                     <input
@@ -543,37 +492,22 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                       value={traceMib}
                       onChange={(e) => setTraceMib(Number(e.target.value))}
                     />
-                    <p className="muted hint">
-                      Free space added to the image for the game to write its trace into. Mount
-                      the image writable with ShadowMountPlus image_rw= or nothing is recorded:
-                      reserved space alone does not make it writable.
-                    </p>
+                    <p className="muted hint">{t.roomHint}</p>
                   </>
                 )}
                 {traceAct === "unpatch" && lz4?.runtime === "forge_release" && journal === null && (
-                  <p className="muted hint">
-                    This source already has the release runtime: only the index is written again.
-                  </p>
+                  <p className="muted hint">{t.alreadyRelease}</p>
                 )}
                 {sourceIsImage && (
                   <p className="note-line muted">
                     <Icon name="info" />
-                    <span>
-                      Needs free space about the image's size next to it; the image is replaced
-                      only after the copy verifies.
-                    </span>
+                    <span>{t.spaceHint}</span>
                   </p>
                 )}
                 {journal !== null && (
                   <p className="note-line warn">
                     <Icon name="warn" />
-                    <span>
-                      {TRACE_LABEL[traceAct]} deletes the traces this source recorded
-                      (ampr_commands.bin, {prettyBytes(journal)}):{" "}
-                      {web
-                        ? "download them above or pack with them first."
-                        : "pack with them or copy them first."}
-                    </span>
+                    <span>{t.deletesTraces(traceAct, prettyBytes(journal), web)}</span>
                   </p>
                 )}
               </div>
@@ -596,14 +530,14 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                 open={profileOpen}
                 onToggle={(e) => setProfileOpen(e.currentTarget.open)}
               >
-                <summary>Use a rules profile instead</summary>
+                <summary>{t.useProfile}</summary>
                 <PathChoice
                   id="l-lz4-profile"
-                  label="Profile"
+                  label={t.profile}
                   path={profile}
-                  choices={[{ label: "Choose…", onChoose: () => void chooseRules("profile") }]}
+                  choices={[{ label: t.choose, onChoose: () => void chooseRules("profile") }]}
                   onClear={() => setProfile(null)}
-                  hint="A TOML file of pack rules. It replaces the traces: choosing one clears the other."
+                  hint={t.profileHint}
                 />
               </details>
               <p className="muted hint">{ruleSource(profile, locked ? null : traces, journal)}</p>
@@ -611,60 +545,43 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           )}
           {scenario === "pack" && ins && !packed && (
             <>
-              <span className="label target-label" aria-hidden="true">
-                Target
-              </span>
+              <span className="label target-label" aria-hidden="true">{t.target}</span>
               <FormatPicker
                 name="l-pack-format"
-                label="Pack into"
+                label={t.packInto}
                 value={fmt}
                 onChange={pickPackFormat}
                 formats={PACK_FORMATS}
               />
               <p className="muted desc">
-                <Lead text={FORMAT_INFO[fmt]} />
+                <Lead note={formatInfo(fmt)} />
               </p>
               {fmt !== "lz4" && (
-                <p className="muted hint">
-                  Packs into the image directly: no temporary folder; the packed files are read twice.
-                </p>
+                <p className="muted hint">{t.direct}</p>
               )}
               <p className="muted hint">
-                <Prose text={ANY_FORMAT} />
+                <Prose text={t.anyFormat} />
               </p>
             </>
           )}
           {scenario === "pack" && lz4?.packed && (
             <>
-              <span className="label target-label" aria-hidden="true">
-                Target
-              </span>
+              <span className="label target-label" aria-hidden="true">{t.target}</span>
               <FormatPicker
                 name="l-target-format"
-                label="Target format"
+                label={t.targetFormat}
                 value={fmt}
                 onChange={pickFormat}
                 formats={UNPACK_FORMATS}
               />
               <p className="muted desc">
-                <Lead
-                  text={
-                    fmt !== "folder"
-                      ? FORMAT_INFO[fmt]
-                      : "A new game folder with its LZ4 packs written back as plain files."
-                  }
-                />
+                <Lead note={fmt !== "folder" ? formatInfo(fmt) : { text: t.unpackFolder }} />
               </p>
               <p className="muted hint">
-                <Prose text={ANY_FORMAT} />
+                <Prose text={t.anyFormat} />
               </p>
               <div className="field lz4">
-                <p className="muted hint">
-                  {lz4.packed.packed_files === null
-                    ? "Writes the packed files back as plain files"
-                    : `Writes the ${lz4.packed.packed_files.toLocaleString()} packed file${lz4.packed.packed_files === 1 ? "" : "s"} back as plain files`}
-                  ; keeps the AMPR runtime and its index.
-                </p>
+                <p className="muted hint">{t.unpackHint(lz4.packed.packed_files)}</p>
               </div>
             </>
           )}
@@ -680,14 +597,10 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                     className="neon-btn"
                     onClick={savePlan}
                     disabled={!!blockReason || saving || pending > 0}
-                    title={
-                      pending > 0
-                        ? "Wait for the running jobs to finish"
-                        : "Save the files Pack would pack as an editable rules profile"
-                    }
+                    title={pending > 0 ? t.waitJobs : t.saveHint}
                   >
                     <Icon name="download" />
-                    {saving ? "Saving…" : "Save as profile"}
+                    {saving ? t.saving : t.saveProfile}
                   </button>
                 )}
                 <button
@@ -698,7 +611,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                   }
                 >
                   <Icon name="bolt" />
-                  {verb}
+                  {t.actions[action]}
                 </button>
               </span>
             </div>
@@ -709,11 +622,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
               {savedHere && (
                 <p className="note-line muted">
                   <Icon name="info" />
-                  <span>
-                    Saved {savedHere.file_name}: {savedHere.packed.toLocaleString()} file
-                    {savedHere.packed === 1 ? "" : "s"} packed, {savedHere.loose.toLocaleString()} loose. Edit
-                    it and load it with Use a rules profile.
-                  </span>
+                  <span>{t.saved(savedHere.file_name, savedHere.packed, savedHere.loose)}</span>
                 </p>
               )}
               {patchDone && <PatchResult act={patchDone.act} result={patchDone.result} />}
@@ -726,7 +635,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
               {!blockReason && formatWarn > 0 && (
                 <p className="note-line warn">
                   <Icon name="warn" />
-                  <span>Likely to fail as <b>{kindLabel(fmt)}</b>: it refuses file names listed in Source.</span>
+                  <span>{t.likelyFail(kindLabel(fmt))}</span>
                 </p>
               )}
               {dupe && (
@@ -734,8 +643,8 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                   <Icon name="info" />
                   <span>
                     {collides
-                      ? `A job is already writing this ${fmt === "folder" || fmt === "lz4" ? "folder" : "file"}: ${verb} again would fail. Pick another name.`
-                      : <>Already writing this game as <b>{kindLabel(fmt)}</b>; {verb} again makes a second copy.</>}
+                      ? t.collides(action, fmt === "folder" || fmt === "lz4")
+                      : t.already(action, kindLabel(fmt))}
                   </span>
                 </p>
               )}
@@ -806,12 +715,11 @@ function profileName(ins: Inspection | null): string {
 /** Where Pack's rules come from, in core's order: a profile, traces chosen here, this
  * source's own traces, else a built-in guess. */
 function ruleSource(profile: string | null, traces: string | null, journalBytes: number | null): string {
-  if (profile !== null)
-    return "Packs what the profile's rules say, except the files the engine opens directly (container indexes, configs, media) — those stay loose.";
-  if (traces !== null) return "Packs the files the game read in the chosen traces, except those the engine opens directly (container indexes, configs, media) — those stay loose.";
-  if (journalBytes !== null)
-    return "Packs the files the game read in its last traced session (this source's traces), except those the engine opens directly (container indexes, configs, media) — those stay loose.";
-  return "No traces in this source: packs by a built-in guess, which is less reliable. Record traces first (Trace → Patch), or choose traces copied from the console, or a profile.";
+  const t = msg().lz4;
+  if (profile !== null) return t.profileRules;
+  if (traces !== null) return t.chosenRules;
+  if (journalBytes !== null) return t.ownRules;
+  return t.guessRules;
 }
 
 const INDEX = "ampr_emu.index";
@@ -820,24 +728,17 @@ const INDEX = "ampr_emu.index";
  * zip from the server (the route streams it out of a folder or any image), to pack the
  * original dump on a computer; the app has them at hand for Pack/Unpack. */
 function RecordedTraces(props: { source: string; ins: Inspection }) {
+  const t = useMessages().lz4;
   const zip = props.ins.lz4?.traces_zip ?? null;
   const index = props.ins.files.find((f) => f.path === INDEX)?.size ?? 0;
   const total = (props.ins.lz4?.journal_bytes ?? 0) + index;
   return (
     <div className="field lz4 recorded">
-      <span className="label">Recorded traces</span>
+      <span className="label">{t.recorded}</span>
       {!web ? (
-        <p className="muted hint">
-          ampr_commands.bin ({prettyBytes(props.ins.lz4?.journal_bytes ?? 0)}): Pack/Unpack loads
-          these traces by itself.
-        </p>
+        <p className="muted hint">{t.recordedHint(prettyBytes(props.ins.lz4?.journal_bytes ?? 0))}</p>
       ) : (
-        <p className="muted hint">
-          Close the game and wait about a minute first: while the image is mounted, its file on disk
-          can lag behind what the game wrote. Use a computer's browser opened at this console's Forge
-          address, then pick the zip in LZ4 → Pack/Unpack → Traces on your computer. A download fails
-          if the game or a sync changes the source meanwhile: close the game and download again.
-        </p>
+        <p className="muted hint">{t.downloadHint}</p>
       )}
       {!web ? null : zip !== null ? (
         <div className="row downloads">
@@ -847,18 +748,16 @@ function RecordedTraces(props: { source: string; ins: Inspection }) {
             download={zip}
           >
             <Icon name="download" />
-            <span>
-              Download traces ({prettyBytes(total)}) as {zip}
-            </span>
+            <span>{t.download(prettyBytes(total), zip)}</span>
           </a>
         </div>
       ) : (
         <p className="note-line warn">
           <Icon name="warn" />
-          <span>No {INDEX} in this source: Pack needs it beside ampr_commands.bin, whose file ids it names.</span>
+          <span>{t.missingIndex}</span>
         </p>
       )}
-      <p className="muted hint">A journal cut off at the end still packs: Pack stops at its last whole record.</p>
+      <p className="muted hint">{t.truncatedJournal}</p>
       <FakelibWarning recorded />
     </div>
   );
@@ -867,14 +766,11 @@ function RecordedTraces(props: { source: string; ins: Inspection }) {
 /** Before and after tracing: a fakelib updater puts its own libSceAmpr.sprx back over the
  * trace runtime, so nothing is recorded. */
 function FakelibWarning({ recorded = false }: { recorded?: boolean }) {
+  const t = useMessages().lz4;
   return (
     <p className="note-line warn">
       <Icon name="warn" />
-      <span>
-        {recorded ? "Few or no traces? " : ""}Turn off any fakelib updater while tracing: it
-        overwrites fakelib/libSceAmpr.sprx, and then nothing is recorded
-        {recorded ? ". Turn it off, Patch again and replay." : "."}
-      </span>
+      <span>{t.fakelibWarning(recorded)}</span>
     </p>
   );
 }
@@ -882,14 +778,15 @@ function FakelibWarning({ recorded = false }: { recorded?: boolean }) {
 /** The LZ4 tab's empty Source: one yellow Choose source… (a game folder or an image, asked
  * first: the native dialogs pick one kind) and what to expect. */
 function Lz4Empty({ onPick }: { onPick: (path: string, isImage: boolean) => void }) {
+  const t = useMessages().lz4;
   return (
     <div className="empty lz4">
       <span className="empty-icon">
         <Icon name="compress" />
       </span>
-      <p className="empty-title">Choose a game that uses AMPR</p>
+      <p className="empty-title">{t.emptyTitle}</p>
       <p className="muted">
-        <Lead text="Experimental: traces and LZ4 packs for ampr_emu. No guarantee the game runs afterwards; keep your original dump." />
+        <Lead note={{ tone: "warn", text: t.experimental }} />
       </p>
       <div className="row center">
         <ChooseMenu
@@ -898,13 +795,13 @@ function Lz4Empty({ onPick }: { onPick: (path: string, isImage: boolean) => void
           label={
             <>
               <Icon name="folder" />
-              Choose source…
+              {t.chooseSource}
             </>
           }
-          menuLabel="Source"
+          menuLabel={t.source}
           items={[
-            { id: "folder", icon: "folder", label: "Game folder…" },
-            { id: "image", icon: "disc", label: "Image…" },
+            { id: "folder", icon: "folder", label: t.gameFolder },
+            { id: "image", icon: "disc", label: t.image },
           ]}
           onChoose={(what) => void openPicker(what, onPick)}
         />
@@ -926,6 +823,7 @@ function TracesControl(props: {
   onChoose: (what: "zip" | "folder" | "either") => void;
   onClear: () => void;
 }) {
+  const t = useMessages().lz4;
   const id = "l-lz4-traces";
   // The lock or the link that had focus goes away: hand it to what replaces it.
   const was = useRef(props.locked);
@@ -939,9 +837,7 @@ function TracesControl(props: {
     return (
       <div className="field" role="group" aria-labelledby={`${id}-label`}>
         <div className="label-row">
-          <span className="label" id={`${id}-label`}>
-            Traces
-          </span>
+          <span className="label" id={`${id}-label`}>{t.traces}</span>
         </div>
         <div className="lock-box">
           <button
@@ -949,43 +845,40 @@ function TracesControl(props: {
             id={`${id}-lock`}
             className="lock-btn"
             onClick={props.onUnlock}
-            title="Unlock to choose other traces"
-            aria-label="Unlock to choose other traces"
+            title={t.unlock}
+            aria-label={t.unlock}
           >
             <Icon name="lock" />
           </button>
-          <span>Traces are already loaded from this source</span>
+          <span>{t.loaded}</span>
         </div>
-        <p className="muted hint">
-          Its own ampr_commands.bin ({prettyBytes(props.journal ?? 0)}) and {INDEX}. Click the
-          lock to choose other traces instead.
-        </p>
+        <p className="muted hint">{t.lockedHint(prettyBytes(props.journal ?? 0))}</p>
       </div>
     );
   return (
     <div className="field" role="group" aria-labelledby={`${id}-label`}>
       <div className="label-row">
         <span className="label" id={`${id}-label`}>
-          {props.lockable ? "Traces" : "Traces (optional)"}
+          {props.lockable ? t.traces : t.optionalTraces}
         </span>
         <span className="row nowrap">
           {props.path !== null && (
             <button className="small" onClick={props.onClear}>
-              Clear
+              {t.clear}
             </button>
           )}
           {web ? (
             <button className="small" id={`${id}-choose`} onClick={() => props.onChoose("either")}>
-              Choose…
+              {t.choose}
             </button>
           ) : (
             <ChooseMenu
               id={`${id}-choose`}
-              label="Choose…"
-              menuLabel="Traces"
+              label={t.choose}
+              menuLabel={t.traces}
               items={[
-                { id: "zip", icon: "file", label: "Zip…" },
-                { id: "folder", icon: "folder", label: "Folder…" },
+                { id: "zip", icon: "file", label: t.zip },
+                { id: "folder", icon: "folder", label: t.folder },
               ]}
               onChoose={props.onChoose}
             />
@@ -993,14 +886,11 @@ function TracesControl(props: {
         </span>
       </div>
       {props.path !== null && <p className="out-box path">{props.path}</p>}
-      <p className="muted hint">
-        Pick the [game name]-[title ID]-amprtrace.zip from Trace → Download traces, or a folder with ampr_commands.bin
-        and {INDEX}.
-      </p>
+      <p className="muted hint">{t.tracesHint}</p>
       {props.lockable && (
         <button type="button" className="link" onClick={props.onRelock}>
           <Icon name="lock" />
-          Use the source's traces
+          {t.useOwn}
         </button>
       )}
     </div>
@@ -1017,6 +907,7 @@ function PathChoice(props: {
   onClear: () => void;
   hint?: string;
 }) {
+  const t = useMessages().lz4;
   return (
     <div className="field" role="group" aria-labelledby={`${props.id}-label`}>
       <div className="label-row">
@@ -1026,7 +917,7 @@ function PathChoice(props: {
         <span className="row nowrap">
           {props.path !== null && (
             <button className="small" onClick={props.onClear}>
-              Clear
+              {t.clear}
             </button>
           )}
           {props.choices.map((c) => (
@@ -1044,21 +935,17 @@ function PathChoice(props: {
 
 /** What a folder Patch or Unpatch did, and the runtime's known issue. */
 function PatchResult({ act, result }: { act: TraceAct; result: Lz4Patch }) {
+  const t = useMessages().lz4;
   return (
     <>
       <p className="note-line good">
         <Icon name="checkCircle" />
-        <span>
-          {act === "patch"
-            ? "Patched: the trace runtime is in fakelib/libSceAmpr.sprx"
-            : `Unpatched: ${RELEASE} is in fakelib/libSceAmpr.sprx`}{" "}
-          and ampr_emu.index lists {result.indexed.toLocaleString()} file{result.indexed === 1 ? "" : "s"}.
-        </span>
+        <span>{t.patchResult(act, result.indexed)}</span>
       </p>
       {result.removed.length > 0 && (
         <p className="note-line muted">
           <Icon name="info" />
-          <span>Removed the old trace files: {result.removed.join(", ")}.</span>
+          <span>{t.removed(result.removed)}</span>
         </p>
       )}
       {result.warning && (

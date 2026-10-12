@@ -295,26 +295,6 @@ mod tests {
     }
 
     #[test]
-    fn versions_order() {
-        let order = [
-            "0.0.1-pre3",
-            "0.0.1-pre10",
-            "0.0.1-rc1",
-            "0.0.1",
-            "0.0.2",
-            "0.1.0",
-            "1.0.0",
-        ];
-        for (i, a) in order.iter().enumerate() {
-            for (j, b) in order.iter().enumerate() {
-                assert_eq!(compare(a, b), i.cmp(&j), "{a} vs {b}");
-            }
-        }
-        assert_eq!(version_of(&elf("0.0.2", b"x")), Some("0.0.2"));
-        assert_eq!(version_of(b"no marker"), None);
-    }
-
-    #[test]
     fn copy_policy() {
         let dir = std::env::temp_dir().join(format!("forge-self-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);

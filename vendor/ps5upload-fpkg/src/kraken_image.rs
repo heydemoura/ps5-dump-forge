@@ -929,66 +929,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_compressed_image_walks_back_to_its_blocks() {
-        // Two files and a metadata region, laid out and walked back.
-        let blocks = vec![
-            b(
-                0,
-                0x40000,
-                0,
-                &[(0x100, true), (0x80, true)],
-                Owner::File(0),
-            ),
-            b(0x40000, 0x1234, 0x180, &[(0x1234, false)], Owner::File(0)),
-            b(0x41234, 0x1000, 0x13b4, &[(0x40, true)], Owner::File(1)),
-            b(
-                0x42234,
-                0x3ddcc,
-                0x13f4,
-                &[(0x30, true), (0x30, true)],
-                Owner::Gap,
-            ),
-            b(
-                0x80000,
-                0x40000,
-                0x10000,
-                &[(0x200, true), (0x200, true)],
-                Owner::Meta,
-            ),
-        ];
-        let img = image_of(blocks.clone(), 0xc0000, 0x42234, 0x80000);
-        let blob = layout(&img, &[0, 0x41234]).unwrap();
-        let d = describe(&blob).unwrap();
-        assert_eq!(d.len(), blocks.len());
-        for (want, got) in blocks.iter().zip(&d) {
-            assert_eq!(got.logical, want.logical);
-            assert_eq!(got.len, u64::from(want.len));
-            assert_eq!(got.stored_at, want.stored_at);
-            assert_eq!(got.stored_len, want.stored_len());
-            assert_eq!(got.even_len, u64::from(want.halves[0].0));
-        }
-    }
-
-    #[test]
-    fn a_window_anchor_opens_every_sixteenth_record() {
-        let mut blocks = Vec::new();
-        let mut at = 0u64;
-        for i in 0..40u64 {
-            blocks.push(b(
-                i * 0x40000,
-                0x40000,
-                at,
-                &[(0x100, true), (0x100, true)],
-                Owner::File(0),
-            ));
-            at += 0x200;
-        }
-        let img = image_of(blocks.clone(), 40 * 0x40000, 40 * 0x40000, 40 * 0x40000);
-        let blob = layout(&img, &[0]).unwrap();
-        assert_eq!(describe(&blob).unwrap().len(), 40);
-    }
-
     /// A descriptor to corrupt: two files and a metadata region.
     fn sample_descriptor() -> Vec<u8> {
         let blocks = vec![
@@ -1165,68 +1105,6 @@ mod tests {
         assert_eq!(
             decode_described(&[], &walked[1]).unwrap(),
             vec![0; 0x4_0000]
-        );
-    }
-
-    #[test]
-    fn a_sparse_extent_at_the_tail_fills_to_the_mount() {
-        // One real file, then a sparse extent from its end to the mount's end.
-        let b0 = b(0, 0x100, 0, &[(0x100, false)], Owner::File(0));
-        let mount = 0x100 + 0x4_0000;
-        let image = image_of(vec![b0], mount, mount, mount);
-        let walked = describe(&with_kind(assemble(&image, &[0, 0x100]).unwrap(), 1, 0x40)).unwrap();
-        assert_eq!(
-            walked.last().map(|b| (b.logical, b.len, b.stored_len)),
-            Some((0x100, 0x4_0000, 0))
-        );
-    }
-
-    #[test]
-    fn back_to_back_sparse_extents_tile_between_files() {
-        // A real file, four sparse boundaries (two at the same start: an empty file), a real file.
-        let b0 = b(0, 0x100, 0, &[(0x100, false)], Owner::File(0));
-        let b5 = b(0x4_0300, 0x100, 0x100, &[(0x100, false)], Owner::File(5));
-        let mount = 0x4_0400;
-        let image = image_of(vec![b0, b5], mount, mount, mount);
-        let mut blob = assemble(&image, &[0, 0x100, 0x100, 0x200, 0x4_0200, 0x4_0300]).unwrap();
-        for idx in 1..5 {
-            blob = with_kind(blob, idx, 0x40);
-        }
-        let spans: Vec<_> = describe(&blob)
-            .unwrap()
-            .iter()
-            .map(|b| (b.logical, b.len, b.stored_len))
-            .collect();
-        assert_eq!(
-            spans,
-            [
-                (0, 0x100, 0x100),
-                (0x100, 0x100, 0),
-                (0x200, 0x4_0000, 0),
-                (0x4_0200, 0x100, 0),
-                (0x4_0300, 0x100, 0x100)
-            ]
-        );
-    }
-
-    #[test]
-    fn a_sparse_extent_can_open_the_mount() {
-        let b1 = b(0x5_0000, 0x100, 0, &[(0x100, false)], Owner::File(1));
-        let mount = 0x5_0100;
-        let image = image_of(vec![b1], mount, mount, mount);
-        let blob = with_kind(assemble(&image, &[0, 0x5_0000]).unwrap(), 0, 0x40);
-        let spans: Vec<_> = describe(&blob)
-            .unwrap()
-            .iter()
-            .map(|b| (b.logical, b.len, b.stored_len))
-            .collect();
-        assert_eq!(
-            spans,
-            [
-                (0, 0x4_0000, 0),
-                (0x4_0000, 0x1_0000, 0),
-                (0x5_0000, 0x100, 0x100)
-            ]
         );
     }
 

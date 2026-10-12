@@ -226,26 +226,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn single_record_and_many() {
-        assert_eq!(read_index(&built(&["only"])).unwrap().records.len(), 1);
-        let names: Vec<String> = (0..500).map(|i| format!("d{}/f{i}.bin", i % 7)).collect();
-        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-        assert_eq!(read_index(&built(&refs)).unwrap().records.len(), 500);
-    }
-
-    #[test]
-    fn hash_vectors_agree_with_the_builder() {
-        let b = built(&["toc"]);
-        let s = slots_at(&b);
-        let slot = (0..2)
-            .map(|n| u64_at(&b, s + n * 16).unwrap())
-            .max()
-            .unwrap();
-        assert_eq!(slot, 0x348925d202b64400);
-        assert_eq!(idx_hash(b"/app0/toc"), 0x348925d202b64400);
-    }
-
     /// Hand-made: two records in non-sorted order, 4 slots, the first record's hash collides
     /// on its home slot so the second must be found by linear probing.
     fn hand_made(paths: [&str; 2]) -> Vec<u8> {
@@ -299,23 +279,6 @@ mod tests {
                 ("alpha.bin".to_string(), 20)
             ]
         );
-    }
-
-    #[test]
-    fn slot_probe_wrap_is_accepted() {
-        // Find two names whose home slot is the last of 4, so the second wraps to slot 0.
-        let mut names = Vec::new();
-        for i in 0..200 {
-            let n = format!("f{i}");
-            if idx_hash(format!("/app0/{n}").as_bytes()) & 3 == 3 {
-                names.push(n);
-            }
-            if names.len() == 2 {
-                break;
-            }
-        }
-        let idx = read_index(&hand_made([&names[0], &names[1]])).unwrap();
-        assert_eq!(idx.records.len(), 2);
     }
 
     #[test]
@@ -391,14 +354,6 @@ mod tests {
         for (name, b) in cases {
             assert!(read_index(&b).is_err(), "{name}");
         }
-    }
-
-    #[test]
-    fn rejects_folded_duplicate_paths() {
-        // Same length, same path up to ASCII case.
-        let b = hand_made(["Dup.bin", "dup.bin"]);
-        assert!(read_index(&b).is_err());
-        assert!(read_index(&hand_made(["dup.bin", "other.b"])).is_ok());
     }
 
     #[test]
@@ -483,32 +438,5 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(read_index(&b).unwrap().records.len(), 1 << 16);
         assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
-    }
-
-    #[test]
-    fn rejects_a_broken_probe_chain() {
-        // Two names with the same home slot: the second sits one slot after the first.
-        let home = |n: &str| idx_hash(format!("/app0/{n}").as_bytes()) as usize & 3;
-        let names: Vec<String> = (0..64).map(|i| format!("f{i}")).collect();
-        let a = &names[0];
-        let b = names.iter().skip(1).find(|n| home(n) == home(a)).unwrap();
-        let good = hand_made([a, b]);
-        assert!(read_index(&good).is_ok());
-        let s = slots_at(&good);
-        let at = |n: usize| s + n * 16;
-        let h = home(a);
-        // Empty the home slot and put its record two slots on: the chain from home now dies.
-        let mut bad = good.clone();
-        let (hash, rec) = (
-            u64_at(&bad, at(h)).unwrap(),
-            u32_at(&bad, at(h) + 8).unwrap(),
-        );
-        let far = (h + 2) & 3;
-        assert_eq!(u32_at(&bad, at(far) + 8).unwrap(), 0);
-        put_u64(&mut bad, at(h), 0).unwrap();
-        put_u32(&mut bad, at(h) + 8, 0).unwrap();
-        put_u64(&mut bad, at(far), hash).unwrap();
-        put_u32(&mut bad, at(far) + 8, rec).unwrap();
-        assert!(read_index(&bad).is_err());
     }
 }

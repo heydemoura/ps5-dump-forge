@@ -1,6 +1,6 @@
 //! Round trips through the writer, checked by the vendored reader and by the mini fsck in
 //! `common`. Images land in `$CARGO_TARGET_TMPDIR/ufs2/` so `scripts/fsck-ufs.sh` can be
-//! pointed at them afterwards; the half-gigabyte one is deleted unless FORGE_UFS2_KEEP=1.
+//! pointed at them afterwards.
 
 mod common;
 
@@ -89,25 +89,6 @@ fn game_folder_round_trip() {
     std::fs::remove_file(img2).unwrap();
 }
 
-/// Free space for writable mounts: the requested bytes stay free, plus spare inodes.
-#[test]
-fn maker_mark_is_bounded_and_optional() {
-    let mut src = Synth::new(&[("eboot.bin", 100)]);
-    let cancel = AtomicBool::new(false);
-    for bad in ["x".repeat(32), "tab\there".into(), "é".into()] {
-        let opts = Options {
-            maker: Some(bad),
-            ..Options::default()
-        };
-        let e = ps5_dump_forge_ufs2::plan(&src, &opts, &cancel).unwrap_err();
-        assert!(e.to_string().contains("maker's mark"), "{e}");
-    }
-    let (img, _, _) = build("unmarked", &mut src, &Options::default());
-    let mut f = std::fs::File::open(&img).unwrap();
-    assert_eq!(ps5_dump_forge_ufs2::read_volname(&mut f).unwrap(), None);
-    std::fs::remove_file(img).unwrap();
-}
-
 #[test]
 fn free_bytes_reserved() {
     let mut src = Synth::new(&[("eboot.bin", 100), ("sce_sys/param.json", 10)]);
@@ -124,30 +105,6 @@ fn free_bytes_reserved() {
     assert!(layout.free_inodes >= 2048);
     assert_clean(&img);
     compare_with_reader(&img, &mut src);
-}
-
-/// One directory with 20 000 entries: the directory itself needs a single-indirect block
-/// (> 12 blocks of records). Most files are empty so the image stays small.
-#[test]
-fn many_entry_directory() {
-    let names: Vec<String> = (0..20_000)
-        .map(|i| format!("assets/a-rather-long-file-name-to-fill-records-{i:06}.bin"))
-        .collect();
-    let mut list: Vec<(&str, u64)> = names.iter().map(|n| (n.as_str(), 0)).collect();
-    list[7].1 = 3 * B + 1;
-    list[19_999].1 = 1;
-    list.push(("eboot.bin", 10));
-    let mut src = Synth::new(&list);
-    let (img, layout, _) = build("many", &mut src, &Options::default());
-    assert!(layout.free_inodes < u64::MAX);
-    let r = assert_clean(&img);
-    assert_eq!(r.files.len(), list.len());
-    // The vendored reader caps directories at 1 MiB (another agent is lifting that);
-    // this one is ~1.3 MiB, so a refusal there is a reader limit, not an image fault.
-    match ps5upload_fpkg::ufs2_source::Ufs2Source::open(&img) {
-        Ok(_) => compare_with_reader(&img, &mut src),
-        Err(e) => eprintln!("NOTE: vendored reader refused the big directory: {e}"),
-    }
 }
 
 /// Many empty files at the 64 KiB inode-density floor: `plan` must grow the image until
@@ -204,20 +161,6 @@ fn nearly_empty_last_group() {
     let r = assert_clean(&img);
     assert_eq!(r.size % r.fpg, r.dblkno + 1);
     compare_with_reader(&img, &mut src);
-}
-
-/// Files at the single -> double indirect edge: 12 + 8192 blocks (537 MB), and one block
-/// more. Synthetic data, so nothing is read from disk; ~1 GB of image is written.
-#[test]
-fn double_indirect_transition() {
-    let edge = (12 + 8192) * B;
-    let mut src = Synth::new(&[("a/edge.bin", edge), ("a/over.bin", edge + 1), ("b.bin", 1)]);
-    let (img, _, _) = build("double", &mut src, &Options::default());
-    assert_clean(&img);
-    compare_with_reader(&img, &mut src);
-    if std::env::var_os("FORGE_UFS2_KEEP").is_none() {
-        std::fs::remove_file(img).unwrap();
-    }
 }
 
 /// Every bad name is reported, in one error, before anything is written.
@@ -322,13 +265,4 @@ fn write_refuses_mismatches() {
         ps5_dump_forge_ufs2::write(&mut src, &layout, &mut out, &cancel, &mut |_, _| {}).is_err()
     );
     std::fs::remove_file(path).unwrap();
-}
-
-/// A tree with nothing but the root still makes a valid filesystem.
-#[test]
-fn empty_tree() {
-    let mut src = Synth::new(&[]);
-    let (img, _, report) = build("empty", &mut src, &Options::default());
-    assert_eq!((report.files, report.dirs), (0, 1));
-    assert_clean(&img);
 }

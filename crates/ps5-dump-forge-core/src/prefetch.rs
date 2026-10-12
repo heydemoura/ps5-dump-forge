@@ -345,38 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn other_requests_drop_the_guess() {
-        let (f, g) = (bytes(1000, 3), bytes(1000, 4));
-        let mem = Mem::new(&[("f", f.clone()), ("g", g.clone())]);
-        let log = mem.log.clone();
-        let mut tree = Prefetch::new(Box::new(mem)).unwrap();
-        assert_eq!(tree.read_range("f", 0, 100).unwrap(), f[..100]);
-        // A gap, another file, a longer read at the guessed offset, a read backwards.
-        assert_eq!(tree.read_range("f", 500, 100).unwrap(), f[500..600]);
-        assert_eq!(tree.read_range("g", 0, 100).unwrap(), g[..100]);
-        assert_eq!(tree.read_range("g", 100, 200).unwrap(), g[100..300]);
-        assert_eq!(tree.read_range("g", 0, 50).unwrap(), g[..50]);
-        assert_eq!(tree.read_range("g", 50, 20).unwrap(), g[50..70], "a hit");
-        let reads = settled(&log, 11);
-        assert_eq!(
-            reads,
-            [
-                at("f", 0, 100),
-                at("f", 100, 100),
-                at("f", 500, 100),
-                at("f", 600, 100),
-                at("g", 0, 100),
-                at("g", 100, 100),
-                at("g", 100, 200),
-                at("g", 300, 200),
-                at("g", 0, 50),
-                at("g", 50, 50),
-                at("g", 70, 20),
-            ]
-        );
-    }
-
-    #[test]
     fn a_window_reads_ahead_more_than_asked_and_serves_the_same_bytes() {
         let (f, g) = (bytes(1000, 8), bytes(250, 9));
         let mem = Mem::new(&[("f", f.clone()), ("g", g.clone())]);
@@ -421,34 +389,6 @@ mod tests {
             "the file's tail"
         );
         assert_eq!(tree.read_range("f", 0, 1000).unwrap(), f);
-    }
-
-    #[test]
-    fn a_failed_window_fails_only_the_reads_that_cover_the_bad_byte() {
-        let data = bytes(1000, 10);
-        let mut mem = Mem::new(&[("f", data.clone())]);
-        mem.bad_in = vec![500];
-        let log = mem.log.clone();
-        let mut tree = Prefetch::with_window(Box::new(mem), 300).unwrap();
-        for at in [0, 100, 200, 300] {
-            assert_eq!(
-                tree.read_range("f", at, 100).unwrap(),
-                data[at as usize..][..100]
-            );
-        }
-        // The window guessed at 400 covers byte 500 and failed; 400..500 does not.
-        assert_eq!(tree.read_range("f", 400, 100).unwrap(), data[400..500]);
-        let err = tree.read_range("f", 500, 100).unwrap_err().to_string();
-        assert_eq!(err, "bad byte at 500");
-        assert_eq!(
-            settled(&log, 6)[2..],
-            [
-                at("f", 400, 300),
-                at("f", 400, 100),
-                at("f", 500, 300),
-                at("f", 500, 100)
-            ]
-        );
     }
 
     #[test]

@@ -1,0 +1,619 @@
+// Korean. Typed as `Messages` (en.tsx's shape): tsc fails on a missing key.
+// Korean has one plural form (CLDR "other" only), so counts use num() with a counter word, no plural().
+// Trace terms are written as loanwords: 트레이스, 트레이싱.
+
+import { dotted, num } from "../i18n";
+import type { Messages } from "./en";
+
+/** A flat image holds the game's files as they are: about as large as the game. */
+const FLAT = "게임 크기와 같음";
+
+const ko: Messages = {
+  // App.tsx
+  app: {
+    address: (url) => `주소: ${url}. 연결 방법과 QR 코드 보기`,
+    screens: "화면",
+    convert: "변환",
+    active: (n) => `, ${num(n)}개 진행 중`,
+    inspect: "검사",
+    library: "라이브러리",
+    about: "정보",
+    offline: "오프라인, 다시 시도 중…",
+    stop: "Dump Forge 중지",
+    stillRunning: (n) => (n === 1 ? "작업이 아직 실행 중입니다" : `작업 ${num(n)}개가 아직 실행 중입니다`),
+    job: (id) => `작업 ${id}`,
+    quitNote: (web) =>
+      web
+        ? "Dump Forge를 중지하면 실행 중인 작업도 중지되고 완료되지 않은 출력은 삭제됩니다."
+        : "종료하면 실행 중인 작업도 중지되고 완료되지 않은 출력은 삭제됩니다.",
+    keepRunning: "계속 실행",
+    stopAndQuit: (n) => (n === 1 ? "작업 중지 후 종료" : "모든 작업 중지 후 종료"),
+    stoppingJobs: "작업을 중지하고 정리하는 중…",
+    stoppingForge: "Dump Forge 중지 중…",
+    couldntStop: "Dump Forge를 중지하지 못했습니다",
+    close: "닫기",
+    tryAgain: "다시 시도",
+    stopped: "Dump Forge가 중지되었습니다",
+    startAgain: "계속하려면 이 앱을 다시 실행하세요.",
+    github: (name) => `GitHub의 ${name}`,
+    queued: "대기 중",
+    progress: (percent, left) => `${percent}% 완료${left ? `, ${left} 남음` : ""}`,
+  },
+  // Convert.tsx
+  convert: {
+    target: "대상",
+    targetFormat: "대상 형식",
+    alreadyFolder: "소스가 이미 폴더임",
+    lz4Backport:
+      "이 게임의 에셋은 LZ4로 패킹되어 있고 LZ4 매니페스트에 백포트가 포함되어 있습니다. 먼저 ‘LZ4’ 탭에서 언패킹한 다음 여기에서 백포트를 제거하세요.",
+    lz4Trace:
+      "이 패킹된 게임에는 LZ4 트레이스 런타임이 들어 있습니다. 먼저 ‘LZ4’ 탭에서 언패킹하거나 다시 패킹하세요.",
+    unreadable: "빌드할 수 없습니다: 이 소스를 읽지 못했습니다(‘소스’ 참고).",
+    blocked: (first, more) =>
+      `빌드할 수 없습니다: ${first}${more > 0 ? ` (외 ${num(more)}개, ‘소스’ 참고)` : ""}.`,
+    runtime: (install, version) =>
+      install ? `AMPR 런타임 설치(ampr_emu ${version})` : `AMPR 런타임 교체(ampr_emu ${version})`,
+    runtimeNone:
+      "이 게임은 AMPR을 사용하지만 fakelib/libSceAmpr.sprx가 없습니다. 출력에는 번들된 런타임이 들어갑니다.",
+    runtimeOther:
+      "fakelib/libSceAmpr.sprx는 Forge가 제공하는 런타임이 아닙니다(더 새롭거나 오래된 버전일 수 있음). 출력에는 대신 번들된 런타임이 들어갑니다.",
+    runtimeRest:
+      "트레이스 저널과 로그는 제외하고 새 ampr_emu.index를 작성합니다. 바뀌는 것은 출력뿐이며 소스는 절대 바뀌지 않습니다. 끄면 그대로 복사합니다.",
+    runtimeWarn: (version) =>
+      `ampr_emu ${version} 버전은 업스트림 테스트 빌드입니다. 알려진 문제: 일부 게임이 저장 중에 비정상 종료됩니다.`,
+    removeBackport: "백포트 제거",
+    removeHint: (libs, emulators, other) =>
+      emulators.length === 0
+        ? other
+          ? `fakelib/에서 백포트 라이브러리 ${num(libs)}개를 제외합니다. 다른 홈브루 라이브러리는 유지됩니다.`
+          : `fakelib/에서 백포트 라이브러리 ${num(libs)}개를 제외합니다.`
+        : other
+          ? `fakelib/에서 백포트 라이브러리 ${num(libs)}개를 제외합니다. 에뮬레이터(${emulators.join(", ")})와 다른 홈브루 라이브러리는 유지됩니다.`
+          : `fakelib/에서 백포트 라이브러리 ${num(libs)}개를 제외합니다. 에뮬레이터(${emulators.join(", ")})는 유지됩니다.`,
+    cantRemove: (why) => `백포트를 제거할 수 없습니다: ${why}`,
+    compare: "형식 비교",
+    build: "빌드",
+    likelyFail: (fmt) => (
+      <>
+        <b>{fmt}</b> 형식으로는 실패할 가능성이 높습니다. ‘소스’에 나열된 파일 이름을 허용하지 않습니다.
+      </>
+    ),
+    collides: "이 파일을 이미 쓰고 있는 작업이 있어 다시 빌드하면 실패합니다. 다른 이름을 선택하세요.",
+    already: (fmt) => (
+      <>
+        이 게임을 이미 <b>{fmt}</b> 형식으로 빌드하고 있습니다. 다시 빌드하면 사본이 하나 더 만들어집니다.
+      </>
+    ),
+  },
+  // Formats.tsx
+  formats: {
+    rating: { good: "좋음", ok: "절충", bad: "단점" },
+    columns: ["콘솔 속도", "디스크 사용량"],
+    rows: {
+      pkg: {
+        tagline: "펌웨어가 허용한다면 최선",
+        cells: ["네이티브, 최고 속도", "게임에 따라 30–60% 작음"],
+      },
+      lz4: {
+        tagline: "실험적, AMPR을 사용하는 게임용",
+        cells: ["로딩 30–40% 빠름(업스트림 수치)", "게임 크기의 약 절반(업스트림 수치)"],
+      },
+      ffpkg: { tagline: "ShadowMountPlus에 권장", cells: ["이미지 최고 속도", FLAT] },
+      exfat: { tagline: "호환성", cells: ["이미지 최고 속도", FLAT] },
+      ffpfs: { tagline: "실험적", cells: ["이미지 최고 속도", FLAT] },
+      ffpfsc: {
+        tagline: "가장 작음, 실험적",
+        cells: ["150–250 MB/s, 끊김이 있을 수 있음", "압축 수준에 따라 다름, 보통 30–60% 작음"],
+      },
+      folder: { tagline: "일반 게임 파일", cells: ["드라이브 최고 속도", FLAT] },
+    },
+    features: [
+      ["변환", "폴더, ffpkg, exfat, ffpfs, ffpfsc, fpkg 사이를 양방향으로 변환합니다."],
+      ["검사", "빌드하기 전에 게임의 커버, 펌웨어, 백포트, DLC, 파일 이름 문제를 확인합니다."],
+      ["검증", "쓰기가 끝난 모든 출력을 검증합니다. 기본은 빠른 샘플 검증이며, 원하면 모든 바이트를 확인합니다."],
+      ["삭제", "확인을 거쳐 디스크에서 게임을 삭제합니다."],
+      ["LZ4", "AMPR 게임을 트레이스한 다음 에셋을 패킹합니다(실험적)."],
+      ["AMPR 런타임", "변환된 사본에 ampr_emu를 설치하거나 업데이트합니다."],
+      ["PS5 페이로드", "콘솔에서 실행되는 같은 앱으로, 네트워크의 어느 기기에서나 열 수 있습니다."],
+    ],
+    howToConnect: "연결 방법",
+    connectText: (url) => (
+      <>로컬 네트워크에 있는 기기의 브라우저에서 {url} 주소를 열거나 이 코드를 스캔하세요.</>
+    ),
+    close: "닫기",
+    about: "정보",
+    aboutText: "이 도구는 PS5를 포함한 모든 플랫폼에서 게임을 어떤 형식에서든 다른 형식으로 변환할 수 있습니다.",
+    connectAny: "다른 기기에서 연결하는 방법",
+    useAddress: (url) => <>{url} 주소를 사용하거나 이 코드를 스캔하세요.</>,
+    compare: "형식 비교",
+    compareLabel: "형식 비교",
+    format: "형식",
+    upstream: (app) =>
+      `업스트림 수치: ampr_emu와 Lazy_AMPR 개발자가 보고한 값이며 ${app}에서 측정한 값이 아닙니다. 게임에 따라 달라집니다. ampr_emu 0.4.2.1은 업스트림 테스트 빌드이며, 알려진 문제로 일부 게임이 저장 중에 비정상 종료됩니다.`,
+    bundled: "LZ4로 패킹된 폴더는 drakmor의 ampr_emu 0.4.2.1(GPL-3.0)로 실행되며, 수정 없이 번들되어 있습니다. 소스 코드:",
+    lazy: "트레이스 후 패킹하는 작업 흐름은 Nazky의 Lazy_AMPR를 따릅니다:",
+    language: "언어",
+    system: "시스템",
+  },
+  // Inspect.tsx
+  inspect: {
+    files: "파일",
+    details: "세부 정보",
+    deleting: "소스를 삭제하는 중…",
+    delete: "소스 삭제",
+    deleted: "삭제됨:",
+    contents: "소스 내용",
+    filter: "경로로 필터",
+    filterLabel: "경로로 파일 필터",
+    firstOf: (max, n) => `${num(n)}개 중 처음 ${num(max)}개`,
+    fileCount: (n) => `파일 ${num(n)}개`,
+    noMatch: (f) => `‘${f}’에 해당하는 파일이 없습니다.`,
+    emptyDirs: (n) => `빈 폴더(${num(n)})`,
+    noParam: "sce_sys/param.json이 없습니다.",
+    reader: "리더",
+    leftovers: "남은 .part 파일",
+    found: (n) => `${num(n)}개 발견`,
+    leftoversNote: (app) =>
+      `완료되지 않은 출력으로, 보통 중단된 작업에서 남은 것입니다. 알아볼 수 있는 파일만, 실행 중인 작업이 없을 때 삭제하세요. ${app}는 이 파일을 직접 삭제하지 않습니다.`,
+    checked: (n) => `확인한 폴더(${num(n)})`,
+  },
+  // JobList.tsx
+  jobs: {
+    jobs: "작업",
+    pending: (n) => `${num(n)}개 실행 중 또는 대기 중`,
+    allFinished: "모두 완료",
+    stages: {
+      scan: "소스 읽는 중",
+      preflight: "확인 중",
+      check: "확인 중",
+      plan: "계획 중",
+      compress: "압축 중",
+      write: "쓰는 중",
+      measure: "팩 크기 계산 중",
+      pack: "패킹 중",
+      verify: "검증 중",
+      finalize: "마무리 중",
+    },
+    packingWriting: "패킹 및 쓰기 중",
+    rate: { read: "읽기", compress: "압축", pack: "패킹", write: "쓰기" },
+    showPath: "경로 보기",
+    showFinder: "Finder에서 보기",
+    showExplorer: "탐색기에서 보기",
+    showFolder: "폴더에서 보기",
+    lz4: {
+      pack: "LZ4 패킹",
+      unpack: "LZ4 언패킹",
+      trace: "LZ4 트레이스",
+      unpatch: "LZ4 패치 해제",
+      runtime: "AMPR 런타임",
+    },
+    job: (id) => `작업 ${id}`,
+    done: "완료",
+    cancelled: "취소됨",
+    failed: "실패",
+    cancelling: "취소 중…",
+    queued: "대기 중",
+    dismiss: "닫기",
+    stopJob: "중지할까요?",
+    cancel: "취소",
+    stopHint: "4초 안에 ‘중지할까요?’를 다시 누르면 작업이 중지됩니다.",
+    from: "소스: ",
+    left: (d) => `${d} 남음`,
+    result: (bytes, n) => `${bytes}, 파일 ${num(n)}개 →`,
+    outputPath: "출력 경로",
+    checks: "확인 항목",
+    verifiedPlain: (n) => `검증 완료: 확인 항목 ${num(n)}개 통과`,
+    verifiedFull: (n) => `전체 검증 통과: 확인 항목 ${num(n)}개`,
+    verifiedFast: (n) => `빠른 검증 통과: 확인 항목 ${num(n)}개`,
+    coverage: (checked, total, n) => `샘플 ${num(n)}개로 ${total} 중 ${checked} 확인`,
+    cantBuild: "이 게임을 빌드할 수 없습니다:",
+    cantBuildAs: (f) => (
+      <>
+        이 게임을 <b>{f}</b> 형식으로 빌드할 수 없습니다:
+      </>
+    ),
+    log: (n) => `로그(${num(n)})`,
+    logLabel: "로그",
+  },
+  // Library.tsx
+  library: {
+    pickTitle: "라이브러리 폴더 선택",
+    scanningIn: (name) => `${name} 스캔 중…`,
+    scanning: "스캔 중…",
+    cantScanFolder: "이 폴더를 스캔할 수 없습니다",
+    chooseAnother: "다른 폴더 선택…",
+    pickPrompt: "스캔할 라이브러리 폴더를 선택하세요",
+    choose: "폴더 선택…",
+    cantScan: "라이브러리를 스캔할 수 없습니다:",
+    cantDelete: "삭제할 수 없습니다:",
+    deleted: (path) => `삭제됨: ${path}`,
+    truncated: "스캔 한도에 도달했습니다. 목록이 완전하지 않을 수 있습니다.",
+    limits: "탐색은 폴더 6단계 깊이까지만, 약 15초 동안만 진행됩니다.",
+    noRoots: "스캔할 수 있는 폴더가 없습니다.",
+    none: "게임을 찾지 못했습니다. 탐색은 최대 6단계 깊이까지 확인하며 시스템 폴더는 건너뜁니다. 다른 소스는 ‘검사’나 ‘변환’에서 선택할 수 있습니다.",
+    skipped: "건너뛴 위치와 파일",
+    stays: "결과는 ‘새로 고침’을 누를 때까지 그대로 유지됩니다. 새 출력은 새로 고친 뒤에 나타납니다.",
+    library: "라이브러리",
+    storageTip: "마지막 스캔 시점의 콘솔 내부 저장소(/data) 여유 공간",
+    free: (free, total) => (
+      <>
+        {total} 중 <b>{free}</b> 사용 가능
+      </>
+    ),
+    refresh: "새로 고침",
+    cards: "카드 보기",
+    list: "목록 보기",
+    games: "게임",
+    inspect: (n) => `${n} 검사`,
+    convert: (n) => `${n} 변환`,
+    remove: (n) => `${n} 삭제`,
+    lz4Tip: "LZ4 패킹됨: ampr_emu 에셋 팩",
+    lz4Packed: " 패킹됨",
+  },
+  // Lz4.tsx
+  lz4: {
+    title: "LZ4 에셋 팩",
+    help: "LZ4 사용 방법",
+    scenario: "LZ4 시나리오",
+    scenarios: { trace: "트레이스", pack: "패킹/언패킹" },
+    actions: { patch: "패치", unpatch: "패치 해제", pack: "패킹", unpack: "언패킹" },
+    scenarioInfo: (s, packed) => s === "trace"
+      ? "플레이하는 동안 게임이 어떤 에셋을 읽는지 기록하게 합니다(ampr_commands.bin). 이 기록은 패킹에 사용됩니다. ‘패치 해제’는 릴리스 런타임을 복원합니다."
+      : packed
+        ? "언패킹: 게임의 LZ4 팩을 일반 파일로 되돌려 폴더나 일반 이미지에 씁니다."
+        : "패킹: 게임의 에셋을 LZ4 볼륨으로 패킹해 폴더나 일반 이미지에 씁니다. 게임이 실행되는 동안 번들된 AMPR 에뮬레이터(ampr_emu)가 이 볼륨을 읽습니다. 패킹된 소스는 대신 언패킹됩니다.",
+    traceInfo: (a, image) => a === "patch"
+      ? image
+        ? "트레이스 런타임과 트레이스를 기록할 공간을 넣어 이 이미지를 다시 빌드한 다음 교체합니다."
+        : "이 폴더에 트레이스 런타임을 그 자리에서 설치합니다. 사본은 만들지 않습니다."
+      : image
+        ? "Forge의 릴리스 런타임(0.4.2.1)으로, 기록된 트레이스 없이 이 이미지를 다시 빌드한 다음 교체합니다."
+        : "이 폴더에 Forge의 릴리스 런타임(0.4.2.1)을 다시 설치합니다. 사본은 만들지 않습니다.",
+    noAmpr: "게임이 AMPR을 사용하지 않음",
+    packedFirst: "소스가 LZ4로 패킹됨: 먼저 언패킹하세요",
+    damaged: "LZ4 팩이 손상됨",
+    chooseFirst: "먼저 소스를 선택하세요",
+    notRead: "소스를 아직 읽지 않음",
+    anyFormat: "ffpfsc나 fpkg가 필요한가요? 여기서 폴더로 쓴 다음 ‘변환’ 탭에서 원하는 형식으로 변환하세요.",
+    pickProfile: "LZ4 프로필",
+    profileFilter: "LZ4 프로필(TOML)",
+    pickTracesFolder: "LZ4 트레이스(ampr_commands.bin과 ampr_emu.index가 있는 폴더)",
+    pickTracesEither: "LZ4 트레이스: zip 파일 또는 두 파일이 모두 있는 폴더",
+    pickTracesZip: "LZ4 트레이스(zip)",
+    unreadable: "시작할 수 없습니다: 이 소스를 읽지 못했습니다(‘소스’ 참고).",
+    pending: (a) => a === "patch"
+      ? "실행 중이거나 대기 중인 작업이 있는 동안에는 패치할 수 없습니다. 작업이 끝난 뒤에 패치하세요."
+      : "실행 중이거나 대기 중인 작업이 있는 동안에는 패치를 해제할 수 없습니다. 작업이 끝난 뒤에 패치를 해제하세요.",
+    replacing: "이 이미지를 이미 다시 빌드하고 있는 작업이 있습니다. 끝날 때까지 기다리세요.",
+    blocked: (a, first, more) =>
+      `${{ patch: "패치할", unpatch: "패치를 해제할", pack: "패킹할", unpack: "언패킹할" }[a]} 수 없습니다: ${first}${more > 0 ? ` (외 ${num(more)}개, ‘소스’ 참고)` : ""}.`,
+    chooseGame: "먼저 게임 폴더나 이미지를 선택하세요.",
+    nothing: "여기서 할 수 있는 작업이 없습니다. 이 게임은 AMPR을 사용하지 않고(eboot.bin이 libSceAmpr를 가져오지 않음) LZ4로 패킹되어 있지도 않습니다.",
+    unavailable: (items) => `이 소스에는 사용할 수 없습니다: ${items.join("; ")}.`,
+    readOnly: (kind) => <>
+      <b>{kind}</b> 형식은 패치하거나 패치를 해제할 수 없습니다. 콘솔에서 읽기 전용이라 게임이 트레이스를 기록할 수 없습니다. ‘변환’ 탭에서 <b>ffpkg</b>(또는 <b>exfat</b>)로 변환한 다음 그 이미지를 패치하세요.
+    </>,
+    action: "작업",
+    traceAction: "트레이스 작업",
+    changes: (a, image) => a === "patch"
+      ? image
+        ? "이 이미지를 변경합니다. 트레이스 런타임이 fakelib/libSceAmpr.sprx를 대체하고(백업 없음), 새 ampr_emu.index에 파일 목록이 기록됩니다."
+        : "이 폴더를 변경합니다. 트레이스 런타임이 fakelib/libSceAmpr.sprx를 대체하고(백업 없음), 새 ampr_emu.index에 파일 목록이 기록됩니다."
+      : image
+        ? "이 이미지를 변경합니다. Forge의 릴리스 런타임(0.4.2.1)이 fakelib/libSceAmpr.sprx를 대체하고(백업 없음), ampr_commands.bin과 트레이스 로그가 삭제되며, 새 ampr_emu.index에 파일 목록이 기록됩니다."
+        : "이 폴더를 변경합니다. Forge의 릴리스 런타임(0.4.2.1)이 fakelib/libSceAmpr.sprx를 대체하고(백업 없음), ampr_commands.bin과 트레이스 로그가 삭제되며, 새 ampr_emu.index에 파일 목록이 기록됩니다.",
+    replay: (web) => web
+      ? "게임을 플레이한 다음 이 소스를 다시 선택하세요. ‘패킹/언패킹’은 기록된 트레이스를 사용하고, ‘트레이스’는 컴퓨터로 받을 수 있도록 zip으로 제공합니다. 실행할 때마다 이전 세션의 트레이스를 덮어씁니다."
+      : "게임을 플레이한 다음 이 소스를 다시 선택하세요. ‘패킹/언패킹’은 기록된 트레이스를 사용합니다. 실행할 때마다 이전 세션의 트레이스를 덮어씁니다.",
+    room: "트레이스 공간",
+    roomHint: "게임이 트레이스를 기록할 수 있도록 이미지에 추가하는 여유 공간입니다. ShadowMountPlus의 image_rw=로 이미지를 쓰기 가능하게 마운트해야 기록됩니다. 공간을 확보하는 것만으로는 쓰기 가능해지지 않습니다.",
+    alreadyRelease: "이 소스에는 이미 릴리스 런타임이 있습니다. 인덱스만 다시 씁니다.",
+    spaceHint: "이미지 옆에 이미지 크기만큼의 여유 공간이 필요합니다. 사본 검증이 끝난 뒤에만 이미지를 교체합니다.",
+    deletesTraces: (a, bytes, web) => a === "patch"
+      ? web
+        ? `패치하면 이 소스에 기록된 트레이스(ampr_commands.bin, ${bytes})가 삭제됩니다. 먼저 위에서 다운로드하거나 이 트레이스로 패킹하세요.`
+        : `패치하면 이 소스에 기록된 트레이스(ampr_commands.bin, ${bytes})가 삭제됩니다. 먼저 이 트레이스로 패킹하거나 복사해 두세요.`
+      : web
+        ? `패치를 해제하면 이 소스에 기록된 트레이스(ampr_commands.bin, ${bytes})가 삭제됩니다. 먼저 위에서 다운로드하거나 이 트레이스로 패킹하세요.`
+        : `패치를 해제하면 이 소스에 기록된 트레이스(ampr_commands.bin, ${bytes})가 삭제됩니다. 먼저 이 트레이스로 패킹하거나 복사해 두세요.`,
+    useProfile: "대신 규칙 프로필 사용",
+    profile: "프로필",
+    choose: "선택…",
+    profileHint: "패킹 규칙이 담긴 TOML 파일입니다. 트레이스 대신 사용되며, 하나를 선택하면 다른 하나는 해제됩니다.",
+    target: "대상",
+    packInto: "패킹 대상",
+    direct: "임시 폴더 없이 이미지에 바로 패킹합니다. 패킹할 파일은 두 번 읽습니다.",
+    targetFormat: "대상 형식",
+    unpackFolder: "LZ4 팩을 일반 파일로 되돌린 새 게임 폴더입니다.",
+    unpackHint: (n) =>
+      n === null
+        ? "패킹된 파일을 일반 파일로 되돌립니다. AMPR 런타임과 인덱스는 유지됩니다."
+        : `패킹된 파일 ${num(n)}개를 일반 파일로 되돌립니다. AMPR 런타임과 인덱스는 유지됩니다.`,
+    waitJobs: "실행 중인 작업이 끝날 때까지 기다리세요",
+    saveHint: "패킹할 파일 목록을 편집 가능한 규칙 프로필로 저장합니다",
+    saving: "저장 중…",
+    saveProfile: "프로필로 저장",
+    saved: (name, packed, loose) => `${name} 저장됨: 패킹할 파일 ${num(packed)}개, 패킹하지 않을 파일 ${num(loose)}개. 편집한 다음 ‘대신 규칙 프로필 사용’으로 불러오세요.`,
+    likelyFail: (fmt) => <>
+      <b>{fmt}</b> 형식으로는 실패할 가능성이 높습니다. ‘소스’에 나열된 파일 이름을 허용하지 않습니다.
+    </>,
+    collides: (a, folder) => a === "pack"
+      ? folder
+        ? "이 폴더를 이미 쓰고 있는 작업이 있어 다시 패킹하면 실패합니다. 다른 이름을 선택하세요."
+        : "이 파일을 이미 쓰고 있는 작업이 있어 다시 패킹하면 실패합니다. 다른 이름을 선택하세요."
+      : folder
+        ? "이 폴더를 이미 쓰고 있는 작업이 있어 다시 언패킹하면 실패합니다. 다른 이름을 선택하세요."
+        : "이 파일을 이미 쓰고 있는 작업이 있어 다시 언패킹하면 실패합니다. 다른 이름을 선택하세요.",
+    already: (a, fmt) => a === "pack"
+      ? <>이 게임을 이미 <b>{fmt}</b> 형식으로 쓰고 있습니다. 다시 패킹하면 사본이 하나 더 만들어집니다.</>
+      : <>이 게임을 이미 <b>{fmt}</b> 형식으로 쓰고 있습니다. 다시 언패킹하면 사본이 하나 더 만들어집니다.</>,
+    profileRules: "프로필 규칙에 따라 패킹하되, 엔진이 직접 여는 파일(컨테이너 인덱스, 설정, 미디어)은 패킹하지 않고 그대로 둡니다.",
+    chosenRules: "선택한 트레이스에서 게임이 읽은 파일을 패킹하되, 엔진이 직접 여는 파일(컨테이너 인덱스, 설정, 미디어)은 패킹하지 않고 그대로 둡니다.",
+    ownRules: "마지막 트레이스 세션(이 소스의 트레이스)에서 게임이 읽은 파일을 패킹하되, 엔진이 직접 여는 파일(컨테이너 인덱스, 설정, 미디어)은 패킹하지 않고 그대로 둡니다.",
+    guessRules: "이 소스에 트레이스가 없어 내장된 추정 규칙으로 패킹합니다. 정확도는 떨어집니다. 먼저 트레이스를 기록하거나(‘트레이스’ → ‘패치’), 콘솔에서 복사한 트레이스나 프로필을 선택하세요.",
+    recorded: "기록된 트레이스",
+    recordedHint: (bytes) => `ampr_commands.bin(${bytes}): ‘패킹/언패킹’이 이 트레이스를 자동으로 불러옵니다.`,
+    downloadHint: "먼저 게임을 닫고 1분 정도 기다리세요. 이미지가 마운트된 동안에는 게임이 기록한 내용이 디스크의 파일에 늦게 반영될 수 있습니다. 컴퓨터의 브라우저에서 이 콘솔의 Forge 주소를 열어 다운로드한 다음, 컴퓨터에서 ‘LZ4’ → ‘패킹/언패킹’ → ‘트레이스’로 zip 파일을 선택하세요. 다운로드 중에 게임이나 동기화로 소스가 바뀌면 다운로드가 실패합니다. 게임을 닫고 다시 다운로드하세요.",
+    download: (bytes, zip) => `트레이스 다운로드(${bytes}): ${zip}`,
+    missingIndex: "이 소스에 ampr_emu.index가 없습니다. 패킹하려면 ampr_commands.bin 옆에 이 파일이 있어야 합니다. 이 인덱스에는 저널의 파일 ID에 해당하는 파일 이름이 기록되어 있습니다.",
+    truncatedJournal: "끝부분이 잘린 저널도 패킹할 수 있습니다. 패킹은 마지막으로 온전한 레코드까지만 사용합니다.",
+    fakelibWarning: (recorded) => recorded
+      ? "트레이스가 적거나 없나요? 트레이스하는 동안에는 fakelib 업데이터를 꺼 두세요. 업데이터가 fakelib/libSceAmpr.sprx를 덮어쓰면 아무것도 기록되지 않습니다. 업데이터를 끄고 다시 ‘패치’한 다음 다시 플레이하세요."
+      : "트레이스하는 동안에는 fakelib 업데이터를 꺼 두세요. 업데이터가 fakelib/libSceAmpr.sprx를 덮어쓰면 아무것도 기록되지 않습니다.",
+    emptyTitle: "AMPR을 사용하는 게임을 선택하세요",
+    experimental: "실험적: ampr_emu용 트레이스와 LZ4 팩입니다. 이후 게임이 실행된다는 보장은 없으니 원본 게임의 사본을 보관하세요.",
+    chooseSource: "소스 선택…",
+    source: "소스",
+    gameFolder: "게임 폴더…",
+    image: "이미지…",
+    traces: "트레이스",
+    optionalTraces: "트레이스(선택 사항)",
+    unlock: "잠금을 해제하고 다른 트레이스 선택",
+    loaded: "이 소스에서 트레이스를 이미 불러왔습니다",
+    lockedHint: (bytes) => `소스 자체의 ampr_commands.bin(${bytes})과 ampr_emu.index입니다. 다른 트레이스를 선택하려면 자물쇠를 클릭하세요.`,
+    clear: "지우기",
+    zip: "Zip…",
+    folder: "폴더…",
+    tracesHint: "‘트레이스’ → ‘트레이스 다운로드’로 받은 [게임 이름]-[타이틀 ID]-amprtrace.zip 파일이나, ampr_commands.bin과 ampr_emu.index가 있는 폴더를 선택하세요.",
+    useOwn: "소스의 트레이스 사용",
+    patchResult: (a, n) => a === "patch"
+      ? `패치 완료: 트레이스 런타임이 fakelib/libSceAmpr.sprx에 들어 있고 ampr_emu.index에 파일 ${num(n)}개가 기록되었습니다.`
+      : `패치 해제 완료: Forge의 릴리스 런타임(0.4.2.1)이 fakelib/libSceAmpr.sprx에 들어 있고 ampr_emu.index에 파일 ${num(n)}개가 기록되었습니다.`,
+    removed: (files) => `이전 트레이스 파일을 삭제했습니다: ${files.join(", ")}.`,
+  },
+  // Lz4Help.tsx
+  lz4Help: {
+    title: "LZ4 사용 방법",
+    close: "닫기",
+    warning:
+      "실험적 기능이며 AMPR 게임 전용입니다. ampr_emu 0.4.2.1은 테스트 빌드라 일부 게임이 저장 중에 비정상 종료됩니다. 원본 게임의 사본을 보관하세요.",
+    body: () => (
+      <>
+        <h3>1. 트레이스</h3>
+        <ol>
+          <li>
+            게임의 <b>ffpkg</b> 또는 <b>exfat</b>을 선택한 다음 <b>트레이스</b> → <b>패치</b>를 누르세요.
+          </li>
+          <li>fakelib 업데이터를 끄세요. 업데이터가 트레이스 런타임을 덮어씁니다.</li>
+          <li>
+            <span className="path">image_rw=</span>로 마운트하고 한 세션을 플레이한 다음 게임을 닫으세요.
+          </li>
+          <li>
+            PS5 페이지에서 <b>트레이스 다운로드</b>를 누르거나 ampr_commands.bin과 ampr_emu.index를 복사하세요.
+          </li>
+        </ol>
+
+        <h3>2. 패킹/언패킹</h3>
+        <ol>
+          <li>
+            원본 게임과 <b>패킹/언패킹</b>, 그리고 트레이스(또는 프로필)를 선택하세요.
+          </li>
+          <li>패킹된 폴더나 일반 이미지로 쓰세요. 폴더는 <b>변환</b>에서 어떤 형식으로든 변환할 수 있습니다.</li>
+          <li>
+            패킹된 소스에서는 대신 <b>언패킹</b>이 표시되며, 개별 파일이 원래대로 돌아옵니다.
+          </li>
+        </ol>
+      </>
+    ),
+  },
+  // Picker.tsx
+  picker: {
+    drives: "드라이브",
+    location: "위치",
+    parent: "상위 폴더",
+    allDrives: "모든 드라이브",
+    truncated: (n) => `처음 ${num(n)}개 항목만 표시됩니다.`,
+    loading: "불러오는 중…",
+    noDrives: "드라이브가 없습니다.",
+    noFolders: "여기에 폴더가 없습니다.",
+    noImages: "여기에 폴더나 PS5 이미지가 없습니다.",
+    noFiles: (ext) => `여기에 폴더나 ${dotted(ext, " 또는 ")} 파일이 없습니다.`,
+    cancel: "취소",
+    chooseFolder: "이 폴더 선택",
+  },
+  // common.tsx
+  common: {
+    folder: "폴더",
+    pickFolder: "게임 폴더",
+    pickImage: "게임 이미지",
+    pickImageFilter: "PS5 이미지 또는 패키지",
+    chooseFolder: "폴더 선택…",
+    chooseImage: "이미지 선택…",
+    source: "소스",
+    emptyTitle: "게임 폴더나 이미지를 선택하세요",
+    emptyText:
+      "PS5 게임 폴더(루트에 sce_sys/param.json과 eboot.bin이 있는 폴더) 또는 그 게임의 이미지나 패키지입니다.",
+    accepted: "지원하는 소스",
+    unknownTitle: "알 수 없는 게임",
+    reading: "소스 읽는 중…",
+    unreadable: "읽을 수 없는 소스",
+    backport: "백포트",
+    emulators: "에뮬레이터",
+    declares: (fw) => `선언된 펌웨어 ${fw}`,
+    fwUnknown: "실행 파일로는 펌웨어를 알 수 없음(읽을 수 있는 SDK 없음)",
+    emulatorList: (names) => `에뮬레이터: ${names}`,
+    otherEmulator: "기타",
+    sdk: (v) => `SDK ${v}(선언됨)`,
+    titleId: "타이틀 ID",
+    version: "버전",
+    firmware: "펌웨어",
+    fwDeclared: "선언됨",
+    fwBackport: "백포트",
+    fwExecutables: "실행 파일",
+    size: "크기",
+    files: (n) => `파일 ${num(n)}개`,
+    contentId: "콘텐츠 ID",
+    noAmpr: "eboot.bin이 libSceAmpr를 가져오지 않음",
+    runtime: {
+      forge_release: "Forge 릴리스",
+      forge_trace: "Forge 트레이스",
+      other: "기타",
+      none: "없음",
+    },
+    packed: "패킹됨",
+    damaged: "손상된 팩",
+    traced: "트레이스됨",
+    plain: "일반",
+    packedDetail: (files, volumes, percent) =>
+      percent === null
+        ? `파일 ${num(files)}개, 볼륨 ${num(volumes)}개`
+        : `파일 ${num(files)}개, 볼륨 ${num(volumes)}개, 크기의 ${num(percent)}%`,
+    journal: (size) => `저널 ${size}`,
+    noJournal: "아직 저널 없음",
+    runtimeIs: (label) => `런타임: ${label}`,
+    backportLibs: (exclusive, n) =>
+      exclusive
+        ? `fakelib2/(단독 마운트), 백포트 라이브러리 ${num(n)}개`
+        : `fakelib/, 백포트 라이브러리 ${num(n)}개`,
+    noFindings: "사전 점검 결과 문제 없음",
+    findings: "사전 점검 결과",
+    dlcTitle: (n) => `내장 DLC(${num(n)})`,
+    dlcLabel: "내장 DLC",
+    dlcAll: (note) => `모든 DLC: ${note}.`,
+    dlcIn: (folder, size) => `${folder}/ 안, ${size}`,
+    dlcNoData: "DLC 에뮬레이터(dlc_emu.ini)로 잠금 해제: 권한만 있고 자체 데이터는 없음",
+    dlcStatus: (status) => `DLC 에뮬레이터(dlc_emu.ini)로 잠금 해제, 상태: ${status || "설정 안 됨"}`,
+    dlcMerged: "게임 폴더에 병합됨",
+    backportFiles: "백포트 파일",
+    emulatorsIn: "fakelib의 에뮬레이터",
+    qr: (url) => `QR 코드: ${url}`,
+  },
+  // delete.tsx
+  delete: {
+    title: (folder) => (folder ? "이 폴더를 삭제할까요?" : "이 이미지를 삭제할까요?"),
+    text: (folder) =>
+      folder
+        ? "폴더와 그 안의 모든 항목이 영구적으로 삭제됩니다. 휴지통으로 이동하지 않으며 되돌릴 수 없습니다. 삭제가 중간에 멈추면 일부는 이미 삭제되었을 수 있습니다."
+        : "이미지 파일이 영구적으로 삭제됩니다. 휴지통으로 이동하지 않으며 되돌릴 수 없습니다. 삭제가 중간에 멈추면 일부는 이미 삭제되었을 수 있습니다.",
+    no: "아니요",
+    yes: "예, 삭제",
+  },
+  // main-http.tsx
+  launch: {
+    failure: {
+      loader:
+        "포트 9021의 페이로드 로더에 연결할 수 없습니다. 먼저 오토로더(탈옥)를 실행한 다음 Dump Forge를 다시 여세요.",
+      missing:
+        "저장된 Dump Forge 사본을 찾을 수 없습니다(/data/dumpforge/ 또는 USB 드라이브). PC에서 한 번 로드하면 이 아이콘용 사본이 저장됩니다.",
+      timeout:
+        "Dump Forge를 시작했지만 30초가 지나도 응답이 없습니다. 아직 시작 중일 수 있습니다(대기 모드에서 깨어나는 콘솔은 느립니다).",
+    },
+    loadFailed: (e) => `페이지를 불러오지 못했습니다: ${e}`,
+    noAnswer: "Dump Forge가 응답하지 않습니다",
+    cantStart: "Dump Forge를 시작할 수 없습니다",
+    retry: "다시 시도",
+    starting: "Dump Forge 시작 중…",
+    client: {
+      unreachable:
+        "Dump Forge에 연결할 수 없습니다. 페이로드가 아직 실행 중인지, 이 기기가 같은 네트워크에 있는지 확인하세요.",
+      noPlatform: "Dump Forge가 PS5에서 실행 중인지 확인할 수 없습니다. 새로 고쳐 다시 시도하세요.",
+      quitUnreachable: "Dump Forge를 중지하려 했지만 연결할 수 없습니다.",
+      stillAnswering: "2분이 지나도 Dump Forge가 계속 응답합니다. PS5를 확인하세요.",
+      gone: "Dump Forge가 더 이상 이 작업을 보고하지 않습니다(결과를 확인하기 전에 작업 기록에서 사라짐)",
+    },
+  },
+  // target.tsx
+  target: {
+    format: {
+      folder: { text: "이미지나 패키지를 일반 게임 폴더로 되돌립니다." },
+      exfat: {
+        text: "ffpkg로는 제대로 동작하지 않고 외장 드라이브 콘텐츠로만 실행되는 게임용입니다. Mac이나 PC에서도 열립니다.",
+      },
+      ffpkg: { tone: "good", text: "권장. PS5 고유의 파일 시스템(UFS2)입니다. 쓰기 가능한 마운트를 지원합니다." },
+      ffpfs: {
+        tone: "warn",
+        text: "실험적. PS5의 PFS 파일 시스템이며 압축하지 않습니다. 파일 이름은 ASCII만 사용할 수 있습니다.",
+      },
+      ffpfsc: {
+        tone: "warn",
+        text: "실험적. 가장 작습니다. 이미지 하나를 감싼 압축 컨테이너이며 항상 읽기 전용으로 마운트됩니다.",
+      },
+      pkg: {
+        text: "스토어 게임처럼 설치되고 네이티브 속도로 실행됩니다. kstuff, fpkg-enable, ppr-patch가 필요합니다.",
+      },
+      lz4: {
+        tone: "warn",
+        text: "실험적. 에셋을 LZ4 볼륨으로 패킹한 게임 폴더입니다. 게임이 실행되는 동안 번들된 AMPR 에뮬레이터(ampr_emu)가 압축을 풉니다. AMPR을 사용하는 게임 전용입니다.",
+      },
+    },
+    innerFfpkg: { tone: "good", text: "권장. PS5 고유의 파일 시스템(UFS2)입니다." },
+    level0: { text: "압축 없음: 모든 블록을 그대로 저장합니다. 파일 크기가 이미지와 같습니다." },
+    levelDefault: {
+      tone: "good",
+      text: "권장. zlib 기본값입니다. 1은 약 3배 빠르게 빌드되지만 파일이 약 3% 커지고, 9는 거의 작아지지 않습니다.",
+    },
+    levelLow: {
+      text: "6보다 빠르게 빌드되지만(1은 약 3배) 파일이 커집니다(1은 약 3%).",
+    },
+    levelHigh: {
+      text: "6보다 거의 작아지지 않지만(9는 0.04%) 압축 시간이 길어지고(9는 약 25%) 그동안 모든 코어를 사용합니다.",
+    },
+    kraken: {
+      fast: { label: "빠름", note: { tone: "good", text: "권장. 가장 빠른 빌드입니다." } },
+      balanced: {
+        label: "균형",
+        note: {
+          text: "‘빠름’보다 약 2.6% 작지만 압축 시간이 약 6배 걸리며, 그동안 모든 코어를 사용합니다.",
+        },
+      },
+      smallest: {
+        label: "최소 크기",
+        note: {
+          text: "‘빠름’보다 약 2.7% 작지만 압축 시간이 약 9배 걸리며, 그동안 모든 코어를 사용합니다.",
+        },
+      },
+    },
+    pkgFirmware: "펌웨어 11.60 이하에서만 동작합니다.",
+    imageInside: "내부 이미지",
+    imageInsideLabel: "ffpfsc 내부 이미지",
+    compressionLevel: "압축 수준",
+    compression: "압축",
+    fullVerify: "전체 검증",
+    fullVerifyHint: "모든 바이트를 다시 읽어 출력을 확인합니다. 시간이 더 걸립니다.",
+    separator: "이름에는 폴더 구분자를 넣을 수 없습니다. 폴더는 ‘변경…’으로 바꾸세요.",
+    tooLong: (bytes, max, folder) =>
+      folder
+        ? `너무 깁니다: ${bytes}바이트, 최대 ${max}바이트(UTF-8).`
+        : `너무 깁니다: 확장자 앞까지 ${bytes}바이트, 최대 ${max}바이트(UTF-8).`,
+    pkgExt: (ext) => `확장자가 .${ext}이지만 fpkg는 .pkg로 저장됩니다. 확장자에 따라 드라이버가 결정됩니다.`,
+    otherExt: (ext, target) =>
+      `확장자가 .${ext}이지만 대상 형식은 ${target}입니다. 확장자에 따라 드라이버가 결정됩니다.`,
+    extractInto: "이 폴더에 추출",
+    saveInto: "이 폴더에 저장",
+    output: "출력",
+    change: "변경…",
+    naming: "이름 짓는 중…",
+    chooseSourceFirst: "먼저 소스를 선택하세요",
+    fileName: "파일 이름",
+    savedAs: (name, dir) => `저장 이름: ${name}, 위치: ${dir}`,
+    inDir: (dir) => `위치: ${dir}`,
+    generate: "내용을 바탕으로 이름 생성",
+    generatePattern: "[게임 이름]-[타이틀 ID]",
+  },
+  // transport-tauri.tsx: the native save dialog
+  tauri: { saveProfile: "프로필로 저장", profileFilter: "LZ4 프로필(TOML)" },
+  // api.ts: prettyDuration's units
+  duration: { s: (s) => `${s}초`, ms: (m, s) => `${m}분 ${s}초`, hm: (h, m) => `${h}시간 ${m}분` },
+};
+
+export default ko;

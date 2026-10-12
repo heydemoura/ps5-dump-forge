@@ -5,30 +5,31 @@ import { useRef, useState } from "react";
 
 import { api, errorText, pick, type Format, type InnerFormat, type KrakenLevel } from "./api";
 import { basename, dirname, FormatPicker, IMAGE_EXTENSIONS, joinPath, kindLabel, Prose, SEPARATORS } from "./common";
+import { msg, useMessages } from "./i18n";
+import type { Messages } from "./locales/en";
 import { Icon, type IconName } from "./icons";
 import type { Job } from "./jobs";
 
-/** One line under a target picker: which one to pick, and when. */
-export const FORMAT_INFO: Record<Format, string> = {
-  folder: "Unpack an image or package back into a plain game folder.",
-  exfat:
-    "For games that misbehave as ffpkg and only run like external-drive content. Also opens on a Mac or PC.",
-  ffpkg: "Recommended. The PS5's own file system (UFS2). Writable mounts possible.",
-  ffpfs: "Experimental. The PS5's PFS file system, uncompressed. File names must be plain ASCII.",
-  ffpfsc: "Experimental. Smallest: a compressed container around one image, always mounted read-only.",
-  pkg: "Installs like a store game and runs at native speed. Needs kstuff, fpkg-enable and ppr-patch.",
-  lz4: "Experimental. A game folder with its assets packed into LZ4 volumes, which the bundled AMPR emulator (ampr_emu) unpacks while the game runs. Only for games that use AMPR.",
-};
+/** A one-line note; `tone`: its first word ("Recommended", "Experimental") is coloured. */
+export interface Note {
+  tone?: "good" | "warn";
+  text: string;
+}
 
-/** A note with its leading "Recommended" in green or "Experimental" in amber (text colour
- * only; the word itself says it). */
-export function Lead({ text }: { text: string }) {
-  const word = /^(Recommended|Experimental)\b/.exec(text)?.[1];
-  if (!word) return <Prose text={text} />;
+/** One line under a target picker, in the current language (read at render). */
+export function formatInfo(f: Format): Note {
+  return msg().target.format[f];
+}
+
+/** A note with its leading word in green (`good`: "Recommended") or amber (`warn`:
+ * "Experimental"); text colour only, the word itself says it. */
+export function Lead({ note }: { note: Note }) {
+  const word = note.tone ? /^[\p{L}\p{M}]+/u.exec(note.text)?.[0] : undefined;
+  if (!word) return <Prose text={note.text} />;
   return (
     <>
-      <span className={word === "Recommended" ? "lead-good" : "lead-warn"}>{word}</span>
-      <Prose text={text.slice(word.length)} />
+      <span className={note.tone === "good" ? "lead-good" : "lead-warn"}>{word}</span>
+      <Prose text={note.text.slice(word.length)} />
     </>
   );
 }
@@ -38,11 +39,9 @@ const INNER_FORMATS: InnerFormat[] = ["exfat", "ffpkg", "ffpfs"];
 
 /** One line under the inner-image picker: the format's own line, less what a `.ffpfsc` (always
  * mounted read-only) doesn't give. */
-const INNER_INFO: Record<InnerFormat, string> = {
-  exfat: FORMAT_INFO.exfat,
-  ffpkg: "Recommended. The PS5's own file system (UFS2).",
-  ffpfs: FORMAT_INFO.ffpfs,
-};
+function innerInfo(f: InnerFormat, t: Messages["target"]): Note {
+  return f === "ffpkg" ? t.innerFfpkg : t.format[f];
+}
 
 /** The `.ffpfsc` zlib level a new window starts on. */
 export const DEFAULT_FFPFSC_LEVEL = 6;
@@ -50,41 +49,23 @@ export const DEFAULT_FFPFSC_LEVEL = 6;
 /** One line under the `.ffpfsc` level slider: what the chosen level costs, from a 13 GB test
  * game on 14 cores (0: 3.0 s, 100% stored; 1: 5.7 s, 78.6%; 4: 13.0 s, 76.4%; 6: 16.3 s,
  * 76.25%; 7: 17.3 s; 9: 20.4 s, 76.21%). */
-function ffpfscLevelNote(level: number): string {
-  if (level === 0) return "No compression: every block stored as it is. The file is as large as the image.";
-  if (level === DEFAULT_FFPFSC_LEVEL)
-    return "Recommended (zlib's default). 1 builds about 3× faster with a file about 3% larger; 9 is barely smaller.";
-  if (level < DEFAULT_FFPFSC_LEVEL)
-    return "Builds faster than 6 (level 1 about 3×); the file comes out larger (level 1 about 3%).";
-  return "Barely smaller than 6 (level 9 by 0.04%), but compressing takes longer (level 9 about 25%), with every core busy throughout.";
+function ffpfscLevelNote(level: number, t: Messages["target"]): Note {
+  if (level === 0) return t.level0;
+  if (level === DEFAULT_FFPFSC_LEVEL) return t.levelDefault;
+  return level < DEFAULT_FFPFSC_LEVEL ? t.levelLow : t.levelHigh;
 }
 
-/** The `.fpkg` compression levels, in picker order: icon, label, and one line under the picker. */
+/** The `.fpkg` compression levels, in picker order, with their icons (labels and notes: `M`). */
 const KRAKEN_LEVELS: KrakenLevel[] = ["fast", "balanced", "smallest"];
-const KRAKEN_INFO: Record<KrakenLevel, { icon: IconName; label: string; note: string }> = {
-  fast: {
-    icon: "bolt",
-    label: "Fast",
-    note: "Recommended. The quickest build.",
-  },
-  balanced: {
-    icon: "scale",
-    label: "Balanced",
-    note: "About 2.6% smaller than Fast, but compressing takes about 6× as long, with every core busy the whole time.",
-  },
-  smallest: {
-    icon: "compress",
-    label: "Smallest",
-    note: "About 2.7% smaller than Fast, but compressing takes about 9× as long, with every core busy the whole time.",
-  },
-};
+const KRAKEN_ICON: Record<KrakenLevel, IconName> = { fast: "bolt", balanced: "scale", smallest: "compress" };
 
 /** The `.fpkg` firmware limit, under the format's one-liner. */
 export function PkgWarning() {
+  const t = useMessages().target;
   return (
     <p className="alert-bar warn">
       <Icon name="warn" />
-      <span>Works only on firmware 11.60 or lower.</span>
+      <span>{t.pkgFirmware}</span>
     </p>
   );
 }
@@ -98,25 +79,26 @@ export function FfpfscField(props: {
   level: number;
   onLevel: (n: number) => void;
 }) {
+  const t = useMessages().target;
   return (
     <div className="field inner">
       {/* The radio group's own label says the same to a screen reader. */}
       <span className="label" aria-hidden="true">
-        Image inside
+        {t.imageInside}
       </span>
       <FormatPicker
         name={`${props.prefix}-inner-format`}
-        label="Image inside the ffpfsc"
+        label={t.imageInsideLabel}
         className="inner"
         formats={INNER_FORMATS}
         value={props.inner}
         onChange={props.onInner}
       />
       <p className="muted hint">
-        <Lead text={INNER_INFO[props.inner]} />
+        <Lead note={innerInfo(props.inner, t)} />
       </p>
       <label className="label range-label" htmlFor={`${props.prefix}-ffpfsc-level`}>
-        <span>Compression level</span>
+        <span>{t.compressionLevel}</span>
         <span className="range-value">{props.level}</span>
       </label>
       <input
@@ -130,7 +112,7 @@ export function FfpfscField(props: {
         onChange={(e) => props.onLevel(Number(e.target.value))}
       />
       <p className="muted hint">
-        <Lead text={ffpfscLevelNote(props.level)} />
+        <Lead note={ffpfscLevelNote(props.level, t)} />
       </p>
     </div>
   );
@@ -142,13 +124,14 @@ export function KrakenField(props: {
   value: KrakenLevel;
   onChange: (l: KrakenLevel) => void;
 }) {
+  const t = useMessages().target;
   return (
     <div className="field inner">
       {/* The radio group's own label says the same to a screen reader. */}
       <span className="label" aria-hidden="true">
-        Compression
+        {t.compression}
       </span>
-      <div className="seg formats inner" role="radiogroup" aria-label="Compression level">
+      <div className="seg formats inner" role="radiogroup" aria-label={t.compressionLevel}>
         {KRAKEN_LEVELS.map((l) => (
           <label key={l} className={`seg-choice fmt-pkg${props.value === l ? " on" : ""}`}>
             <input
@@ -160,14 +143,14 @@ export function KrakenField(props: {
               onChange={() => props.onChange(l)}
             />
             <span className="seg-opt">
-              <Icon name={KRAKEN_INFO[l].icon} />
-              {KRAKEN_INFO[l].label}
+              <Icon name={KRAKEN_ICON[l]} />
+              {t.kraken[l].label}
             </span>
           </label>
         ))}
       </div>
       <p className="muted hint">
-        <Lead text={KRAKEN_INFO[props.value].note} />
+        <Lead note={t.kraken[props.value].note} />
       </p>
     </div>
   );
@@ -175,6 +158,7 @@ export function KrakenField(props: {
 
 /** Full verification: re-read every byte instead of sampling. */
 export function VerifySwitch(props: { checked: boolean; onChange: (on: boolean) => void }) {
+  const t = useMessages().target;
   return (
     <div className="field verify">
       <label className="switch">
@@ -186,8 +170,8 @@ export function VerifySwitch(props: { checked: boolean; onChange: (on: boolean) 
         />
         <span className="switch-track" aria-hidden="true" />
         <span>
-          Full verification
-          <span className="muted hint">Re-reads every byte to check the output. Takes longer.</span>
+          {t.fullVerify}
+          <span className="muted hint">{t.fullVerifyHint}</span>
         </span>
       </label>
     </div>
@@ -217,13 +201,12 @@ const STEM_LIMIT: Record<Format, number> = {
  * image extension is an error: the extension picks the mount driver. So is a name over
  * `STEM_LIMIT`. */
 function checkName(name: string, format: Format): { name: string; error?: string } {
-  if (SEPARATORS.test(name))
-    return { name, error: "A name can't contain a folder separator; use Change… for the folder." };
+  const t = msg().target;
+  if (SEPARATORS.test(name)) return { name, error: t.separator };
   const tooLong = (stem: string) => {
     const bytes = new TextEncoder().encode(stem).length;
     const max = STEM_LIMIT[format];
-    const what = FOLDER_FORMATS.includes(format) ? "" : " before the extension";
-    return bytes > max ? `Too long: ${bytes} bytes${what}, at most ${max} (UTF-8).` : undefined;
+    return bytes > max ? t.tooLong(bytes, max, FOLDER_FORMATS.includes(format)) : undefined;
   };
   if (FOLDER_FORMATS.includes(format)) return { name, error: tooLong(name) };
   const dot = name.lastIndexOf(".");
@@ -235,10 +218,7 @@ function checkName(name: string, format: Format): { name: string; error?: string
   else if (TYPED_EXTENSIONS.includes(ext))
     return {
       name,
-      error:
-        format === "pkg"
-          ? `Ends in .${ext}, but fpkg is saved as .pkg: the extension picks the driver.`
-          : `Ends in .${ext}, but the target is ${kindLabel(format)}: the extension picks the driver.`,
+      error: format === "pkg" ? t.pkgExt(ext) : t.otherExt(ext, kindLabel(format)),
     };
   else saved = `${name}.${format}`;
   const error = tooLong(saved.slice(0, saved.lastIndexOf(".")));
@@ -263,6 +243,7 @@ export function startFormat(preferred: Format, path: string, isImage: boolean): 
  * shows; calls made right after a source or format change pass the new ones themselves.
  */
 export function useOutput(format: Format, jobs: Job[], onError: (e: string) => void) {
+  useMessages().target; // the typed name's error is in the current language
   const [output, setOutput] = useState("");
   const [generate, setGenerate] = useState(true);
   // Only the latest output request may land.
@@ -343,7 +324,8 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
     async choose(src: string | null) {
       if (!src) return;
       const choice = choiceSeq.current;
-      const title = FOLDER_FORMATS.includes(format) ? "Extract into this folder" : "Save into this folder";
+      const t = msg().target;
+      const title = FOLDER_FORMATS.includes(format) ? t.extractInto : t.saveInto;
       const dir = await pick({ directory: true, title });
       if (dir === null || choice !== choiceSeq.current) return;
       outDir.current = dir;
@@ -369,25 +351,26 @@ export type Output = ReturnType<typeof useOutput>;
 
 /** The Output box: the generated name whole, or the typed one; its folder on the line below. */
 export function OutputField(props: { out: Output; source: string | null; prefix: string }) {
+  const t = useMessages().target;
   const { out, source } = props;
   const id = `${props.prefix}-output`;
   return (
     <div className="field" role="group" aria-labelledby={`${id}-label`}>
       <div className="label-row">
         <span className="label" id={`${id}-label`}>
-          Output
+          {t.output}
         </span>
         <button className="small" onClick={() => void out.choose(source)} disabled={!source}>
-          Change…
+          {t.change}
         </button>
       </div>
       {out.generate ? (
         // A generated name: shown whole (it wraps), only its folder is chosen.
         <p className="out-box" id={id}>
           {out.output ? (
-            out.name
+            <span className="out-name">{out.name}</span>
           ) : (
-            <span className="muted">{source ? "Naming…" : "Choose a source first"}</span>
+            <span className="muted">{source ? t.naming : t.chooseSourceFirst}</span>
           )}
         </p>
       ) : (
@@ -400,7 +383,7 @@ export function OutputField(props: { out: Output; source: string | null; prefix:
           aria-invalid={out.named.error ? true : undefined}
           value={out.name}
           onChange={(e) => out.type(e.target.value)}
-          placeholder={source ? "File name" : "Choose a source first"}
+          placeholder={source ? t.fileName : t.chooseSourceFirst}
           disabled={!source}
           spellCheck={false}
         />
@@ -412,8 +395,7 @@ export function OutputField(props: { out: Output; source: string | null; prefix:
       )}
       {source && (
         <p className="out-dir path" id={`${id}-dir`}>
-          {out.named.name !== out.name && !out.named.error && <>saved as {out.named.name} </>}in{" "}
-          {out.dir}
+          {out.named.name !== out.name && !out.named.error ? t.savedAs(out.named.name, out.dir) : t.inDir(out.dir)}
         </p>
       )}
     </div>
@@ -422,6 +404,7 @@ export function OutputField(props: { out: Output; source: string | null; prefix:
 
 /** "Generate name based on content", in the build row. */
 export function GenerateSwitch(props: { out: Output; source: string | null }) {
+  const t = useMessages().target;
   const { out } = props;
   return (
     <label className="switch">
@@ -433,9 +416,9 @@ export function GenerateSwitch(props: { out: Output; source: string | null }) {
       />
       <span className="switch-track" aria-hidden="true" />
       <span>
-        Generate name based on content
+        {t.generate}
         {/* When on, the Output box shows the generated name itself. */}
-        {!out.generate && <span className="muted mono hint">[game name]-[title ID]</span>}
+        {!out.generate && <span className="muted mono hint">{t.generatePattern}</span>}
       </span>
     </label>
   );

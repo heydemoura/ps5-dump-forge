@@ -56,6 +56,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `fuzz/`: cargo-fuzz targets, its own workspace.
 - `DESIGN.md`: the UI design system (tokens, components, colour/contrast rules, the cover glow);
   `app/src/styles.css` holds the values. Read it before changing the UI.
+  `app/src/locales/`: the UI text, one file per language (see Key decisions).
 
 ## Key decisions
 - Every reader/writer meets at `ps5upload_fpkg::source::SourceTree` (sizes up front, `read_range`,
@@ -220,7 +221,35 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `common.tsx`), and in running text in bold (`Prose`); paths and file names keep the extension. The debug
   FPKG is labelled `fpkg`; its files, the `Format`/`Kind` id and the CLI flag stay `pkg`. Format copy and
   the About tab's formats table (`app/src/Formats.tsx`) follow ShadowMountPlus 1.7's README and release notes.
-- No settings and no config file: the UI keeps choices in memory until it closes. Defaults: target
+- UI languages: English (the fallback), Russian, Simplified Chinese (`zh`), German, Spanish, French,
+  Japanese, Brazilian Portuguese (`pt`), Italian, Korean and Arabic; UI text only (`app/src/i18n.ts`). Backend text
+  (errors, findings, job logs, checks, `describe`), the CLI, `entry.c`'s notices, format ids, file names, product
+  names and IEC units stay English; code that matches backend English keeps doing so. Messages live in
+  `app/src/locales/<lang>.tsx`, one file per language, grouped by the file that shows them
+  (`lz4`, `convert`, ...): `en.tsx` is the source and defines `Messages`, every other one is typed
+  `Messages` (tsc fails on a missing key). A new language: copy `en.tsx`, translate, add one line to
+  `LANGUAGES` in `i18n.ts`. Each language is its own Vite chunk inside the bundle (embedded in the
+  `.elf`, listed in the AppCache manifest; nothing is downloaded), loaded by `initLang` before the
+  first render (both entries) and by `setLang` before a switch shows it. Components use
+  `useMessages().<group>`, other code `msg().<group>` at call time (never at module load); plurals via
+  `plural`, numbers via `num`; a sentence is one message per language, never spliced from fragments;
+  code compares ids, not displayed text. `http-client.ts`/`launcher.ts` stay free of runtime imports
+  (plain-node checks) and return codes the UI translates. The system languages pick the language
+  (exact tag, then its primary subtag) until the About tab's selector (System + each language, every
+  platform) does. Game titles come from param.json's `localizedParameters` (`title_names` in
+  `Inspection`/`LibraryEntry`; `gameTitle`): the chosen language, else the system languages, else
+  English, else `title_name` (the default language, still used for generated names and sorting).
+  Every UI copy change updates every language; the UI says "game", never "dump" (except the product
+  names). Russian writes trace terms as трейс/трейсы/трейсинг. Arabic is right-to-left (`rtl` in
+  `LANGUAGES`: `<html dir="rtl">`; styles.css uses logical properties plus a few `[dir="rtl"]` overrides,
+  paths stay LTR) with Latin digits (`numbers`), and its Latin file names and paths are wrapped in
+  LRI…PDI (U+2066/U+2069) so the bidi algorithm can't reorder them. Durations are whole messages per
+  language (`duration`). The server's PS5 notifications (started, already running, port in use,
+  stopped; `crates/ps5-dump-forge-server/src/notice.rs`) follow the console's language
+  (`sceSystemServiceParamGetInt` LANG, mapped to the UI's languages, else English); English elsewhere.
+- No settings and no config file: the UI keeps choices in memory until it closes, except the UI
+  language, which `localStorage` keeps (`forge.lang`; by user decision; unreadable storage falls back to
+  the system languages). Defaults: target
   `.ffpkg` (SMP 1.7's recommendation; `.exfat` is for compatibility), exFAT inside a `.ffpfsc` at zlib
   level 6, all cores for compression (`serve`: cores − 1), `.pkg` Kraken level `fast` (also `balanced`,
   `smallest`; tests use `fast` only), no extra free space beyond each format's built-in spare, output next
@@ -252,7 +281,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `/data/dumpforge/ps5-dump-forge.elf`. Launch on open: the AppCache'd page asks elfldr
   (`GET :9021/<elf>?args=serve`; that copy, then the old path, then USB) only from the console's own
   browser at load.
-  On the PS5 the start notice says to open the tile (no URL; the serve log has it); the page header
+  On the PS5 the start notice only says "Dump Forge is launched" (no URL; the serve log has it); the page header
   shows the server's host:port from `GET /api/session` `url`, never the viewer's `location`, then its QR
   code (`GET /api/qr`: an SVG drawn by the server with the `qrcode` crate; 404 when the server can't tell
   its IP). The address + QR is one button that opens "How to connect"; About names the address. The

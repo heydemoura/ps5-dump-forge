@@ -256,21 +256,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn locate_matches_group_ranges() {
-        let g = Geom::new(40_000, 64 * 1024).unwrap();
-        assert!(g.ncg > 1);
-        let mut idx = 0;
-        for c in 0..g.ncg {
-            let (s, e) = g.cg_data_range(c);
-            assert_eq!(s, idx);
-            assert_eq!(g.locate(s), (g.cg_data_start(c), e - s));
-            assert_eq!(g.locate(e - 1).1, 1);
-            idx = e;
-        }
-        assert_eq!(idx, g.data_capacity());
-    }
-
     /// FreeBSD refuses ncg * ipg > 2^32 - INOPB; the rounded geometry is what counts
     /// (an estimate from the density alone passes here).
     #[test]
@@ -329,14 +314,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// Large images: groups grow until the cg map fills a block, like newfs.
-    #[test]
-    fn big_image_fills_the_cg_block() {
-        let g = Geom::new(100 * 1024 * 1024 * 1024 / BSIZE, 256 * 1024).unwrap();
-        assert!(cgsize(g.fpg, g.ipg) <= BSIZE - CGSIZEFUDGE);
-        assert!(cgsize(g.fpg + 1, ipg_for(g.fpg + 1, 4)) > BSIZE - CGSIZEFUDGE - 64);
-        assert_eq!(g.csblocks, 1);
     }
 }

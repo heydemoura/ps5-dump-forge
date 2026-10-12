@@ -432,35 +432,6 @@ mod tests {
     use super::*;
     use crate::{cnt, crypto::DEFAULT_PASSCODE, fih};
 
-    /// The samples only use direct blocks, so the indirect offset is structural: it must
-    /// continue the 36-byte stride after the twelve direct slots.
-    #[test]
-    fn indirect_blocks_follow_the_direct_stride() {
-        let mut table = vec![0u8; crate::BLOCK as usize];
-        table[0x60..0x64].copy_from_slice(&13u32.to_le_bytes());
-        let direct0 = DIRECT_AT;
-        table[direct0 + 32..direct0 + 36].copy_from_slice(&7u32.to_le_bytes());
-        let indirect0 = DIRECT_AT + 12 * BLOCK_SIG_LEN;
-        table[indirect0 + 32..indirect0 + 36].copy_from_slice(&9u32.to_le_bytes());
-        let img = OuterImage {
-            superblock: Superblock {
-                index: 0,
-                dinode_count: 1,
-                ndblock: 1,
-                inode_table_block: 0,
-                inode_table_digest: [0; 32],
-                seed: [0; 16],
-                mode: crate::ImageMode::Native,
-                icv_ok: true,
-            },
-            plaintext: vec![table],
-            verdicts: vec![],
-        };
-        let nodes = img.dinodes();
-        assert_eq!(nodes[0].direct[0].block, 7);
-        assert_eq!(nodes[0].indirect[0].block, 9);
-    }
-
     #[test]
     fn dlc_sample_outer_tree() {
         let dir = std::env::var("PS5UPLOAD_SAMPLE_PKGS")

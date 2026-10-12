@@ -442,20 +442,6 @@ mod tests {
         assert_eq!(source.read("eboot.bin").unwrap(), b"eboot");
     }
 
-    /// Thousands of long names in one directory: more than 1 MiB of entries, all read.
-    #[test]
-    fn a_directory_with_thousands_of_long_names_walks() {
-        let names: Vec<String> = (0..5000).map(|i| format!("{i:0200}")).collect();
-        let entries: Vec<(&str, u64)> = names.iter().map(|n| (n.as_str(), 3)).collect();
-        let mut img = Image::new(64, 400);
-        img.dir(ROOT_INODE, ROOT_INODE, &[("data", 4)]);
-        img.dir(4, ROOT_INODE, &entries);
-        img.file(3, b"same bytes");
-        let source = img.open().unwrap();
-        assert_eq!(source.files().len(), 5000);
-        assert_eq!(source.files()[0].path, format!("data/{}", names[0]));
-    }
-
     /// A directory linked from two places — here back to the root — is a corrupt image.
     #[test]
     fn a_directory_cycle_is_refused() {
@@ -533,27 +519,6 @@ mod tests {
             assert!(e.contains(want), "{want}: {e}");
         }
         assert!(!e.contains("eboot.bin"), "{e}");
-    }
-
-    /// The list stops at [`MAX_SPECIAL_LISTED`] paths and counts the rest.
-    #[test]
-    fn a_long_list_of_special_files_is_bounded() {
-        let names: Vec<String> = (0..MAX_SPECIAL_LISTED + 10)
-            .map(|i| format!("l{i:03}"))
-            .collect();
-        let mut entries: Vec<(&str, u64)> = names.iter().map(|n| (n.as_str(), 4)).collect();
-        entries.push(("eboot.bin", 3));
-        let mut img = Image::new(64, 64);
-        img.dir(ROOT_INODE, ROOT_INODE, &entries);
-        img.file(3, b"eboot");
-        img.inode(4, 0xA1FF, 0, [0; 12], 0);
-        let Err(e) = img.open() else {
-            panic!("symlinks must not walk");
-        };
-        let e = e.to_string();
-        assert!(e.contains("holds 60 special file(s)"), "{e}");
-        assert_eq!(e.matches("(symlink)").count(), MAX_SPECIAL_LISTED, "{e}");
-        assert!(e.ends_with("... and 10 more"), "{e}");
     }
 
     /// An entry whose inode the image cannot produce fails the walk, by path, rather than

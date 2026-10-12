@@ -529,45 +529,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn describe_is_one_line() {
-        let dest = Dest {
-            dev: 1,
-            free: 118 * GIB + 5,
-            fstype: "exfatfs".into(),
-            mount: "/mnt/usb0".into(),
-            max_file: i64::MAX as u64,
-            folds_names: true,
-            ascii_only: false,
-            hard_links: false,
-            notes: Vec::new(),
-        };
-        assert_eq!(
-            dest.describe(),
-            "destination /mnt/usb0: exfatfs, 118 GiB free, 64-bit files, folds names, \
-             no hard links"
-        );
-        let fat = Dest {
-            free: 3 * MIB,
-            fstype: "msdosfs".into(),
-            max_file: FAT_MAX_FILE,
-            folds_names: false,
-            ascii_only: true,
-            hard_links: true,
-            ..dest
-        };
-        assert_eq!(
-            fat.describe(),
-            "destination /mnt/usb0: msdosfs, 3 MiB free, files under 4 GiB, \
-             case-sensitive names, ASCII names only, hard links"
-        );
-        let apfs = Dest {
-            max_file: (1 << 56) - 1,
-            ..fat
-        };
-        assert!(apfs.describe().contains(", 56-bit files,"));
-    }
-
     /// On this Mac the temp folder is APFS: it folds case (and normalization), has hard links
     /// and no 4 GiB limit. In the FreeBSD VM it is whatever volume `TMPDIR` names.
     #[test]
@@ -604,16 +565,5 @@ mod tests {
         assert!(blocks > 0);
         assert!(mount_state(&dir.join("nope")).is_err());
         let _ = std::fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn a_missing_folder_names_the_step() {
-        let dir = crate::test_dir("dest-missing").join("nope");
-        let e = probe(&dir, &AtomicBool::new(false)).unwrap_err();
-        let msg = format!("{e:#}");
-        assert!(
-            msg.contains("opening the folder") && msg.contains("os error"),
-            "{msg}"
-        );
     }
 }

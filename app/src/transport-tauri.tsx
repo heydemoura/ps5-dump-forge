@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
+import { msg } from "./i18n";
 import { joinPath } from "./paths";
 
 import type { PickOptions, Transport, Unlisten } from "./transport";
@@ -31,10 +32,11 @@ export const transport: Transport = {
   lz4Patch: (path) => invoke("lz4_patch", { path }),
   lz4Unpatch: (path) => invoke("lz4_unpatch", { path }),
   savePlanProfile: async (request, name, dir) => {
+    const t = msg().tauri;
     const dest = await save({
-      title: "Save as profile",
+      title: t.saveProfile,
       defaultPath: dir ? joinPath(dir, name) : name,
-      filters: [{ name: "LZ4 profile (TOML)", extensions: ["toml"] }],
+      filters: [{ name: t.profileFilter, extensions: ["toml"] }],
     });
     return dest ? invoke("lz4_save_plan_profile", { request, dest }) : null;
   },

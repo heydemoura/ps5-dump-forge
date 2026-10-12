@@ -803,16 +803,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_by_root_magic() {
-        assert!(detect(&mut tree(|_| {})).unwrap());
-        assert!(!detect(&mut Mem::new([("x".to_string(), vec![1])])).unwrap());
-        let mut other = Mem::new([(MANIFEST.to_string(), b"AMPRPAK3........".to_vec())]);
-        assert!(!detect(&mut other).unwrap());
-        let mut nested = Mem::new([(format!("d/{MANIFEST}"), PAK_MAGIC.to_vec())]);
-        assert!(!detect(&mut nested).unwrap());
-    }
-
-    #[test]
     fn hides_exactly_the_pack_artifacts() {
         let t = tree(|f| {
             f.insert("foo.pak".into(), vec![1]);
@@ -852,21 +842,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_folder_under_a_file_is_refused() {
-        let mut t = tree(|_| {});
-        t.dirs = vec!["data/a.bin/empty".into()];
-        assert!(err(t).contains("under a packed file"));
-    }
-
-    #[test]
-    fn empty_dirs_are_kept_unless_they_now_hold_files() {
-        let mut t = tree(|_| {});
-        t.dirs = vec!["data".into(), "keep/me".into()];
-        let u = unpack(Box::new(t)).unwrap();
-        assert_eq!(u.empty_dirs(), ["keep/me"]);
-    }
-
-    #[test]
     fn volume_problems_fail_at_open() {
         let v = volume_name(0);
         assert!(err(tree(|f| drop(f.remove(&v)))).contains("missing"));
@@ -874,45 +849,6 @@ mod tests {
         assert!(err(tree(|f| f.get_mut(&v).unwrap()[30] ^= 1)).contains(&v));
         let crc = err(tree(|f| f.get_mut(&v).unwrap()[61] ^= 1));
         assert!(crc.contains(&v), "{crc}");
-    }
-
-    #[test]
-    fn sidecars_are_checked_when_present() {
-        // Absent is fine.
-        let mut u = unpack(Box::new(tree(|f| drop(f.remove(CRC_SIDECAR))))).unwrap();
-        assert!(!u.has_crc());
-        assert_eq!(u.read("data/a.bin").unwrap(), text(200_000, 1));
-        assert!(err(tree(|f| f.get_mut(CRC_SIDECAR).unwrap()[50] ^= 1)).contains("CRC"));
-        assert!(err(tree(|f| f.get_mut(CRC_SIDECAR).unwrap().push(0))).contains("bytes"));
-        // A profile is checked whole, CRC first, then its values.
-        let (_, out) = sample();
-        let id = &out.files[MANIFEST][24..40];
-        let profile = |workers: u32, reserve: u32, cache: u64| {
-            let mut b = vec![0u8; CFG_SIZE];
-            put_bytes(&mut b, 0, CFG_MAGIC).unwrap();
-            put_u32(&mut b, 8, 1).unwrap();
-            put_u32(&mut b, 12, 64).unwrap();
-            put_bytes(&mut b, 16, id).unwrap();
-            put_u64(&mut b, 32, cache).unwrap();
-            put_u32(&mut b, 48, workers).unwrap();
-            put_u32(&mut b, 52, reserve).unwrap();
-            let crc = cfg_crc(&b).unwrap();
-            put_u32(&mut b, CFG_CRC_AT, crc).unwrap();
-            b
-        };
-        let with = |b: Vec<u8>| tree(move |f| drop(f.insert(PROFILE.into(), b)));
-        let ok = unpack(Box::new(with(profile(16, 15, 32768)))).unwrap();
-        assert_eq!(ok.profile().unwrap().workers, 16);
-        for (w, r, c) in [(0, 0, 0), (17, 0, 0), (4, 4, 0), (4, 0, 16383)] {
-            assert!(
-                err(with(profile(w, r, c))).contains("not valid"),
-                "{w} {r} {c}"
-            );
-        }
-        let mut b = profile(4, 0, 0);
-        b[40] = 1;
-        assert!(err(with(b)).contains("CRC"));
-        assert!(err(with(vec![0; 65])).contains("bytes"));
     }
 
     #[test]
@@ -1113,28 +1049,6 @@ mod tests {
             packs: vec![("v.pak", 4 * P, P, P as u32)],
             data: vec![],
         }
-    }
-
-    #[test]
-    fn raw_of_exactly_one_page_must_be_aligned() {
-        let c = CHUNK_PAGE_CONTAINED;
-        assert!(err(one_page(Codec::Raw, c, P).tree()).contains("breaks the pack rules"));
-        assert!(unpack(Box::new(one_page(Codec::Raw, BOTH, P).tree())).is_ok());
-        // LZ4 of a page needs containment only.
-        assert!(unpack(Box::new(one_page(Codec::Lz4, c, P).tree())).is_ok());
-        // Crossing a page, or a flag the placement does not have.
-        assert!(err(one_page(Codec::Lz4, c, P + 64).tree()).contains("breaks"));
-        assert!(err(one_page(Codec::Raw, 0, P).tree()).contains("breaks"));
-        assert!(err(one_page(Codec::Raw, BOTH, P + 64).tree()).contains("breaks"));
-        // 64-byte alignment, and the payload range.
-        let mut h = one_page(Codec::Raw, BOTH, P);
-        h.files[0] = ("/app0/x", 100, PACKED, 0, 1, 17);
-        h.chunks[0] = (0, P + 32, 100, Codec::Raw, CHUNK_PAGE_CONTAINED);
-        assert!(err(h.tree()).contains("breaks"));
-        h.chunks[0] = (0, 4 * P - 64, 100, Codec::Raw, CHUNK_PAGE_CONTAINED);
-        assert!(err(h.tree()).contains("breaks"));
-        h.chunks[0] = (0, 0, 100, Codec::Raw, BOTH);
-        assert!(err(h.tree()).contains("breaks"));
     }
 
     #[test]

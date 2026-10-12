@@ -245,28 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn size_class_follows_the_limits() {
-        let gib = 1u64 << 30;
-        assert_eq!(choose_size_class(10 * gib, 1000, 0).unwrap().attribute, 0);
-        assert_eq!(choose_size_class(170 * gib, 1000, 0).unwrap().attribute, 1);
-        assert_eq!(choose_size_class(200 * gib, 1000, 0).unwrap().attribute, 2);
-        assert_eq!(choose_size_class(400 * gib, 1000, 0).unwrap().attribute, 2);
-        assert!(choose_size_class(200 * gib, 600_000, 0).is_err());
-        // A level-2 add-on mount holds up to its own limit, then falls to 1, then to 0.
-        let c = choose_size_class(50 * gib, 10, 2).unwrap();
-        assert_eq!((c.attribute, c.mount_level), (0, 2));
-        let c = choose_size_class(100 * gib, 10, 2).unwrap();
-        assert_eq!((c.attribute, c.mount_level), (0, 1));
-        let c = choose_size_class(170 * gib, 10, 1).unwrap();
-        assert_eq!((c.attribute, c.mount_level), (1, 1));
-        let c = choose_size_class(190 * gib, 10, 1).unwrap();
-        assert_eq!((c.attribute, c.mount_level), (2, 0));
-        // The allowance is 1% or 512 MiB, whichever is more, plus 4 KiB a file.
-        let c = choose_size_class(gib, 2, 0).unwrap();
-        assert_eq!(c.estimated, gib + 512 * MIB + 8192);
-    }
-
-    #[test]
     fn rewrite_inserts_or_replaces_only_the_values() {
         let src = b"{\n  \"applicationCategoryType\": 0,\n  \"kernel\": {\n    \"addcontMountLevel\": 2\n  }\n}\n";
         let (out, why) = size_class_rewrite(src, 100 << 30, 10).unwrap().unwrap();

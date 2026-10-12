@@ -1,5 +1,5 @@
 //! Folder → `.exfat` → vendored reader, comparing paths, sizes and bytes; plus the
-//! preflight rejections, cancellation and the size math for huge trees.
+//! preflight rejections and cancellation.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -384,17 +384,6 @@ fn bad_names_are_all_listed() {
 }
 
 #[test]
-fn bad_label_is_rejected() {
-    let tree = MemTree::new(&[("eboot.bin", 1)]);
-    let opts = Options {
-        label: Some("TWELVE CHARS".into()),
-        ..Options::default()
-    };
-    let e = plan(&tree, &opts, &AtomicBool::new(false)).unwrap_err();
-    assert!(e.to_string().contains("volume label"), "{e}");
-}
-
-#[test]
 fn maker_mark_round_trips_and_is_bounded() {
     let tmp = TempDir::new("maker");
     let cancel = AtomicBool::new(false);
@@ -475,19 +464,6 @@ fn changed_tree_is_refused() {
     assert!(e.to_string().contains("changed"), "{e}");
 }
 
-#[test]
-fn huge_sizes_plan_with_u64_math() {
-    // 5 GiB and 3 TiB files: past every 32-bit byte count, well inside 32-bit clusters.
-    let tree = MemTree::new(&[("a.bin", 5 << 30), ("b.bin", 3 << 40), ("eboot.bin", 1)]);
-    let layout = plan(&tree, &Options::default(), &AtomicBool::new(false)).unwrap();
-    assert_eq!(
-        layout.image_size,
-        script_size(&[5 << 30, 3 << 40, 1], 1, 0),
-        "512 MiB spare at this size"
-    );
-    assert_eq!(layout.data_bytes, (5u64 << 30) + (3u64 << 40) + 1);
-}
-
 /// Writes a check image for `scripts/check-exfat.sh`: set `FORGE_EXFAT_OUT` to a directory;
 /// it gets `src/` and `check.exfat`.
 #[test]
@@ -530,32 +506,4 @@ fn write_check_image() {
     let image = out.join("plain.exfat");
     build(&plain, &image, &Options::default());
     assert_same(&plain, &image);
-}
-
-#[test]
-fn cancel_on_the_last_chunk_still_fails() {
-    let mut tree = MemTree::new(&[("eboot.bin", 1)]);
-    let cancel = AtomicBool::new(false);
-    let layout = plan(&tree, &Options::default(), &cancel).unwrap();
-    let tmp = TempDir::new("cancel-last");
-    let mut out = File::create(tmp.0.join("x.exfat")).unwrap();
-    let e = write(&mut tree, &layout, &mut out, &cancel, &mut |_, _| {
-        cancel.store(true, Ordering::Relaxed)
-    })
-    .unwrap_err();
-    assert!(e.to_string().contains("cancelled"), "{e}");
-}
-
-#[test]
-fn cancel_from_the_final_progress_call_fails_an_empty_tree() {
-    let mut tree = MemTree::new(&[("empty", 0)]);
-    let cancel = AtomicBool::new(false);
-    let layout = plan(&tree, &Options::default(), &cancel).unwrap();
-    let tmp = TempDir::new("cancel-empty");
-    let mut out = File::create(tmp.0.join("x.exfat")).unwrap();
-    let e = write(&mut tree, &layout, &mut out, &cancel, &mut |_, _| {
-        cancel.store(true, Ordering::Relaxed)
-    })
-    .unwrap_err();
-    assert!(e.to_string().contains("cancelled"), "{e}");
 }

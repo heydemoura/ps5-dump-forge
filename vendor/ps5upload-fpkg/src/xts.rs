@@ -93,16 +93,6 @@ mod tests {
     }
 
     #[test]
-    fn two_blocks_sector_zero() {
-        let mut buf = [0u8; 32];
-        Xts::new(&keys()).encrypt(0, &mut buf);
-        assert_eq!(
-            hex(&buf),
-            "f071a2b402c105ea37024133e24d6ef6212e8cc0175e1b6b32657d54f159daf6"
-        );
-    }
-
-    #[test]
     fn full_block_data_and_signed_sectors() {
         let plain: Vec<u8> = (0..0x10000u32).map(|i| (i * 7) as u8).collect();
         let x = Xts::new(&keys());

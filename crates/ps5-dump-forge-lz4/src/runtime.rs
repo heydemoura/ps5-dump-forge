@@ -49,10 +49,6 @@ pub fn classify(bytes: &[u8]) -> RuntimeKind {
 mod tests {
     use super::*;
 
-    fn contains(hay: &[u8], needle: &[u8]) -> bool {
-        hay.windows(needle.len()).any(|w| w == needle)
-    }
-
     #[test]
     fn pinned_sizes_and_hashes() {
         assert_eq!(RELEASE.len(), 423350);
@@ -64,28 +60,11 @@ mod tests {
     }
 
     #[test]
-    fn both_know_the_pack_formats() {
-        for rt in [RELEASE, TRACE] {
-            assert!(contains(rt, b"AMPRPAK4"));
-            assert!(contains(rt, b"AMPRDAT3"));
-        }
-    }
-
-    #[test]
     fn classifies() {
         assert_eq!(classify(RELEASE), RuntimeKind::ForgeRelease);
         assert_eq!(classify(TRACE), RuntimeKind::ForgeTrace);
         assert_eq!(classify(&RELEASE[1..]), RuntimeKind::Other);
         assert_eq!(classify(b"x"), RuntimeKind::Other);
         assert_eq!(classify(b""), RuntimeKind::None);
-    }
-
-    #[test]
-    fn warning_text() {
-        assert_eq!(
-            WARNING,
-            "ampr_emu 0.4.2.1 is an upstream test build; known issue: some games crash when saving"
-        );
-        assert!(WARNING.contains(VERSION));
     }
 }

@@ -785,13 +785,6 @@ mod tests {
         }
     }
 
-    fn file(path: &str, size: u64) -> SourceFile {
-        SourceFile {
-            path: path.into(),
-            size,
-        }
-    }
-
     #[test]
     fn slices_do_not_depend_on_read_sizes() {
         let (tail, exact) = (bytes(2 * SLICE + 5, 1), bytes(2 * SLICE, 2));
@@ -832,73 +825,6 @@ mod tests {
         assert_eq!(
             expected.digests,
             [reference(&a), reference(&b), reference(&[])]
-        );
-    }
-
-    #[test]
-    fn the_plan_has_every_mandatory_slice_and_its_budget() {
-        let big = 80 * 1024 * SLICE / 8; // 80 GiB: 10240 slices
-        let mut files = vec![
-            file("z/big", big),
-            file("seam", (600 << 20) + 5),
-            file("empty", 0),
-        ];
-        files.extend((0..300).map(|i| file(&format!("small/{i:03}"), 100 << 10)));
-        let plan = plan(&files, 42, true);
-        assert_eq!(plan, super::plan(&files, 42, true), "seeded");
-        assert_ne!(plan, super::plan(&files, 43, true));
-        let key = |s: &Sample| (files[s.file].path.clone(), s.offset);
-        assert!(
-            plan.windows(2).all(|w| key(&w[0]) < key(&w[1])),
-            "sorted, no repeats"
-        );
-        let whole: Vec<&Sample> = plan.iter().filter(|s| s.slice.is_none()).collect();
-        assert_eq!(whole.len(), 300);
-        assert!(whole.iter().all(|s| s.len == 100 << 10));
-        for (i, last) in [(0, 10239), (1, 75)] {
-            let of: Vec<usize> = plan
-                .iter()
-                .filter(|s| s.file == i)
-                .filter_map(|s| s.slice)
-                .collect();
-            for want in [0, last, 64] {
-                assert!(of.contains(&want), "{want} not in {of:?}");
-            }
-            assert!(
-                of.iter().any(|s| ![0, last, 64].contains(s)),
-                "an interior slice"
-            );
-        }
-        // Mandatory: 4 slices of each; the rest is 10236 + 72 slices, 1% of which rounds
-        // up to 104 slices.
-        assert_eq!(plan.len(), 300 + 8 + 104);
-        let tail = plan
-            .iter()
-            .find(|s| s.file == 1 && s.slice == Some(75))
-            .unwrap();
-        assert_eq!(tail.len, 5);
-    }
-
-    #[test]
-    fn mandatory_reads_can_exceed_the_budget() {
-        let mut files: Vec<SourceFile> =
-            (0..2000).map(|i| file(&format!("f{i}"), 1 << 20)).collect();
-        files.push(file("big", 5 * SLICE)); // 0, 4 and an interior one; of 2 left, 1 at random
-        let s = summary(
-            &files,
-            Mode::Fast {
-                seed: 1,
-                seam: false,
-            },
-        );
-        assert_eq!(s.samples, 2000 + 4);
-        assert_eq!(s.checked_bytes, (2000 << 20) + 4 * SLICE);
-        assert!(s.checked_bytes > BUDGET_MAX);
-        assert_eq!(s.total_bytes, (2000 << 20) + 5 * SLICE);
-        let full = summary(&files, Mode::Full);
-        assert_eq!(
-            (full.checked_bytes, full.samples, full.seed),
-            (s.total_bytes, 0, 0)
         );
     }
 

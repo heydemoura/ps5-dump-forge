@@ -17,6 +17,7 @@ import {
   TabList,
 } from "./common";
 import { confirmDelete } from "./delete";
+import { num, useMessages } from "./i18n";
 import { Icon } from "./icons";
 
 // ponytail: a cap instead of a virtualized list; the filter narrows big games.
@@ -30,6 +31,7 @@ export function Inspect(props: {
   /** A game the Library opened here; each new `id` is read once. */
   selection?: SourceSelection | null;
 }) {
+  const t = useMessages().inspect;
   const [source, setSource] = useState<string | null>(null);
   const [ins, setIns] = useState<Inspection | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -129,9 +131,9 @@ export function Inspect(props: {
   }, [ins, filter]);
 
   const tabs = [
-    { id: "files" as const, label: <>Files <span className="count">{ins?.files.length.toLocaleString()}</span></> },
+    { id: "files" as const, label: <>{t.files} <span className="count">{ins && num(ins.files.length)}</span></> },
     { id: "param" as const, label: "param.json" },
-    { id: "details" as const, label: "Details" },
+    { id: "details" as const, label: t.details },
   ];
 
   return (
@@ -151,8 +153,8 @@ export function Inspect(props: {
                   className="small danger icon-only"
                   onClick={remove}
                   disabled={deleting}
-                  aria-label={deleting ? "Deleting the source…" : "Delete the source"}
-                  title="Delete the source"
+                  aria-label={deleting ? t.deleting : t.delete}
+                  title={t.delete}
                 >
                   <Icon name="trash" />
                 </button>
@@ -161,16 +163,16 @@ export function Inspect(props: {
           />
           {deleted && (
             <p className="muted deleted-note" role="status">
-              Deleted <span className="path">{deleted}</span>
+              {t.deleted} <span className="path">{deleted}</span>
             </p>
           )}
           <Leftovers dirs={[source && dirname(source), ...props.outputDirs]} visible={props.visible} />
         </div>
 
         {ins && (
-          <section className="card contents" aria-label="Source contents">
+          <section className="card contents" aria-label={t.contents}>
             <TabList
-              label="Source contents"
+              label={t.contents}
               prefix="ins"
               className="sub"
               tabs={tabs}
@@ -183,16 +185,16 @@ export function Inspect(props: {
                 <input
                   type="search"
                   className="grow"
-                  placeholder="Filter by path"
-                  aria-label="Filter files by path"
+                  placeholder={t.filter}
+                  aria-label={t.filterLabel}
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}
                   spellCheck={false}
                 />
                 <span className="muted count-text">
                   {files.length > MAX_ROWS
-                    ? `first ${MAX_ROWS.toLocaleString()} of ${files.length.toLocaleString()}`
-                    : `${files.length.toLocaleString()} file${files.length === 1 ? "" : "s"}`}
+                    ? t.firstOf(MAX_ROWS, files.length)
+                    : t.fileCount(files.length)}
                 </span>
               </div>
               <div className="panel-body" tabIndex={0}>
@@ -207,11 +209,11 @@ export function Inspect(props: {
                   </tbody>
                 </table>
                 {files.length === 0 && (
-                  <p className="muted empty-note">No files match “{filter.trim()}”.</p>
+                  <p className="muted empty-note">{t.noMatch(filter.trim())}</p>
                 )}
                 {ins.empty_dirs.length > 0 && (
                   <>
-                    <h3>Empty folders ({ins.empty_dirs.length.toLocaleString()})</h3>
+                    <h3>{t.emptyDirs(ins.empty_dirs.length)}</h3>
                     <ul className="rows path">
                       {ins.empty_dirs.slice(0, MAX_ROWS).map((d) => (
                         <li key={d}>{d}</li>
@@ -225,7 +227,7 @@ export function Inspect(props: {
             <div {...panel("param", view)} className="panel">
               <div className="panel-body" tabIndex={0}>
                 {ins.param_json == null ? (
-                  <p className="muted">No sce_sys/param.json.</p>
+                  <p className="muted">{t.noParam}</p>
                 ) : (
                   <pre className="code">{JSON.stringify(ins.param_json, null, 2)}</pre>
                 )}
@@ -236,7 +238,7 @@ export function Inspect(props: {
               <div className="panel-body" tabIndex={0}>
                 <ul className="rows">
                   <li>
-                    <span className="muted">Reader</span> {ins.describe}
+                    <span className="muted">{t.reader}</span> {ins.describe}
                   </li>
                   {ins.details.map((d, i) => (
                     <li key={i}>{d}</li>
@@ -270,6 +272,7 @@ function panel(id: View, view: View) {
  * there are none or nothing to check, or when the check fails.
  */
 function Leftovers(props: { dirs: (string | null)[]; visible: boolean }) {
+  const t = useMessages().inspect;
   const dirs = [...new Set(props.dirs.filter((d): d is string => !!d))];
   const key = JSON.stringify(dirs);
   const [parts, setParts] = useState<string[]>([]);
@@ -292,20 +295,17 @@ function Leftovers(props: { dirs: (string | null)[]; visible: boolean }) {
   if (parts.length === 0) return null;
   return (
     <section className="card compact" aria-labelledby="i-leftovers">
-      <CardHead icon="file" title="Leftover .part files" id="i-leftovers">
-        <span className="tag orange">{parts.length} found</span>
+      <CardHead icon="file" title={t.leftovers} id="i-leftovers">
+        <span className="tag orange">{t.found(parts.length)}</span>
       </CardHead>
       <ul className="rows path">
         {parts.map((p) => (
           <li key={p}>{p}</li>
         ))}
       </ul>
-      <p className="muted">
-        Unfinished outputs, usually from interrupted jobs. Remove only the ones you recognize,
-        and only when no job is running; {APP_NAME} never deletes them itself.
-      </p>
+      <p className="muted">{t.leftoversNote(APP_NAME)}</p>
       <details className="fold">
-        <summary>Folders checked ({dirs.length})</summary>
+        <summary>{t.checked(dirs.length)}</summary>
         <ul className="rows path">
           {dirs.map((d) => (
             <li key={d}>{d}</li>

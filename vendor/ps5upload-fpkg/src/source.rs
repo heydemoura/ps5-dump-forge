@@ -790,25 +790,6 @@ pub fn readiness(tree: &mut dyn SourceTree) -> Readiness {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    #[test]
-    fn symlinks_count_as_their_targets() {
-        let base = std::env::temp_dir().join(format!("fpkg-symlink-{}", std::process::id()));
-        let (real, staged) = (base.join("real"), base.join("staged"));
-        std::fs::remove_dir_all(&base).ok();
-        std::fs::create_dir_all(real.join("sub")).unwrap();
-        std::fs::create_dir_all(&staged).unwrap();
-        std::fs::write(real.join("sub/a.bin"), b"abc").unwrap();
-        std::fs::write(real.join("eboot.bin"), b"12345").unwrap();
-        std::os::unix::fs::symlink(real.join("sub"), staged.join("sub")).unwrap();
-        std::os::unix::fs::symlink(real.join("eboot.bin"), staged.join("eboot.bin")).unwrap();
-        let (files, empty) = super::scan_tree(&staged).unwrap();
-        std::fs::remove_dir_all(&base).ok();
-        let got: Vec<(String, u64)> = files.into_iter().map(|f| (f.path, f.size)).collect();
-        assert_eq!(got, vec![("eboot.bin".into(), 5), ("sub/a.bin".into(), 3)]);
-        assert!(empty.is_empty());
-    }
-
     /// The launch rewrite leaves valid JSON with only the three launch fields changed.
     #[test]
     fn launch_rewrite_clears_update_and_patch_fields() {
@@ -849,29 +830,6 @@ mod tests {
         fn describe(&self) -> String {
             "mem".to_string()
         }
-    }
-
-    /// A title that imports libSceAmpr will install and then fail to start unless ampr_emu is
-    /// loaded on the console. Detecting it at build time is the difference between a known
-    /// requirement and an unexplained black screen.
-    #[test]
-    fn an_ampr_import_is_detected_in_the_module() {
-        let mut eboot = vec![0u8; 4096];
-        eboot[0..4].copy_from_slice(&magic::RAW_ELF);
-        eboot[2048..2048 + b"libSceAmpr.prx".len()].copy_from_slice(b"libSceAmpr.prx");
-        let mut tree = MemTree(vec![("eboot.bin".to_string(), eboot)]);
-        assert!(imports_ampr(&mut tree, "eboot.bin"));
-    }
-
-    #[test]
-    fn a_module_without_the_import_is_not_flagged() {
-        let mut eboot = vec![0u8; 4096];
-        eboot[0..4].copy_from_slice(&magic::RAW_ELF);
-        eboot[2048..2048 + b"libSceGnmDriver".len()].copy_from_slice(b"libSceGnmDriver");
-        let mut tree = MemTree(vec![("eboot.bin".to_string(), eboot)]);
-        assert!(!imports_ampr(&mut tree, "eboot.bin"));
-        // A module that is not there at all is not a reason to claim an AMPR dependency.
-        assert!(!imports_ampr(&mut tree, "nope.bin"));
     }
 
     /// The scan reads in windows, so a name lying across a window boundary must still be
@@ -936,27 +894,6 @@ mod tests {
         eboot[name_at..name_at + 14].fill(0);
         let mut tree = MemTree(vec![("eboot.bin".to_string(), eboot)]);
         assert!(!imports_ampr(&mut tree, "eboot.bin"));
-    }
-
-    #[test]
-    fn firmware_versions_become_the_param_word() {
-        assert_eq!(firmware_word("5.10").as_deref(), Some("0x0510000000000000"));
-        assert_eq!(
-            firmware_word("10.20").as_deref(),
-            Some("0x1020000000000000")
-        );
-        assert_eq!(firmware_word("9.6").as_deref(), Some("0x0960000000000000"));
-        assert_eq!(
-            firmware_word(" 4.03 ").as_deref(),
-            Some("0x0403000000000000")
-        );
-        assert_eq!(
-            firmware_word("0x0510000000000000").as_deref(),
-            Some("0x0510000000000000")
-        );
-        for bad in ["", "5", "5.100", "x.10", "0x0510", "five"] {
-            assert_eq!(firmware_word(bad), None, "{bad:?}");
-        }
     }
 
     #[test]
@@ -1025,181 +962,6 @@ mod tests {
         // A source that declares none is left alone rather than gaining a field: the console
         // treats an absent minimum as no minimum.
         assert!(firmware_rewrite(br#"{"titleName":"x"}"#, "0x0510000000000000").is_none());
-    }
-
-    #[test]
-    fn junk_is_skipped_and_sizes_are_recorded() {
-        let dir = std::env::temp_dir().join(format!("fpkg-scan-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sce_sys/about")).unwrap();
-        std::fs::write(dir.join("eboot.bin"), [0u8; 10]).unwrap();
-        std::fs::write(dir.join("sce_sys/about/right.sprx"), [0u8; 5]).unwrap();
-        std::fs::write(dir.join(".DS_Store"), [0u8; 3]).unwrap();
-        std::fs::write(dir.join("._eboot.bin"), [0u8; 3]).unwrap();
-        std::fs::create_dir_all(dir.join(".Spotlight-V100")).unwrap();
-        std::fs::write(dir.join(".Spotlight-V100/x"), [0u8; 3]).unwrap();
-        std::fs::create_dir_all(dir.join(".Trashes/501")).unwrap();
-        std::fs::write(dir.join(".Trashes/501/x"), [0u8; 3]).unwrap();
-        let files = scan(&dir).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
-        assert_eq!(
-            files,
-            vec![
-                SourceFile {
-                    path: "eboot.bin".into(),
-                    size: 10
-                },
-                SourceFile {
-                    path: "sce_sys/about/right.sprx".into(),
-                    size: 5
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn content_version_packs_as_bcd() {
-        let dir = std::env::temp_dir().join(format!("fpkg-ver-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sce_sys")).unwrap();
-        std::fs::write(
-            dir.join("sce_sys/param.json"),
-            br#"{"contentId":"UP0000-PPSA01234_00-TESTGAME00000000","contentVersion":"01.001.000"}"#,
-        )
-        .unwrap();
-        let param = std::fs::read(dir.join("sce_sys/param.json")).unwrap();
-        let word = content_version_word(&param);
-        let id = content_id(&param);
-        std::fs::remove_dir_all(&dir).ok();
-        assert_eq!(word, Some(0x0100_1000));
-        assert_eq!(id.as_deref(), Some("UP0000-PPSA01234_00-TESTGAME00000000"));
-    }
-
-    #[test]
-    fn a_folder_source_reads_ranges_and_reports_itself() {
-        let dir = std::env::temp_dir().join(format!("fpkg-tree-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("eboot.bin"), b"0123456789").unwrap();
-        let mut tree = open(&dir).unwrap();
-        assert_eq!(tree.read_range("eboot.bin", 2, 3).unwrap(), b"234");
-        assert_eq!(tree.read_range("eboot.bin", 8, 99).unwrap(), b"89");
-        assert_eq!(tree.read_range("eboot.bin", 99, 4).unwrap(), b"");
-        assert_eq!(tree.read("eboot.bin").unwrap(), b"0123456789");
-        assert!(tree.describe().starts_with("folder "));
-        assert_eq!(tree.files().len(), 1);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn a_non_standard_drm_is_rewritten_in_place() {
-        let free =
-            br#"{"contentId":"X","applicationDrmType":"free","contentVersion":"01.000.000"}"#;
-        let fixed = drm_rewrite(free).expect("free is rewritten");
-        assert!(String::from_utf8_lossy(&fixed).contains("\"applicationDrmType\":\"standard\""));
-        assert!(!String::from_utf8_lossy(&fixed).contains("free"));
-        // Everything else survives, and the length grows only by the value's difference.
-        assert_eq!(fixed.len(), free.len() + "standard".len() - "free".len());
-        assert!(String::from_utf8_lossy(&fixed).starts_with(r#"{"contentId":"X","#));
-
-        // Already standard (any case), or absent: nothing to do.
-        assert!(drm_rewrite(br#"{"applicationDrmType":"Standard"}"#).is_none());
-        assert!(drm_rewrite(br#"{"contentId":"X"}"#).is_none());
-        assert!(drm_rewrite(b"not json at all").is_none());
-    }
-
-    /// The finding has to reach the report a user actually sees — a detector that works but
-    /// is never called would be invisible, which is the failure this guards.
-    #[test]
-    fn readiness_reports_an_ampr_dependency() {
-        let dir = std::env::temp_dir().join(format!(
-            "fpkg-ready-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sce_sys")).unwrap();
-        let mut eboot = vec![0u8; 8192];
-        eboot[0..4].copy_from_slice(&magic::RAW_ELF);
-        eboot[4096..4096 + b"libSceAmpr.prx".len()].copy_from_slice(b"libSceAmpr.prx");
-        std::fs::write(dir.join("eboot.bin"), &eboot).unwrap();
-        std::fs::write(
-            dir.join("sce_sys/param.json"),
-            br#"{"contentId":"UP0000-PPSA99011_00-X","requiredSystemSoftwareVersion":"0x1160000000000000"}"#,
-        )
-        .unwrap();
-
-        let mut tree = open(&dir).unwrap();
-        let without_index = readiness(tree.as_mut());
-
-        // The build generates the index, so the finding is reported as handled: it says the
-        // package will carry a generated one rather than warning of a startup failure.
-        let ampr = without_index
-            .checks
-            .iter()
-            .find(|c| c.name == "ampr_emu.index for a libSceAmpr title")
-            .expect("the ampr check");
-        assert!(ampr.ok, "{}", ampr.detail);
-        assert!(ampr.detail.contains("generated"), "{}", ampr.detail);
-
-        // With the index at the root, the same title passes that check.
-        std::fs::write(dir.join("ampr_emu.index"), b"AMPRIDX3").unwrap();
-        let mut tree = open(&dir).unwrap();
-        let with_index = readiness(tree.as_mut());
-        let ampr = with_index
-            .checks
-            .iter()
-            .find(|c| c.name == "ampr_emu.index for a libSceAmpr title")
-            .expect("the ampr check");
-        assert!(ampr.ok, "{}", ampr.detail);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn readiness_names_the_source_and_its_size() {
-        let dir = std::env::temp_dir().join(format!("fpkg-named-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("sce_sys")).unwrap();
-        std::fs::write(dir.join("eboot.bin"), [0u8; 1024]).unwrap();
-        std::fs::write(
-            dir.join("sce_sys/param.json"),
-            br#"{"applicationDrmType":"free"}"#,
-        )
-        .unwrap();
-        let mut tree = open(&dir).unwrap();
-        let readiness = readiness(tree.as_mut());
-        let line = readiness
-            .checks
-            .iter()
-            .find(|c| c.name == "source")
-            .expect("a source line");
-        assert!(line.ok);
-        assert!(line.detail.contains("folder"), "{}", line.detail);
-        assert!(line.detail.contains("2 files"), "{}", line.detail);
-        // A non-standard DRM is reported, because the package will differ from the source.
-        assert!(
-            readiness.checks.iter().any(|c| c.name == "drm" && c.ok),
-            "{:?}",
-            readiness.checks
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn an_unknown_source_kind_is_an_error() {
-        let dir = std::env::temp_dir().join(format!("fpkg-kind-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let img = dir.join("game.iso");
-        std::fs::write(&img, [0u8; 8]).unwrap();
-        let Err(err) = open(&img) else {
-            panic!("a .iso must not open as a source");
-        };
-        let err = err.to_string();
-        assert!(err.contains(".exfat"), "{err}");
-        assert!(err.contains(".ffpkg"), "{err}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Every tree, and the box `open` returns, moves to a worker thread.

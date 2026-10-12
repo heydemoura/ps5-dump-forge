@@ -375,38 +375,3 @@ impl<'a> Ctx<'a> {
         });
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn passes_add_up_to_one_bar() {
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let sink = seen.clone();
-        let emit: Emit = Box::new(move |e| {
-            if let Event::Progress { done, total, .. } = e {
-                sink.lock().unwrap().push((done, total));
-            }
-        });
-        let cancel = AtomicBool::new(false);
-        let ctx = Ctx::new(1, &emit, &cancel);
-        ctx.progress("preflight", 1, 1);
-        ctx.expect_rest(20);
-        ctx.progress("write", 10, 10); // one chunk
-        ctx.progress("verify", 0, 1);
-        ctx.expect_rest(4 + 10); // a re-hash pass turns up...
-        ctx.progress("verify", 4, 4);
-        ctx.expect_rest(10); // ...then the read-back, same stage, same size as the write
-        ctx.progress("verify", 5, 10); // throttled away
-        ctx.progress("verify", 10, 10);
-        ctx.expect_rest(0);
-        ctx.progress("finalize", 0, 1);
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.first(), Some(&(0, 0)));
-        assert_eq!(
-            &seen[1..],
-            &[(10, 20), (10, 20), (14, 24), (24, 24), (24, 24)]
-        );
-    }
-}

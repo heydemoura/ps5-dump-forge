@@ -210,9 +210,9 @@ img.qr { display: block; border-radius: 4px; image-rendering: pixelated; backgro
 .seg-choice .seg-opt { width: 100%; padding: 0 10px; }
 @media (max-width: 1000px) { .seg-choice .seg-opt { padding: 0 7px; } }
 /* The image inside a .ffpfsc: a smaller picker under the format's one-liner. */
-.field.inner > .label { margin: 0 0 6px 4px; }
+.field.inner > .label { margin: 0 0 6px; margin-inline-start: 4px; }
 .seg.formats.inner { display: inline-flex; width: auto; }
-.field.inner > .hint { margin: 6px 0 0 4px; }
+.field.inner > .hint { margin: 6px 0 0; margin-inline-start: 4px; }
 .seg-choice .seg-opt .icon { width: 15px; height: 15px; }
 /* The .ffpfsc compression level: a native range input in the accent colour. */
 .field.inner > .range-label { display: flex; justify-content: space-between; margin: 14px 4px 4px; }
@@ -326,9 +326,21 @@ input.mono { font-family: var(--mono); font-size: 12px; }
 input::placeholder { color: var(--muted); font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
 input[readonly] { color: var(--fg-2); }
 input[type="search"] { -webkit-appearance: none; appearance: none; }
+/* The About card's language picker, in its header: a muted label, then a native select drawn as a
+   small pill (button.small's 30px, 12.5px), its own chevron (icons.tsx's, in --muted #9a9aae)
+   since appearance: none drops the native one. */
+.head-lang { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+select.lang-select {
+  height: 30px; min-width: 150px; padding: 0 32px 0 12px;
+  border-radius: 999px; border: 1px solid var(--line-hi); color: var(--fg); font: inherit; font-size: 12.5px;
+  background: var(--inset) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239a9aae' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 10px center / 15px;
+  -webkit-appearance: none; appearance: none; cursor: pointer;
+}
+select.lang-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+select.lang-select option { background: var(--card); color: var(--fg); }
 .field { margin-top: 12px; }
 .label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
-.label-row .label { margin: 0 0 0 4px; }
+.label-row .label { margin: 0 0 0; margin-inline-start: 4px; }
 .out-input { display: block; width: 100%; }
 /* A generated output name, whole (it wraps); its folder is the line below. */
 .out-box {
@@ -337,7 +349,7 @@ input[type="search"] { -webkit-appearance: none; appearance: none; }
   font: 12px/16px var(--mono); color: var(--fg); overflow-wrap: break-word; overflow-wrap: anywhere;
 }
 .out-box > .muted { font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
-.out-dir { margin: 6px 0 0 14px; color: var(--muted); font-size: 11.5px; }
+.out-dir { margin: 6px 0 0; margin-inline-start: 14px; color: var(--muted); font-size: 11.5px; }
 .label { display: block; font-size: 12.5px; color: var(--muted); }
 
 /* A checkbox drawn as a switch (still a native checkbox underneath). */
@@ -366,20 +378,20 @@ input[type="search"] { -webkit-appearance: none; appearance: none; }
 .field.verify + button.link { margin-top: 8px; }
 /* The trace's room (image targets): a range in the box, like the .ffpfsc level. */
 .field.lz4 > .range-label { display: flex; justify-content: space-between; margin: 12px 4px 4px; }
-.field.lz4 > .hint, .field.lz4 .field > .hint { margin: 6px 0 0 4px; }
+.field.lz4 > .hint, .field.lz4 .field > .hint { margin: 6px 0 0; margin-inline-start: 4px; }
 .field.lz4 > :first-child { margin-top: 0; }
 /* Get traces: the one download, its label (with the zip's name) wrapping in a narrow card. */
 .field.lz4 > .downloads { margin-top: 10px; }
 .downloads a.button {
-  height: auto; min-height: 36px; padding: 8px 16px; white-space: normal; text-align: left;
+  height: auto; min-height: 36px; padding: 8px 16px; white-space: normal; text-align: start;
   overflow-wrap: break-word; overflow-wrap: anywhere;
 }
-.field.lz4 > .note-line { margin: 8px 0 0 4px; }
+.field.lz4 > .note-line { margin: 8px 0 0; margin-inline-start: 4px; }
 /* The LZ4 tab: why an action is off, under the action picker; the target picker's label. */
 .lz4-why { margin: 6px 0 0; }
-.target-label { margin: 14px 0 6px 4px; }
+.target-label { margin: 14px 0 6px; margin-inline-start: 4px; }
 /* Trace, web build: the traces this source recorded, above the action picker. */
-.field.lz4.recorded > .label { margin: 0 0 2px 4px; color: var(--fg-2); font-weight: 500; }
+.field.lz4.recorded > .label { margin: 0 0 2px; margin-inline-start: 4px; color: var(--fg-2); font-weight: 500; }
 /* Pack: the rules profile, folded under Traces. */
 .field.lz4 > details.fold.rules { margin-top: 10px; }
 .field.lz4 > details.fold.rules > summary { background: var(--card); }
@@ -387,7 +399,7 @@ input[type="search"] { -webkit-appearance: none; appearance: none; }
 .field.lz4 .field > button.link { margin: 6px 0 0 0; }
 /* Traces locked to the source's own: a greyed box, the lock its only control. */
 .lock-box {
-  display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 3px 14px 3px 3px;
+  display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 3px 0 3px; padding-inline-start: 3px; padding-inline-end: 14px;
   border-radius: 18px; background: var(--raise); border: 1px dashed var(--line-hi);
   color: var(--fg-2); font-size: 13px;
 }
@@ -399,7 +411,7 @@ button.lock-btn:hover:not(:disabled) { background: #3a3a49; }
 button.lock-btn .icon { width: 15px; height: 15px; }
 /* Desktop's Choose… menu (Zip… / Folder…) under its button. */
 .menu-wrap { position: relative; display: inline-flex; }
-.menu-wrap > button .icon { width: 13px; height: 13px; margin-right: -3px; }
+.menu-wrap > button .icon { width: 13px; height: 13px; margin-inline-end: -3px; }
 .menu {
   position: absolute; top: calc(100% + 4px); right: 0; z-index: 4; min-width: 130px;
   display: flex; flex-direction: column; padding: 4px; border-radius: 12px;
@@ -415,13 +427,13 @@ button.lock-btn .icon { width: 15px; height: 15px; }
 .hint { display: block; margin-top: 2px; font-size: 11.5px; }
 
 .build-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
-.build-row .primary { height: 38px; padding: 0 22px; margin-left: auto; }
+.build-row .primary { height: 38px; padding: 0 22px; margin-inline-start: auto; }
 /* LZ4: Save as profile, then Pack, at the right; they wrap under the switch when narrow. */
-.build-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-left: auto; min-width: 0; }
-.build-actions .primary { margin-left: 0; }
+.build-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-inline-start: auto; min-width: 0; }
+.build-actions .primary { margin-inline-start: 0; }
 /* Save as profile: the Packed tile's green neon straps (static), its label wrapping. */
 button.neon-btn {
-  height: auto; min-height: 36px; padding: 7px 16px; white-space: normal; text-align: left;
+  height: auto; min-height: 36px; padding: 7px 16px; white-space: normal; text-align: start;
   background-color: var(--raise); border-color: var(--pk-line); color: var(--fg);
   background-image: repeating-linear-gradient(135deg,
     var(--pk-green) 0 8px, transparent 8px 18px, var(--pk-cyan) 18px 26px, transparent 26px 36px);
@@ -439,7 +451,7 @@ button.lz4-btn:hover:not(:disabled) { background: var(--lz4-tint-hi); }
 .lead-warn { color: var(--warn); }
 /* A quiet text button (e.g. "Compare formats" under the format's one-liner). */
 button.link {
-  height: auto; padding: 2px 4px; margin: 2px 0 0 -4px; gap: 6px; background: none;
+  height: auto; padding: 2px 4px; margin: 2px 0 0; margin-inline-start: -4px; gap: 6px; background: none;
   color: var(--accent-ink); font-size: 12.5px; font-weight: 500;
 }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
@@ -461,7 +473,7 @@ button.link .icon { width: 15px; height: 15px; }
 /* The notice bar: the blue-to-orange gradient of the reference, kept dark under the text
    (white text stays >= 7:1 everywhere); the orange is only a glow at the right edge. */
 .alert-bar {
-  display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 7px 16px 7px 12px;
+  display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 7px 0 7px; padding-inline-start: 12px; padding-inline-end: 16px;
   border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.08);
   color: #fff; font-size: 13px; font-weight: 500;
   background-color: #15163a;
@@ -511,7 +523,7 @@ button.link .icon { width: 15px; height: 15px; }
 .cover.none .icon { width: 28px; height: 28px; }
 .game-text { flex: 1; min-width: 0; }
 .title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
-.title { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: break-word; overflow-wrap: anywhere; margin-right: 2px; }
+.title { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: break-word; overflow-wrap: anywhere; margin-inline-end: 2px; }
 .title.pending { font-size: 16px; font-weight: 500; color: var(--muted); }
 .card > .bad { margin-top: 12px; }
 
@@ -571,7 +583,7 @@ details.fold > summary {
 }
 details.fold > summary::-webkit-details-marker { display: none; }
 details.fold > summary::before {
-  content: ""; width: 6px; height: 6px; margin: 0 3px 0 1px; flex: none;
+  content: ""; width: 6px; height: 6px; margin: 0 0 0; margin-inline-start: 1px; margin-inline-end: 3px; flex: none;
   border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg);
   transition: transform 0.15s;
 }
@@ -610,7 +622,7 @@ ul.findings li.info .icon { color: var(--accent-ink); }
 .note-line .icon { width: 15px; height: 15px; margin-top: 1px; }
 .note-line.block { color: #ff9b9b; }
 .note-line.warn { color: #ffcf8a; }
-.field-error { margin: 6px 0 0 14px; font-size: 12px; }
+.field-error { margin: 6px 0 0; margin-inline-start: 14px; font-size: 12px; }
 
 /* ---------- Jobs ---------- */
 /* Jobs: one card below the other cards, full width, a row per job (newest first). It grows to
@@ -632,7 +644,7 @@ ul.findings li.info .icon { color: var(--accent-ink); }
 .job { padding: 8px 0 14px; scroll-margin: 12px 0; }
 .job + .job { border-top: 1px solid var(--line); }
 /* An LZ4 tab job (pack, unpack, trace, unpatch): a yellow edge and its LZ4 tag. */
-.job.lz4 { padding-left: 12px; box-shadow: inset 3px 0 0 var(--lz4-line); }
+.job.lz4 { padding-inline-start: 12px; box-shadow: inset 3px 0 0 var(--lz4-line); }
 .tag.lz4 { background: var(--lz4-tint); color: var(--lz4-ink); font-weight: 600; }
 .job-head { display: flex; align-items: flex-start; gap: 10px; }
 .job-head > .tag { margin-top: 1px; }
@@ -691,12 +703,12 @@ pre.log {
   .panel-body { max-height: none; }
 }
 .filter { margin-bottom: 10px; }
-.count-text { font-size: 12.5px; white-space: nowrap; padding-right: 4px; }
+.count-text { font-size: 12.5px; white-space: nowrap; padding-inline-end: 4px; }
 table.files { width: 100%; border-collapse: collapse; }
 table.files td { padding: 7px 14px; border-bottom: 1px solid var(--line); font-size: 12px; vertical-align: top; }
 table.files tr:last-child td { border-bottom: 0; }
 table.files td.path { word-break: break-all; }
-table.files td.size { text-align: right; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+table.files td.size { text-align: end; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
 .panel h3 { margin: 14px 14px 4px; font-size: 12.5px; font-weight: 500; color: var(--muted); }
 pre.code { padding: 14px 16px; }
 
@@ -721,7 +733,7 @@ pre.code { padding: 14px 16px; }
 .help-body:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 8px; }
 .modal .help-body > .note-line { margin: 0; }
 .help-body h3 { margin: 18px 0 10px; font-size: 13.5px; font-weight: 600; }
-.help-body ol { margin: 12px 0 0; padding-left: 20px; font-size: 13px; color: var(--fg-2); }
+.help-body ol { margin: 12px 0 0; padding-inline-start: 20px; font-size: 13px; color: var(--fg-2); }
 .help-body li + li { margin-top: 6px; }
 .help-body b { color: var(--fg); font-weight: 600; }
 .quit-jobs { list-style: none; margin: 14px 0 0; padding: 4px 14px; border-radius: 12px; background: var(--inset); }
@@ -751,7 +763,7 @@ pre.code { padding: 14px 16px; }
 /* ---------- About ---------- */
 .table-wrap { overflow-x: auto; border-radius: 12px; background: var(--inset); border: 1px solid rgba(255, 255, 255, 0.04); }
 table.compare { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-table.compare th, table.compare td { padding: 10px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+table.compare th, table.compare td { padding: 10px 10px; text-align: start; vertical-align: top; border-bottom: 1px solid var(--line); }
 table.compare tbody tr:last-child > * { border-bottom: 0; }
 table.compare thead th { color: var(--muted); font-weight: 500; white-space: nowrap; }
 table.compare tbody th { font-weight: 500; min-width: 150px; }
@@ -769,7 +781,7 @@ table.compare .tagline { display: block; margin-top: 6px; color: var(--fg-2); fo
    neither the app nor the console page navigates away). */
 .about-text { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--fg-2); }
 .about-text b { color: var(--fg); font-weight: 600; }
-ul.about-text.features { margin: 10px 0 0; padding-left: 20px; }
+ul.about-text.features { margin: 10px 0 0; padding-inline-start: 20px; }
 ul.features li + li { margin-top: 4px; }
 /* The address to type: bold and a step above the text around it (About, How to connect). */
 .path.url { font-size: 1.15em; font-weight: 700; color: var(--fg); }
@@ -779,6 +791,8 @@ ul.features li + li { margin-top: 4px; }
 @media (min-width: 880px) { .about-row { grid-template-columns: minmax(0, 1fr) 300px; } }
 .about-connect { display: flex; flex-direction: column; align-items: center; text-align: center; }
 .about-connect .card-head { align-self: stretch; text-align: center; }
+/* A longer title (Russian) wraps in the 300px column instead of running off the card. */
+.about-connect .card-head h2 { flex: 1 1 0; min-width: 0; }
 .about-connect img.qr { padding: 10px; border-radius: 12px; margin: auto 0 12px; }
 .about-connect p.about-text { margin-bottom: auto; }
 /* How to connect (the header's dialog): the QR code over one line of text. The white border is
@@ -817,7 +831,7 @@ ul.features li + li { margin-top: 4px; }
 /* The folder browser: the quit modal's frame, wider, its list in an inset well. */
 .modal.picker { width: 560px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin: 12px 0 10px; font: 12px var(--mono); }
-.crumbs button.link { margin: 0; padding: 2px; font: inherit; white-space: normal; overflow-wrap: break-word; overflow-wrap: anywhere; text-align: left; }
+.crumbs button.link { margin: 0; padding: 2px; font: inherit; white-space: normal; overflow-wrap: break-word; overflow-wrap: anywhere; text-align: start; }
 .crumbs .here { color: var(--fg); overflow-wrap: break-word; overflow-wrap: anywhere; }
 ul.rows.pick-list {
   flex: 0 1 auto; min-height: 120px; max-height: 420px; overflow: auto;
@@ -827,7 +841,7 @@ ul.rows.pick-list > li { padding: 0; }
 ul.rows.pick-list > li.muted { padding: 12px; }
 button.pick-row {
   width: 100%; height: auto; min-height: 38px; padding: 8px 12px; gap: 10px; border-radius: 0;
-  justify-content: flex-start; text-align: left; white-space: normal;
+  justify-content: flex-start; text-align: start; white-space: normal;
   background: transparent; font-size: 13px; font-weight: 400;
 }
 button.pick-row:hover:not(:disabled) { background: var(--raise); }
@@ -847,7 +861,7 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
 }
 .library-head h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; font-weight: 600; }
 .library-head h2 .icon { width: 20px; height: 20px; color: var(--library-ink); }
-.library-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-left: auto; }
+.library-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-inline-start: auto; }
 .library-empty { margin: 8px 0; }
 .library-folder { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 320px; }
 .library-views { display: inline-flex; gap: 4px; }
@@ -907,3 +921,17 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
   -webkit-backdrop-filter: blur(14px) saturate(160%) brightness(0.55);
   backdrop-filter: blur(14px) saturate(160%) brightness(0.55);
 }
+
+/* ---------- Right-to-left (Arabic): i18n.ts sets <html dir="rtl"> ----------
+   Flex rows, text and logical margins flip by themselves; these are the physical leftovers.
+   Paths, file names and the output name stay left-to-right, isolated from the text around them. */
+[dir="rtl"] .switch-track::after { left: auto; right: 2px; }
+[dir="rtl"] .switch input:checked + .switch-track::after { transform: translateX(-14px); }
+[dir="rtl"] .menu { right: auto; left: 0; }
+[dir="rtl"] .library-cover-box > .lz4-badge { right: auto; left: 8px; }
+[dir="rtl"] .job.lz4 { box-shadow: inset -3px 0 0 var(--lz4-line); }
+[dir="rtl"] select.lang-select { padding: 0 12px 0 32px; background-position: left 10px center; }
+[dir="rtl"] .path:not(.out-dir), [dir="rtl"] .pathline, [dir="rtl"] input.mono, [dir="rtl"] .path-shown,
+[dir="rtl"] .pick-name, [dir="rtl"] .crumbs, [dir="rtl"] .out-name { direction: ltr; unicode-bidi: isolate; }
+/* A collapsed fold's chevron points at the text that follows it. */
+[dir="rtl"] details.fold:not([open]) > summary::before { transform: rotate(135deg); }

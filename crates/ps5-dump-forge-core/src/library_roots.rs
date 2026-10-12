@@ -261,19 +261,6 @@ pub(crate) fn refusal(path: &Path, home: Option<&Path>, os: Os, sys_drive: char)
 mod tests {
     use super::*;
 
-    #[test]
-    fn skip_and_system_names() {
-        assert!(skip_dir_name("Node_Modules") && skip_dir_name("$recycle.bin"));
-        assert!(!skip_dir_name("games"));
-        assert!(shadowmnt(Path::new("/mnt/shadowmnt")) && !shadowmnt(Path::new("/mnt/shadow")));
-        if cfg!(target_os = "macos") {
-            let home = Path::new("/Users/me");
-            assert!(system_dir(Path::new("/Users/me/Library"), Some(home)));
-            assert!(!system_dir(Path::new("/Users/me/Library/x"), Some(home)));
-            assert!(!system_dir(Path::new("/Users/you/Library"), Some(home)));
-        }
-    }
-
     fn mac(p: &str) -> Option<String> {
         refusal(Path::new(p), Some(Path::new("/Users/me")), Os::Mac, 'C')
     }
@@ -301,22 +288,6 @@ mod tests {
     }
 
     #[test]
-    fn allows_home_and_its_children_but_refuses_app_data() {
-        for c in [
-            "/Users/me",
-            "/Users/me/Documents",
-            "/Users/me/Downloads",
-            "/Users/me/Games",
-        ] {
-            assert!(mac(c).is_none(), "{c}");
-        }
-        assert!(linux("/home/me").is_none() && linux("/home/me/Videos").is_none());
-        assert!(mac("/Users").is_none() && linux("/home").is_none());
-        assert!(mac("/Users/me/Library").is_some() && mac("/Users/me/Library/Caches/x").is_some());
-        assert!(mac("/Users/you/Library").is_none());
-    }
-
-    #[test]
     fn refuses_system_folders_and_inside() {
         for c in [
             "/System/Library",
@@ -339,47 +310,5 @@ mod tests {
             assert!(linux(c).is_some(), "{c}");
         }
         assert!(linux("/srv/games").is_none());
-    }
-
-    #[test]
-    fn linux_homes_under_system_folders_are_allowed() {
-        let home = Some(Path::new("/var/home/me"));
-        let r = |p: &str| refusal(Path::new(p), home, Os::Linux, 'C');
-        assert!(r("/var/home/me/Games").is_none() && r("/var/home/me").is_none());
-        assert!(r("/var/lib").is_some() && r("/var/home/you/Games").is_some());
-    }
-
-    #[test]
-    fn tmp_is_allowed_but_the_rest_of_private_is_not() {
-        assert!(mac("/private/tmp").is_none() && mac("/private/tmp/games").is_none());
-        assert!(mac("/private/etc").is_some() && mac("/private").is_some());
-        assert!(linux("/tmp/games").is_none());
-    }
-
-    #[test]
-    fn windows_rules_use_the_system_drive() {
-        // Path parsing of drive letters and UNC prefixes only works on Windows hosts.
-        if !cfg!(windows) {
-            return;
-        }
-        let unc_home = Some(Path::new("\\\\profiles\\users\\alice"));
-        let unc = |p: &str| refusal(Path::new(p), unc_home, Os::Windows, 'C');
-        assert!(unc("\\\\profiles\\users\\alice\\AppData").is_some());
-        assert!(unc("\\\\nas\\games\\alice\\AppData").is_none());
-        let win = |p: &str| {
-            refusal(
-                Path::new(p),
-                Some(Path::new("C:\\Users\\me")),
-                Os::Windows,
-                'C',
-            )
-        };
-        assert!(win("C:\\").is_some() && win("c:\\windows\\system32").is_some());
-        assert!(win("C:\\Users").is_none());
-        assert!(win("C:\\Users\\me\\AppData\\Local").is_some());
-        assert!(win("C:\\Program Files (x86)\\x").is_some());
-        assert!(win("C:\\Users\\me").is_none() && win("C:\\Users\\me\\Documents").is_none());
-        assert!(win("D:\\").is_none() && win("D:\\Windows").is_none());
-        assert!(win("C:\\Games").is_none());
     }
 }

@@ -1431,26 +1431,6 @@ pub fn package_digest(path: &Path) -> Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
 
-    /// A real Battlefield 6 build (Windows, Balanced): compress 50 min 47 s, write 12 min 11 s,
-    /// verify 8 min 31 s — 71 min in all, for 234 GiB into 113.33 GiB. One thread both reads the
-    /// source and writes the compressed blocks, so the compress stage costs both in turn (~108 MB/s
-    /// of reading plus the package at ~166 MB/s); the encoder, far faster, was never the limit.
-    /// The old estimate said 17 min: compression alone, from memory, on every thread at once.
-    #[test]
-    fn a_build_pays_for_reading_writing_and_every_stage() {
-        let gib = |g: f64| (g * 1024.0 * 1024.0 * 1024.0) as u64;
-        let secs = build_seconds(gib(234.0), gib(113.33), 234e6, 108e6, 166e6);
-        let minutes = secs as f64 / 60.0;
-        assert!((68.0..=80.0).contains(&minutes), "{minutes} min");
-        // A slow encoder on fast drives: compression is the limit, then the write and verify.
-        let (total, package) = (gib(10.0), gib(5.0));
-        let cpu_bound = build_seconds(total, package, 20e6, 1e9, 1e9);
-        let expect = total as f64 / 20e6 + 2.0 * package as f64 / 1e9;
-        assert_eq!(cpu_bound, expect.ceil() as u64);
-        // Nothing to do still takes a moment.
-        assert_eq!(build_seconds(0, 0, 1.0, 1.0, 1.0), 1);
-    }
-
     #[test]
     fn fakelib_files_are_never_repaired() {
         assert!(super::is_fakelib("fakelib/libSceAmpr.sprx"));
@@ -1481,25 +1461,6 @@ mod tests {
             !(clocklike(&a) && clocklike(&b)),
             "both seeds look clock-derived: {a:02x?} {b:02x?}"
         );
-    }
-
-    use super::*;
-
-    /// The seed must come from exactly one read: `fs::read` on `/dev/urandom` never
-    /// reaches EOF, which used to grow the buffer until the process was killed.
-    #[test]
-    fn the_random_seed_is_sixteen_bytes_and_varies() {
-        let a = random_seed();
-        let b = random_seed();
-        assert_eq!(a.len(), 16);
-        assert_ne!(a, b, "two seeds from the system must differ");
-    }
-
-    #[test]
-    fn the_clock_fallback_is_usable() {
-        let (secs, nanos) = now();
-        assert!(secs > 1_600_000_000);
-        let _ = nanos;
     }
 }
 

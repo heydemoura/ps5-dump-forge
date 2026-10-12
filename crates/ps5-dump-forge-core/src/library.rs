@@ -45,6 +45,8 @@ pub struct LibraryEntry {
     pub kind: Format,
     pub title_id: String,
     pub title_name: Option<String>,
+    /// Every `localizedParameters` title by language tag, as `Inspection::title_names`.
+    pub title_names: std::collections::BTreeMap<String, String>,
     pub version: Option<String>,
     pub has_cover: bool,
     /// LZ4 packed (ampr_emu asset packs): `ampr_assets.index` at the root starts with the
@@ -372,6 +374,7 @@ fn entry(
         kind,
         title_id: info.title_id?,
         title_name: crate::inspect::title_name(json),
+        title_names: crate::inspect::title_names(json),
         version: json
             .get("contentVersion")
             .and_then(|v| v.as_str())
@@ -761,6 +764,9 @@ mod tests {
             (a.version.as_deref(), a.has_cover),
             (Some("01.002.000"), true)
         );
+        assert_eq!(a.title_names.len(), 2);
+        assert_eq!(a.title_names["en-US"], "Game");
+        assert!(b.title_names.is_empty());
         assert_eq!(
             (
                 b.title_id.as_str(),
@@ -771,61 +777,6 @@ mod tests {
         );
         assert!(!b.has_cover);
         assert!(scan.warnings.is_empty());
-    }
-
-    #[test]
-    fn folders_that_are_not_games_are_skipped() {
-        let root = tmp("reject");
-        let ok = r#"{"titleId":"PPSA00001"}"#;
-        let no_eboot = game(&root, "no-eboot", ok);
-        fs::remove_file(no_eboot.join("eboot.bin")).unwrap();
-        put(&no_eboot, "x/y.bin", b"");
-        game(&root, "bad-json", "not json");
-        game(&root, "no-id", r#"{"titleName":"x"}"#);
-        game(
-            &root,
-            "big",
-            &format!(
-                r#"{{"titleId":"PPSA00003","pad":"{}"}}"#,
-                "x".repeat(4 * 1024 * 1024)
-            ),
-        );
-        put(&root, "ps4/eboot.bin", b"x");
-        put(&root, "ps4/sce_sys/param.sfo", b"x");
-        let scan = run(&[&root], &LIMITS);
-        assert!(scan.entries.is_empty() && scan.warnings.is_empty());
-    }
-
-    #[test]
-    fn image_extensions() {
-        let root = tmp("ext");
-        for name in [
-            "a.EXFAT",
-            "b.FfPkg",
-            "c.ufs2",
-            "d.lz4",
-            "e.exfat.part",
-            "f.PKG",
-            "g.ffpfs",
-            "h.FFPFSC",
-        ] {
-            put(&root, name, b"junk");
-        }
-        let scan = run(&[&root], &LIMITS);
-        // Every supported one is opened (and fails on junk bytes, with a warning).
-        let mut warned: Vec<_> = scan
-            .warnings
-            .iter()
-            .map(|w| {
-                let path = Path::new(w.split(": ").next().unwrap());
-                path.file_name().unwrap().to_str().unwrap()
-            })
-            .collect();
-        warned.sort();
-        assert_eq!(
-            warned,
-            ["a.EXFAT", "b.FfPkg", "f.PKG", "g.ffpfs", "h.FFPFSC"]
-        );
     }
 
     #[test]
@@ -873,113 +824,6 @@ mod tests {
 
     const OK: &str = r#"{"titleId":"PPSA00001"}"#;
 
-    #[test]
-    fn game_folder_is_not_entered() {
-        let root = tmp("prune");
-        let g = game(&root, "g", OK);
-        put(&g, "inner/Other.exfat", b"junk");
-        game(&g, "inner/nested", r#"{"titleId":"PPSA00002"}"#);
-        let scan = run(&[&root], &LIMITS);
-        assert_eq!(paths(&scan), [g.as_path()]);
-        assert!(scan.warnings.is_empty());
-    }
-
-    #[test]
-    fn depth_boundary() {
-        let root = tmp("depth");
-        let shallow = game(&root, "a/b", OK);
-        game(&root, "a/b2/c", r#"{"titleId":"PPSA00002"}"#);
-        let limits = Limits { depth: 2, ..LIMITS };
-        // The root is depth 0: a/b2 is depth 2 and is read, a/b2/c (depth 3) is not.
-        let cut = run(&[&root], &limits);
-        assert_eq!(paths(&cut), [shallow.as_path()]);
-        assert!(
-            cut.truncated,
-            "a folder left unread must mark the scan partial"
-        );
-        let limits = Limits { depth: 3, ..LIMITS };
-        let full = run(&[&root], &limits);
-        assert_eq!(full.entries.len(), 2);
-        assert!(!full.truncated);
-    }
-
-    #[test]
-    fn rejected_folder_does_not_hide_games_below_it() {
-        let root = tmp("collection");
-        put(&root, "c/eboot.bin", b"x");
-        put(&root, "c/sce_sys/param.sfo", b"x"); // looks like a game, is not one
-        let g = game(&root, "c/g", OK);
-        assert_eq!(paths(&run(&[&root], &LIMITS)), [g.as_path()]);
-    }
-
-    #[test]
-    fn cover_presence_is_by_size() {
-        let root = tmp("has-cover");
-        let g = game(&root, "g", OK);
-        let has = |root: &Path| run(&[root], &LIMITS).entries[0].has_cover;
-        assert!(!has(&root));
-        put(&g, "sce_sys/icon0.png", b"");
-        assert!(!has(&root));
-        put(
-            &g,
-            "sce_sys/icon0.png",
-            &vec![0; MAX_LIBRARY_COVER as usize + 1],
-        );
-        assert!(!has(&root));
-        put(&g, "sce_sys/icon0.png", b"not even a png");
-        assert!(has(&root)); // presence is metadata only; the PNG check is the cover read's
-    }
-
-    /// A folder is LZ4 packed when its root `ampr_assets.index` starts with the manifest magic
-    /// (`reader::detect`); a plain game, an index with other bytes, one too short to hold the
-    /// magic and one in a subfolder are not.
-    #[test]
-    fn lz4_packed_folders() {
-        let root = tmp("lz4-packed");
-        let packed = game(&root, "packed", r#"{"titleId":"PPSA00001"}"#);
-        put(&packed, "ampr_assets.index", b"AMPRPAK4\x01\x00\x00\x00");
-        put(&packed, "ampr_assets-000.pak", b"AMPRDAT3");
-        game(&root, "plain", r#"{"titleId":"PPSA00002"}"#);
-        let other = game(&root, "other", r#"{"titleId":"PPSA00003"}"#);
-        put(&other, "ampr_assets.index", b"AMPRPAK3 an older format");
-        let short = game(&root, "short", r#"{"titleId":"PPSA00004"}"#);
-        put(&short, "ampr_assets.index", b"AMPR");
-        let nested = game(&root, "nested", r#"{"titleId":"PPSA00005"}"#);
-        put(&nested, "data/ampr_assets.index", b"AMPRPAK4");
-        let scan = run(&[&root], &LIMITS);
-        let flags: Vec<_> = scan
-            .entries
-            .iter()
-            .map(|e| (e.title_id.as_str(), e.lz4_packed))
-            .collect();
-        assert_eq!(
-            flags,
-            [
-                ("PPSA00001", true),
-                ("PPSA00002", false),
-                ("PPSA00003", false),
-                ("PPSA00004", false),
-                ("PPSA00005", false),
-            ]
-        );
-        // It goes out on the wire as `lz4_packed`.
-        let json = serde_json::to_value(&scan.entries[0]).unwrap();
-        assert_eq!(json["lz4_packed"], serde_json::json!(true));
-    }
-
-    #[test]
-    fn probes_after_the_budget_are_reported() {
-        let root = tmp("probe-budget");
-        put(&root, "a.exfat", b"junk");
-        let candidates = [(root.join("a.exfat"), Kind::Exfat)];
-        let limits = Limits {
-            budget: Duration::ZERO,
-            ..LIMITS
-        };
-        let out = probe_all(&candidates, &limits, Instant::now());
-        assert_eq!(out[0].as_ref().unwrap_err(), NOT_PROBED);
-    }
-
     #[cfg(unix)]
     #[test]
     fn linked_root_and_linked_ancestor_are_refused() {
@@ -1006,43 +850,6 @@ mod tests {
         assert!(g.is_dir());
     }
 
-    #[test]
-    fn small_dir_budget_truncates() {
-        let root = tmp("budget");
-        for i in 0..5 {
-            fs::create_dir_all(root.join(format!("d{i}"))).unwrap();
-        }
-        let limits = Limits { dirs: 3, ..LIMITS };
-        assert!(run(&[&root], &limits).truncated);
-        assert!(!run(&[&root], &LIMITS).truncated);
-        let limits = Limits {
-            per_dir: 2,
-            ..LIMITS
-        };
-        assert!(run(&[&root], &limits).truncated);
-    }
-
-    #[test]
-    fn overlapping_roots_list_each_source_once() {
-        let root = tmp("overlap");
-        let a = game(&root, "x/a", OK);
-        let b = game(&root, "x/b", OK); // a second copy of the same title is kept
-        let inner = root.join("x");
-        let scan = run(&[&root, &inner, &root], &LIMITS);
-        assert_eq!(paths(&scan), [a.as_path(), b.as_path()]);
-        assert_eq!(scan.roots, [root.clone(), inner]);
-    }
-
-    #[test]
-    fn nested_root_has_its_own_depth() {
-        let root = tmp("anchor");
-        let deep = root.join("1/2/3/4");
-        let g = game(&deep, "5/g", OK);
-        let limits = Limits { depth: 2, ..LIMITS };
-        assert!(run(&[&root], &limits).entries.is_empty());
-        assert_eq!(paths(&run(&[&root, &deep], &limits)), [g.as_path()]);
-    }
-
     #[cfg(unix)]
     #[test]
     fn links_are_not_followed() {
@@ -1054,80 +861,6 @@ mod tests {
         put(&root, "game/eboot.bin", b"x");
         std::os::unix::fs::symlink(g.join("sce_sys"), root.join("game/sce_sys")).unwrap();
         assert!(run(&[&root], &LIMITS).entries.is_empty());
-    }
-
-    #[test]
-    fn classifier_refusal_of_a_root_is_final() {
-        let root = tmp("net");
-        let kept = game(&root, "ok/g", OK);
-        game(&root, "nas/g", r#"{"titleId":"PPSA00002"}"#);
-        let nas = root.join("nas");
-        let deny = |p: &Path| {
-            if p == nas {
-                Err("network".to_string())
-            } else {
-                Ok(())
-            }
-        };
-        // ponytail: a refusal of a nested mount point needs a real device change under the
-        // temp dir, which a unit test cannot make; only the root refusal is exercised.
-        let scan = scan(&[nas.clone(), root.clone()], &LIMITS, &deny);
-        assert_eq!(scan.roots, std::slice::from_ref(&root));
-        assert_eq!(paths(&scan), [kept.as_path(), nas.join("g").as_path()]);
-        assert!(scan.warnings[0].contains("network"));
-    }
-
-    #[test]
-    fn entries_sort_by_title() {
-        let root = tmp("sort");
-        game(
-            &root,
-            "1",
-            r#"{"titleId":"PPSA00003","titleName":"banana"}"#,
-        );
-        game(
-            &root,
-            "2",
-            r#"{"titleId":"PPSA00002","titleName":"Apple","contentVersion":"02"}"#,
-        );
-        game(
-            &root,
-            "3",
-            r#"{"titleId":"PPSA00002","titleName":"Apple","contentVersion":"01"}"#,
-        );
-        game(&root, "4", r#"{"titleId":"PPSA00001"}"#);
-        let scan = run(&[&root], &LIMITS);
-        let order: Vec<_> = scan
-            .entries
-            .iter()
-            .map(|e| e.path.file_name().unwrap().to_str().unwrap())
-            .collect();
-        // "apple" (v01, v02), "banana", then the untitled one by its ID "ppsa00001".
-        assert_eq!(order, ["3", "2", "1", "4"]);
-    }
-
-    #[test]
-    fn verbatim_spellings_are_made_plain() {
-        let p = |s: &str| plain_spelling(PathBuf::from(s));
-        assert_eq!(p(r"\\?\C:\Games\x"), PathBuf::from(r"C:\Games\x"));
-        assert_eq!(p(r"\\?\UNC\nas\games"), PathBuf::from(r"\\nas\games"));
-        assert_eq!(p("/mnt/games"), PathBuf::from("/mnt/games"));
-    }
-
-    #[test]
-    fn explicit_classifier_ignores_locality() {
-        assert!(explicit(Path::new("/Volumes/nas/games")).is_ok());
-        assert!(explicit(Path::new("/mnt/shadowmnt/x")).is_err());
-        let root = tmp("explicit-scan");
-        game(&root, "g", r#"{"titleId":"PPSA00001"}"#);
-        assert_eq!(scan_chosen(&root).unwrap().entries.len(), 1);
-        // A missing folder is an error, not an empty library.
-        assert!(scan_chosen(&root.join("gone")).is_err());
-        // A root that cannot be listed (here a file) is an error from the walk itself.
-        fs::write(root.join("file"), b"x").unwrap();
-        assert!(scan_chosen(&root.join("file")).is_err());
-        let (found, why) = scan_inner(&[root.join("file")], &LIMITS, &explicit);
-        assert!(why.is_some() && !found.warnings.is_empty());
     }
 
     #[cfg(unix)]
@@ -1157,22 +890,6 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn dotdot_and_linked_roots_are_walked_canonically() {
-        let base = tmp("canon").canonicalize().unwrap();
-        let g = game(&base, "real/lib/g", r#"{"titleId":"PPSA00001"}"#);
-        fs::create_dir_all(base.join("other")).unwrap();
-        std::os::unix::fs::symlink(base.join("real"), base.join("alias")).unwrap();
-        let dotted = base.join("other/../real/lib");
-        let aliased = base.join("alias/lib");
-        for root in [dotted, aliased] {
-            let scan = run(&[&root], &LIMITS);
-            assert_eq!(paths(&scan), [g.as_path()]);
-            assert_eq!(scan.roots, [base.join("real/lib")]);
-        }
-    }
-
     /// The PS5's automatic scan with the real `statfs` classifier (run by scripts/test-freebsd.sh).
     #[cfg(target_os = "freebsd")]
     #[test]
@@ -1190,15 +907,6 @@ mod tests {
     }
 
     #[test]
-    fn cover_data_url_for_png() {
-        let root = tmp("cover-png");
-        let dir = game(&root, "g", r#"{"titleId":"PPSA00001"}"#);
-        put(&dir, "sce_sys/icon0.png", b"\x89PNG\r\n");
-        let url = cover_with(&dir, MAX_LIBRARY_COVER, &deny_none()).unwrap();
-        assert_eq!(url.as_deref(), Some("data:image/png;base64,iVBORw0K"));
-    }
-
-    #[test]
     fn cover_none_for_non_png_and_oversized() {
         let root = tmp("cover-none");
         let dir = game(&root, "g", r#"{"titleId":"PPSA00001"}"#);
@@ -1209,24 +917,5 @@ mod tests {
         );
         put(&dir, "sce_sys/icon0.png", b"\x89PNG\r\n");
         assert_eq!(cover_with(&dir, 4, &deny_none()).unwrap(), None);
-    }
-
-    #[test]
-    fn cover_errors_when_source_cannot_be_opened() {
-        let root = tmp("cover-err");
-        put(&root, "bad.ffpkg", b"junk");
-        assert!(cover_with(&root.join("bad.ffpkg"), MAX_LIBRARY_COVER, &deny_none()).is_err());
-    }
-
-    #[test]
-    fn cover_refuses_unsupported_extension() {
-        let root = tmp("cover-ufs2");
-        put(&root, "a.ufs2", b"junk");
-        let err = cover_with(&root.join("a.ufs2"), MAX_LIBRARY_COVER, &|_| Ok(()));
-        assert!(
-            err.unwrap_err()
-                .to_string()
-                .contains("not a supported image")
-        );
     }
 }

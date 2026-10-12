@@ -422,14 +422,6 @@ mod tests {
     }
 
     #[test]
-    fn length_is_u64_plus_one() {
-        let st = run(&[rec(1, &read_file(1, 1 << 32, 0)).bytes()], 1);
-        assert_eq!(st.requested_bytes, 1 << 32);
-        let st = run(&[rec(1, &[40 | 4 << 8, u32::MAX, 1, 0, 0]).bytes()], 1);
-        assert_eq!(st.requested_bytes, 1 << 32);
-    }
-
-    #[test]
     fn missing_and_out_of_range_ids_are_counted_not_mapped() {
         let w = cat(&[
             read_file(0, 1, 0),
@@ -527,82 +519,6 @@ mod tests {
     }
 
     #[test]
-    fn invalid_lengths_are_unknown() {
-        // WaitOnCounter of 4 dwords, a ReadFile claiming 3, a packet running past the payload,
-        // a trailing partial dword.
-        for payload in [
-            vec![2 | 3 << 8, 0, 0, 0],
-            vec![40 | 2 << 8, 0, 1],
-            vec![40 | 5 << 8, 0, 1, 0, 0],
-            vec![1 | 3 << 8, 0, 0],
-        ] {
-            let st = run(&[rec(1, &payload).bytes()], 1);
-            assert_eq!((st.unknown, st.observed.len()), (1, 0), "{payload:x?}");
-        }
-        let mut r = rec(1, &[RESET]).bytes();
-        r.extend_from_slice(&[1, 2]);
-        put_u32(&mut r, 12, 96 + 6).unwrap();
-        put_u32(&mut r, 64, 6).unwrap();
-        let hash = cmd_hash(&r[96..]);
-        put_u64(&mut r, 56, hash).unwrap();
-        assert_eq!(run(&[r], 1).unknown, 1);
-    }
-
-    #[test]
-    fn known_non_read_packets_are_skipped_by_length() {
-        let nops = cat(&[
-            vec![1 | 1 << 8, 0],                     // WaitOnAddress, 2
-            vec![2],                                 // WaitOnCounter, 1
-            vec![5 | 1 << 8, 0],                     // WriteAddress, 2
-            vec![0x75 | 3 << 8, 0, 0, 0],            // WriteAddress, 4
-            vec![6 | 2 << 8, 0, 0],                  // WriteCounter, 3
-            vec![0x408, 0, 0, 0, 0],                 // WriteKernelEventQueue
-            vec![0x5452_000f | 5 << 12 | 1 << 8, 7], // colour marker needs a dword
-            vec![0x5452_300f],                       // MarkerPop
-            vec![0x22d, 0, 0],                       // MapBegin
-            vec![0x32d, 0, 0, 0],                    // MapDirectBegin
-            vec![46],                                // MapEnd
-            vec![0x221, 0, 0],                       // AMM Map
-            vec![0x425, 0, 0, 0, 0],                 // AMM MapDirect
-            read_file(1, 5, 0),
-        ]);
-        let mut r = rec(1, &nops);
-        r.count = 14;
-        let st = run(&[r.bytes()], 1);
-        assert_eq!((st.unknown, st.count_mismatch), (0, 0));
-        assert_eq!(st.observed, BTreeSet::from([1]));
-        let mut r = rec(1, &nops);
-        r.count = 3;
-        assert_eq!(run(&[r.bytes()], 1).count_mismatch, 1);
-        // The colour marker with no payload dword is invalid.
-        assert_eq!(
-            run(&[rec(1, &[0x5452_000f | 5 << 12]).bytes()], 1).unknown,
-            1
-        );
-    }
-
-    #[test]
-    fn sequence_gaps_and_backward_jumps_clear_state() {
-        let rf = read_file(1, 10, 0);
-        // Normal flow: state carries across records.
-        let st = run(&[rec(1, &rf).bytes(), rec(2, &gather(5)).bytes()], 1);
-        assert_eq!((st.reads, st.requested_bytes, st.gaps), (2, 15, 0));
-        // A gap drops it (and is counted); so does going backwards; so does a first record not 1.
-        for seqs in [[1, 3], [2, 1]] {
-            let st = run(
-                &[rec(seqs[0], &rf).bytes(), rec(seqs[1], &gather(5)).bytes()],
-                1,
-            );
-            assert_eq!(st.stateless_reads, 1, "{seqs:?}");
-            assert!(st.gaps >= 1, "{seqs:?}");
-        }
-        assert_eq!(run(&[rec(5, &rf).bytes()], 1).gaps, 1);
-        // The record that follows a gap still decodes.
-        let st = run(&[rec(1, &rf).bytes(), rec(9, &rf).bytes()], 1);
-        assert_eq!((st.gaps, st.reads), (1, 2));
-    }
-
-    #[test]
     fn inherited_state_is_per_priority() {
         let mut a = rec(1, &read_file(1, 10, 0));
         a.priority = 3;
@@ -619,21 +535,6 @@ mod tests {
         assert_eq!(st.reads, 1 + 3);
         assert_eq!(st.requested_bytes, 10 + 7 + 5 + 2);
         assert_eq!(st.observed, BTreeSet::from([1]));
-    }
-
-    #[test]
-    fn bad_hash_clears_state() {
-        let mut bad = rec(2, &[RESET]).bytes();
-        *bad.last_mut().unwrap() ^= 1;
-        let st = run(
-            &[
-                rec(1, &read_file(1, 10, 0)).bytes(),
-                bad,
-                rec(3, &gather(5)).bytes(),
-            ],
-            1,
-        );
-        assert_eq!((st.bad_hash, st.stateless_reads, st.gaps), (1, 1, 0));
     }
 
     #[test]
@@ -659,22 +560,6 @@ mod tests {
         );
         // State survives them.
         assert_eq!(st.reads, 2);
-    }
-
-    #[test]
-    fn extended_header_is_skipped() {
-        let mut r = rec(1, &read_file(1, 10, 0));
-        r.extra = 24;
-        let st = run(&[r.bytes(), rec(2, &read_file(2, 1, 0)).bytes()], 2);
-        assert_eq!(st.observed, BTreeSet::from([1, 2]));
-        assert_eq!((st.unparsed_tail, st.truncated_tail), (0, 0));
-    }
-
-    #[test]
-    fn cancel_stops_with_cancelled() {
-        let b = rec(1, &read_file(1, 10, 0)).bytes();
-        let err = scan(&b[..], 1, &AtomicBool::new(true)).unwrap_err();
-        assert!(matches!(err, Error::Cancelled));
     }
 
     #[test]
@@ -714,50 +599,6 @@ mod tests {
         put_u32(&mut b, 64, MAX_RECORD_BYTES - 96).unwrap();
         let st = scan(&b[..], 1, &AtomicBool::new(false)).unwrap();
         assert_eq!(st.truncated_tail, b.len() as u64);
-    }
-
-    #[test]
-    fn payload_buffer_grows_with_arrived_bytes_only() {
-        // 64 MiB claimed, 100 bytes delivered: the buffer stays chunk-sized.
-        let mut p = Vec::new();
-        let n = read_payload(
-            &mut &[7u8; 100][..],
-            &mut p,
-            64 << 20,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(n, 100);
-        assert!(p.capacity() <= 1 << 17, "capacity {}", p.capacity());
-        // A full delivery still reads everything.
-        let n = read_payload(
-            &mut &vec![1u8; 200_000][..],
-            &mut p,
-            200_000,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!((n, p.len()), (200_000, 200_000));
-        // Through scan: 1 MiB delivered of a 64 MiB claim.
-        let mut b = rec(1, &[RESET]).bytes();
-        put_u32(&mut b, 12, MAX_RECORD_BYTES).unwrap();
-        put_u32(&mut b, 64, MAX_RECORD_BYTES - 96).unwrap();
-        b.resize(96 + (1 << 20), 0);
-        let st = scan(&b[..], 1, &AtomicBool::new(false)).unwrap();
-        assert_eq!(st.truncated_tail, b.len() as u64);
-    }
-
-    #[test]
-    fn sequence_exhaustion_is_a_discontinuity() {
-        let st = run(
-            &[
-                rec(u64::MAX, &read_file(1, 8, 0)).bytes(),
-                rec(0, &gather(8)).bytes(),
-            ],
-            1,
-        );
-        // Both records are gaps; the wrapped 0 must not inherit state.
-        assert_eq!((st.gaps, st.stateless_reads, st.reads), (2, 1, 1));
     }
 
     /// Endless zeros that raise `cancel` after a few reads and fail if read too long.

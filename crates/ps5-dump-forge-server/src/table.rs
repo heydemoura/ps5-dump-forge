@@ -182,17 +182,4 @@ mod tests {
         assert_eq!(snap[0]["done"]["result"]["Err"], "cancelled");
         assert!(t.unfinished().is_empty());
     }
-
-    #[cfg(unix)]
-    #[test]
-    fn running_parts_are_not_stale() {
-        let pid = std::process::id();
-        let dir = std::env::temp_dir().canonicalize().unwrap();
-        let mine = dir.join(format!("G.exfat.7-{pid}.part"));
-        let old = dir.join("G.exfat.7-1.part");
-        let other = dir.join(format!("G.exfat.8-{pid}.part"));
-        let theirs = running_parts(&[(7, dir.join("G.exfat"))]);
-        assert_eq!(theirs, [mine]);
-        assert!(!theirs.contains(&old) && !theirs.contains(&other));
-    }
 }

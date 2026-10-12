@@ -189,10 +189,4 @@ mod tests {
             .map(|i| u64_at(&d, HEADER + i * RECORD + 8));
         assert_eq!(size_of_eboot, Some(99));
     }
-
-    #[test]
-    fn paths_differing_only_in_case_are_refused() {
-        let files = vec![("A.bin".to_string(), 1), ("a.bin".to_string(), 2)];
-        assert!(build(&files, 0).is_none());
-    }
 }

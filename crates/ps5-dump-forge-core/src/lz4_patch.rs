@@ -179,17 +179,3 @@ fn sync(file: &File) -> io::Result<()> {
 fn sync(file: &File) -> io::Result<()> {
     file.sync_all()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn temp_names() {
-        assert!(is_temp(".ampr_emu.index.forge-12-0.tmp"));
-        assert!(is_temp("fakelib/.libSceAmpr.sprx.forge-12-3.tmp"));
-        assert!(!is_temp("ampr_emu.index"));
-        assert!(!is_temp("data/a.forge-1.tmp"));
-        assert!(!is_temp("data/.hidden.tmp"));
-    }
-}

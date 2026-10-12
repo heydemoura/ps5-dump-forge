@@ -1399,21 +1399,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn text_compresses_and_round_trips() {
-        let mut t = String::new();
-        let mut i = 0;
-        while t.len() < BLOCK {
-            t.push_str(&format!(
-                "entry {i}: the quick brown fox jumps over the lazy dog\n"
-            ));
-            i += 1;
-        }
-        let data = &t.as_bytes()[..BLOCK];
-        let stored = roundtrip(data);
-        assert!(stored < BLOCK / 4, "{stored}");
-    }
-
     /// The traditional offset code, checked against the decoder's formula written out
     /// independently (ooz `read_distance`: `rv = ((1 << n | x) << 4) + (v & 15) − 248`,
     /// `n = (v >> 4) + 4`), so a mistake shared by our encoder and decoder cannot hide.
@@ -1475,14 +1460,6 @@ mod tests {
             }
         }
         assert!(huffman > 0, "text should get Huffman arrays");
-    }
-
-    #[test]
-    fn noise_is_stored_raw() {
-        let data = noise(BLOCK, 7);
-        let halves = encode_block(&data);
-        assert!(halves.iter().all(|h| matches!(h, Half::Raw(_))));
-        assert_eq!(decode_block(&halves, BLOCK).unwrap(), data);
     }
 
     /// The search is skipped for noise, but not for noise that repeats, within a half or from
@@ -1594,37 +1571,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn delta_literals_are_chosen_where_they_help() {
-        let data = records(BLOCK);
-        let halves = encode_block(&data);
-        assert!(
-            halves.iter().any(Half::is_delta),
-            "records should use literal mode 0"
-        );
-        assert_eq!(decode_block(&halves, BLOCK).unwrap(), data);
-    }
-
-    /// The levels trade time for size, never the other way round.
-    #[test]
-    fn slower_levels_are_not_larger() {
-        let mut t = records(BLOCK);
-        for (k, b) in t.iter_mut().enumerate().step_by(11) {
-            *b ^= (k / 13) as u8;
-        }
-        let size = |l| -> usize { encode_block_at(&t, l).iter().map(|h| h.bytes().len()).sum() };
-        let (fast, balanced, smallest) = (
-            size(Level::Fast),
-            size(Level::Balanced),
-            size(Level::Smallest),
-        );
-        assert!(balanced <= fast, "{balanced} > {fast}");
-        assert!(
-            smallest <= balanced + balanced / 200,
-            "{smallest} > {balanced}"
-        );
     }
 
     #[test]

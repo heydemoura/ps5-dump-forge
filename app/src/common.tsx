@@ -4,10 +4,12 @@ import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 
 import { createRoot } from "react-dom/client";
 
 import { APP_NAME, pick, prettyBytes, serverAddress, type Format, type Inspection, type Kind, type Lz4Facts } from "./api";
+import { gameTitle, msg, num, useLang, useMessages } from "./i18n";
 import { basename, SEPARATORS, trimSep } from "./paths";
 import { useCoverGlow } from "./glow";
 import { Icon, type IconName } from "./icons";
 
+// Format names stay as they are in every language; only "Folder" is translated (kindLabel).
 const KIND_LABEL: Record<Format, string> = {
   folder: "Folder",
   exfat: "exfat",
@@ -22,12 +24,16 @@ const KIND_LABEL: Record<Format, string> = {
  * folder is not among them: the LZ4 tab's Pack picks it. */
 export const KINDS: Kind[] = ["folder", "exfat", "ffpkg", "ffpfs", "ffpfsc", "pkg"];
 
+/** A format's display name, read at call time (a component calling it re-renders on a switch
+ * through its own `useMessages`). */
 export function kindLabel(kind: string): string {
+  if (kind === "folder") return msg().common.folder;
   return KIND_LABEL[kind as Format] ?? kind;
 }
 
 /** A format as a small tinted tag (hues: `.fmt-*` in styles.css). */
 export function FormatPill({ kind }: { kind: string }) {
+  useLang(); // re-render on a language switch: kindLabel reads the current one
   const known = kind in KIND_LABEL;
   return <span className={known ? `tag fmt fmt-${kind}` : "tag"}>{kindLabel(kind)}</span>;
 }
@@ -151,6 +157,7 @@ export function FormatPicker<F extends Format>(props: {
   formats?: F[];
   className?: string;
 }) {
+  useLang(); // re-render on a language switch: kindLabel reads the current one
   const formats = props.formats ?? (KINDS as F[]);
   return (
     <div
@@ -179,8 +186,8 @@ export function FormatPicker<F extends Format>(props: {
               onChange={() => props.onChange(f)}
             />
             <span className="seg-opt">
-              {KIND_LABEL[f]}
-              {why && <span className="visually-hidden">, {why}</span>}
+              {kindLabel(f)}
+              {why &&<span className="visually-hidden">, {why}</span>}
             </span>
           </label>
         );
@@ -338,13 +345,14 @@ export async function pickSource(
   what: "folder" | "image",
   onPick: (path: string, isImage: boolean) => void,
 ): Promise<void> {
+  const t = msg().common;
   const p =
     what === "folder"
-      ? await pick({ directory: true, title: "Game folder" })
+      ? await pick({ directory: true, title: t.pickFolder })
       : await pick({
           directory: false,
-          title: "Game image",
-          filterName: "PS5 image or package",
+          title: t.pickImage,
+          filterName: t.pickImageFilter,
           extensions: IMAGE_EXTENSIONS,
         });
   if (p !== null) onPick(p, what === "image");
@@ -352,17 +360,18 @@ export async function pickSource(
 
 /** "Choose folder…" / "Choose image…": a game folder or an image file. */
 function PickButtons(props: { onPick: (path: string, isImage: boolean) => void; big?: boolean }) {
+  const t = useMessages().common;
   const pickFolder = () => pickSource("folder", props.onPick);
   const pickImage = () => pickSource("image", props.onPick);
   return (
     <>
       <button className={props.big ? "primary" : "small"} onClick={pickFolder}>
         <Icon name="folder" />
-        Choose folder…
+        {t.chooseFolder}
       </button>
       <button className={props.big ? undefined : "small"} onClick={pickImage}>
         <Icon name="disc" />
-        Choose image…
+        {t.chooseImage}
       </button>
     </>
   );
@@ -386,6 +395,7 @@ export function SourceCard(props: {
   /** More buttons in the title row once a source is chosen (Inspect's Delete). */
   actions?: ReactNode;
 }) {
+  const t = useMessages().common;
   const { path, ins } = props;
   const headId = `${props.prefix ?? (props.full ? "i" : "c")}-source`;
   const glow = useCoverGlow(!path ? null : ins ? ins.cover : props.busy ? undefined : null);
@@ -407,7 +417,7 @@ export function SourceCard(props: {
       style={glow.style}
       aria-labelledby={headId}
     >
-      <CardHead icon="disc" title="Source" id={headId} focusable>
+      <CardHead icon="disc" title={t.source} id={headId} focusable>
         {path && props.actions}
         {path && <PickButtons onPick={props.onPick} />}
       </CardHead>
@@ -418,12 +428,9 @@ export function SourceCard(props: {
           <span className="empty-icon">
             <Icon name="disc" />
           </span>
-          <p className="empty-title">Choose a game folder or image</p>
-          <p className="muted">
-            A dumped PS5 game folder (sce_sys/param.json and eboot.bin at its root), or an image
-            or package of one.
-          </p>
-          <div className="kinds" aria-label="Accepted sources">
+          <p className="empty-title">{t.emptyTitle}</p>
+          <p className="muted">{t.emptyText}</p>
+          <div className="kinds" aria-label={t.accepted}>
             {KINDS.map((k) => (
               <FormatPill key={k} kind={k} />
             ))}
@@ -445,12 +452,13 @@ export function SourceCard(props: {
 
 /** Cover, title, kind tags and the source's path. */
 function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; full?: boolean }) {
+  const t = useMessages().common;
   const { ins } = props;
   const title = ins
-    ? (ins.title_name ?? ins.title_id ?? "Unknown title")
+    ? (gameTitle(ins.title_names, ins.title_name) ?? ins.title_id ?? t.unknownTitle)
     : props.busy
-      ? "Reading the source…"
-      : "Unreadable source";
+      ? t.reading
+      : t.unreadable;
   return (
     <div className={props.full ? "game full" : "game"}>
       {ins?.cover ? (
@@ -464,8 +472,8 @@ function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; 
         <div className="title-row">
           <h3 className={ins ? "title" : "title pending"}>{title}</h3>
           {ins && <FormatPill kind={ins.kind} />}
-          {ins && ins.backport.length > 0 && <span className="tag orange">Backport</span>}
-          {ins && ins.emulators.length > 0 && <span className="tag">Emulators</span>}
+          {ins && ins.backport.length > 0 && <span className="tag orange">{t.backport}</span>}
+          {ins && ins.emulators.length > 0 && <span className="tag">{t.emulators}</span>}
           {ins && ins.dlcs.length > 0 && <span className="tag violet">DLC</span>}
         </div>
         <PathLine path={props.path} />
@@ -476,53 +484,52 @@ function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; 
 
 /** The game's facts as inset tiles. */
 function Facts({ ins, full }: { ins: Inspection; full: boolean }) {
+  const t = useMessages().common;
   const bp = ins.backport.length > 0;
   const emus = emulatorNames(ins);
   // With a fakelib/ (backport or emulators) the game runs as low as its executables allow.
   const fromExe = ins.backport_firmware !== null;
   const minFw = ins.backport_firmware ?? ins.firmware;
   const fwNote: string[] = [];
-  if (fromExe && ins.firmware) fwNote.push(`declares ${ins.firmware}`);
-  if ((bp || emus.length > 0) && !fromExe)
-    fwNote.push("firmware unknown from its executables (no readable SDK)");
+  if (fromExe && ins.firmware) fwNote.push(t.declares(ins.firmware));
+  if ((bp || emus.length > 0) && !fromExe) fwNote.push(t.fwUnknown);
   if (bp) fwNote.push(backportLib(ins));
-  if (emus.length > 0) fwNote.push(`emulators: ${emus.join(", ")}`);
-  if (full && ins.sdk) fwNote.push(`SDK ${ins.sdk} (declared)`);
+  if (emus.length > 0)
+    fwNote.push(t.emulatorList(emus.map((n) => (n === "Other" ? t.otherEmulator : n)).join(", ")));
+  if (full && ins.sdk) fwNote.push(t.sdk(ins.sdk));
   return (
     <dl className="tiles">
       <div className="tile">
-        <dt>Title ID</dt>
+        <dt>{t.titleId}</dt>
         <dd className={ins.title_id ? "value mono" : "value"}>{ins.title_id ?? "—"}</dd>
       </div>
       <div className="tile">
-        <dt>Version</dt>
+        <dt>{t.version}</dt>
         <dd className="value">{ins.version ?? "—"}</dd>
       </div>
       <div className="tile">
-        <dt>Firmware</dt>
+        <dt>{t.firmware}</dt>
         <dd>
           <span className="value">{minFw ? `${minFw}+` : "—"}</span>
           {minFw && (
             <span className={!fromExe ? "tag blue" : bp ? "tag orange" : "tag"}>
-              {!fromExe ? "declared" : bp ? "backport" : "executables"}
+              {!fromExe ? t.fwDeclared : bp ? t.fwBackport : t.fwExecutables}
             </span>
           )}
           {fwNote.length > 0 && <span className="note">{fwNote.join(" · ")}</span>}
         </dd>
       </div>
       <div className="tile">
-        <dt>Size</dt>
+        <dt>{t.size}</dt>
         <dd>
           <span className="value">{prettyBytes(ins.total_bytes)}</span>
-          <span className="tag">
-            {ins.files.length.toLocaleString()} file{ins.files.length === 1 ? "" : "s"}
-          </span>
+          <span className="tag">{t.files(ins.files.length)}</span>
         </dd>
       </div>
       {ins.lz4 && <Lz4Tile facts={ins.lz4} />}
       {full && (
         <div className="tile wide">
-          <dt>Content ID</dt>
+          <dt>{t.contentId}</dt>
           <dd className={ins.content_id ? "value mono" : "value"}>{ins.content_id ?? "—"}</dd>
         </div>
       )}
@@ -545,9 +552,10 @@ export function lz4Traced(f: Lz4Facts | null | undefined): boolean {
  * as the value, the details under it. Packed gets the green neon straps, a traced source the
  * lime, magenta and cyan ones; damaged packs keep the warning colour and no straps. */
 function Lz4Tile({ facts }: { facts: Lz4Facts }) {
+  const t = useMessages().common;
   const { state, detail } = lz4State(facts);
   const notes = [detail];
-  if (!facts.imports_ampr) notes.push("eboot.bin does not import libSceAmpr");
+  if (!facts.imports_ampr) notes.push(t.noAmpr);
   const look = facts.packed
     ? " neon packed"
     : facts.manifest_error !== null
@@ -566,36 +574,23 @@ function Lz4Tile({ facts }: { facts: Lz4Facts }) {
   );
 }
 
-const RUNTIME_LABEL: Record<Lz4Facts["runtime"], string> = {
-  forge_release: "Forge release",
-  forge_trace: "Forge trace",
-  other: "other",
-  none: "none",
-};
-
-/** "Packed" / "Damaged packs" / "Traced" / "Plain", and what backs it. */
+/** "Packed" / "Damaged packs" / "Traced" / "Plain", and what backs it (read at call time). */
 export function lz4State(f: Lz4Facts): { state: string; detail: string } {
+  const t = msg().common;
   if (f.packed) {
     const p = f.packed;
-    return {
-      state: "Packed",
-      detail:
-        `${p.files.toLocaleString()} files in ${p.volumes.toLocaleString()} volume${p.volumes === 1 ? "" : "s"}` +
-        (p.stored_percent === null ? "" : `, ${p.stored_percent}% of size`),
-    };
+    return { state: t.packed, detail: t.packedDetail(p.files, p.volumes, p.stored_percent) };
   }
-  if (f.manifest_error !== null) return { state: "Damaged packs", detail: f.manifest_error };
-  if (f.journal_bytes !== null)
-    return { state: "Traced", detail: `journal ${prettyBytes(f.journal_bytes)}` };
-  if (f.runtime === "forge_trace") return { state: "Traced", detail: "no journal yet" };
-  return { state: "Plain", detail: `runtime ${RUNTIME_LABEL[f.runtime]}` };
+  if (f.manifest_error !== null) return { state: t.damaged, detail: f.manifest_error };
+  if (f.journal_bytes !== null) return { state: t.traced, detail: t.journal(prettyBytes(f.journal_bytes)) };
+  if (f.runtime === "forge_trace") return { state: t.traced, detail: t.noJournal };
+  return { state: t.plain, detail: t.runtimeIs(t.runtime[f.runtime]) };
 }
 
 /** Which fakelib folder a backport ships, and how many backport libraries it has. */
 function backportLib(ins: Inspection): string {
   const exclusive = ins.backport.some((p) => /^fakelib2\//i.test(p));
-  const libs = ins.backport.length;
-  return `${exclusive ? "fakelib2/, mounted alone" : "fakelib/"}, ${libs} backport librar${libs === 1 ? "y" : "ies"}`;
+  return msg().common.backportLibs(exclusive, ins.backport.length);
 }
 
 /** The emulators in fakelib/, each named once ("AMPR", "DLC", "PlayGo", "Other"). */
@@ -605,15 +600,16 @@ export function emulatorNames(ins: Inspection): string[] {
 
 /** Preflight findings, each with a status icon; one green line when there are none. */
 export function Findings({ lines }: { lines: string[] }) {
+  const t = useMessages().common;
   if (lines.length === 0)
     return (
       <p className="status-line good">
         <Icon name="checkCircle" />
-        No preflight findings
+        {t.noFindings}
       </p>
     );
   return (
-    <ul className="findings" aria-label="Preflight findings">
+    <ul className="findings" aria-label={t.findings}>
       {lines.map((l, i) => {
         const { kind } = classify(l);
         return (
@@ -649,15 +645,16 @@ export function classify(line: string): { kind: "block" | "warn" | "info"; forma
 
 /** The DLC embedded in the dump, collapsed until asked for. */
 function DlcList({ dlcs }: { dlcs: Inspection["dlcs"] }) {
+  const t = useMessages().common;
   if (dlcs.length === 0) return null;
   const notes = dlcs.map(dlcNote);
   // One shared explanation goes on top once instead of under every row.
   const shared = notes.every((n) => n === notes[0]) ? notes[0] : null;
   return (
     <details className="fold">
-      <summary>Embedded DLC ({dlcs.length})</summary>
-      {shared && <p className="muted fold-note">All {shared}.</p>}
-      <ul className="rows scroll" tabIndex={0} aria-label="Embedded DLC">
+      <summary>{t.dlcTitle(dlcs.length)}</summary>
+      {shared && <p className="muted fold-note">{t.dlcAll(shared)}</p>}
+      <ul className="rows scroll" tabIndex={0} aria-label={t.dlcLabel}>
         {dlcs.map((d, i) => (
           <li key={d.content_id}>
             <span className="row-title">
@@ -677,17 +674,17 @@ function DlcList({ dlcs }: { dlcs: Inspection["dlcs"] }) {
 
 /** Where a DLC's content comes from, as one phrase. */
 function dlcNote(d: Inspection["dlcs"][number]): string {
-  if (d.folder) return `in ${d.folder}/, ${prettyBytes(d.bytes)}`;
-  if (d.emulated === "NO_EXTRA_DATA")
-    return "unlocked by the DLC emulator (dlc_emu.ini): entitlement only, no data of its own";
-  if (d.emulated !== null)
-    return `unlocked by the DLC emulator (dlc_emu.ini), status ${d.emulated || "not set"}`;
-  return "merged into the game's folders";
+  const t = msg().common;
+  if (d.folder) return t.dlcIn(d.folder, prettyBytes(d.bytes));
+  if (d.emulated === "NO_EXTRA_DATA") return t.dlcNoData;
+  if (d.emulated !== null) return t.dlcStatus(d.emulated);
+  return t.dlcMerged;
 }
 
 /** The game's facts, its embedded DLC (and backport and emulator files, `full`), then the
  * findings. */
 export function InspectSummary({ ins, full = false }: { ins: Inspection; full?: boolean }) {
+  const t = useMessages().common;
   return (
     <div className="summary">
       <Facts ins={ins} full={full} />
@@ -697,8 +694,10 @@ export function InspectSummary({ ins, full = false }: { ins: Inspection; full?: 
           <DlcList dlcs={ins.dlcs} />
           {full && ins.backport.length > 0 && (
             <details className="fold">
-              <summary>Backport files ({ins.backport.length})</summary>
-              <ul className="rows scroll" tabIndex={0} aria-label="Backport files">
+              <summary>
+                {t.backportFiles} ({num(ins.backport.length)})
+              </summary>
+              <ul className="rows scroll" tabIndex={0} aria-label={t.backportFiles}>
                 {ins.backport.map((p) => (
                   <li key={p} className="path">
                     {p}
@@ -709,8 +708,10 @@ export function InspectSummary({ ins, full = false }: { ins: Inspection; full?: 
           )}
           {full && ins.emulators.length > 0 && (
             <details className="fold">
-              <summary>Emulators in fakelib ({ins.emulators.length})</summary>
-              <ul className="rows scroll" tabIndex={0} aria-label="Emulators in fakelib">
+              <summary>
+                {t.emulatorsIn} ({num(ins.emulators.length)})
+              </summary>
+              <ul className="rows scroll" tabIndex={0} aria-label={t.emulatorsIn}>
                 {ins.emulators.map((e) => (
                   <li key={e.path}>
                     <span className="path">{e.path}</span>
@@ -803,6 +804,7 @@ export function ChooseMenu<K extends string>(props: {
 /** http build: the page's url as a QR code for a phone, drawn by the server (`GET /api/qr`).
  * Nothing in the app (no address) or when it doesn't load. */
 export function AddressQr(props: { size: number }) {
+  const t = useMessages().common;
   const [failed, setFailed] = useState(false);
   const address = serverAddress();
   if (!address || failed) return null;
@@ -812,7 +814,7 @@ export function AddressQr(props: { size: number }) {
       src="/api/qr"
       width={props.size}
       height={props.size}
-      alt={`QR code: http://${address}`}
+      alt={t.qr(`http://${address}`)}
       onError={() => setFailed(true)}
     />
   );

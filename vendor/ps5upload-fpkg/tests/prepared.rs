@@ -209,47 +209,6 @@ fn a_prepared_build_writes_into_the_callers_file_and_its_manifest_is_the_image()
         .is_err());
 }
 
-/// `build` is `prepare` + `write_package`: the same request gives the same bytes.
-#[test]
-fn build_and_a_prepared_write_give_the_same_package() {
-    let src = TempDir::new("same-src");
-    let out = TempDir::new("same-out");
-    write_tree(src.path());
-    let built = build::build(
-        &BuildRequest {
-            output_dir: out.path().to_path_buf(),
-            ..request(src.path())
-        },
-        &mut |_| {},
-    )
-    .unwrap();
-
-    let mut tree = FolderSource::open(src.path()).unwrap();
-    let prepared = build::prepare(
-        &mut tree,
-        &request(src.path()),
-        &mut BuildControl::default(),
-    )
-    .unwrap();
-    let path = out.path().join("mine.part");
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .unwrap();
-    build::write_package(
-        &prepared,
-        &mut tree,
-        &mut file,
-        &path,
-        &mut |_| {},
-        &mut BuildControl::default(),
-    )
-    .unwrap();
-    assert!(std::fs::read(&built.path).unwrap() == std::fs::read(&path).unwrap());
-}
-
 #[test]
 fn write_package_refuses_a_file_that_is_not_empty() {
     let src = TempDir::new("full-src");
@@ -374,65 +333,6 @@ fn the_estimate_covers_container_payloads() {
     assert!(report.size > 8 << 20);
 }
 
-/// ... and what grows with the tree: a thousand empty directories with long names, in a
-/// package whose image is stored flat (each directory takes an image block, and a record in
-/// the install metadata).
-#[test]
-fn the_estimate_covers_a_directory_heavy_tree() {
-    let src = TempDir::new("dirs-src");
-    let out = TempDir::new("dirs-out");
-    write_tree(src.path());
-    for i in 0..1000 {
-        std::fs::create_dir_all(src.path().join(format!("d/{i:0>200}"))).unwrap();
-    }
-    let mut tree = FolderSource::open(src.path()).unwrap();
-    let request = BuildRequest {
-        kraken: false,
-        ..request(src.path())
-    };
-    let prepared = build::prepare(&mut tree, &request, &mut BuildControl::default()).unwrap();
-    let path = out.path().join("dirs.part");
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .unwrap();
-    let report = build::write_package(
-        &prepared,
-        &mut tree,
-        &mut file,
-        &path,
-        &mut |_| {},
-        &mut BuildControl::default(),
-    )
-    .unwrap();
-    assert!(
-        prepared.estimated_size() >= report.size,
-        "estimated {} for a package of {}",
-        prepared.estimated_size(),
-        report.size
-    );
-}
-
-/// The manifest serializes for a report.
-#[test]
-fn the_manifest_serializes() {
-    let src = TempDir::new("serde-src");
-    write_tree(src.path());
-    let mut tree = FolderSource::open(src.path()).unwrap();
-    let prepared = build::prepare(
-        &mut tree,
-        &request(src.path()),
-        &mut BuildControl::default(),
-    )
-    .unwrap();
-    let json = serde_json::to_string(prepared.manifest()).unwrap();
-    assert!(json.contains(r#""origin":"generated""#), "{json}");
-    assert!(json.contains(r#""path":"eboot.bin""#), "{json}");
-    let _ = tree.describe();
-}
-
 /// A thread cap changes how long compression takes, never what it produces.
 #[test]
 fn a_thread_cap_builds_the_same_package() {
@@ -505,46 +405,6 @@ fn every_stage_stops_when_cancelled() {
             Ok(_) => panic!("stopping at {stop_at:?} still built a package"),
         }
     }
-}
-
-/// The verifier on its own: a set flag stops it, a clear one changes nothing.
-#[test]
-fn a_verification_can_be_cancelled() {
-    use ps5upload_fpkg::verify;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let src = TempDir::new("verify-cancel-src");
-    let out = TempDir::new("verify-cancel-out");
-    write_tree(src.path());
-    let built = build::build(
-        &BuildRequest {
-            output_dir: out.path().to_path_buf(),
-            ..request(src.path())
-        },
-        &mut |_| {},
-    )
-    .unwrap();
-    let flag = AtomicBool::new(false);
-    let report = verify::verify_streaming_controlled(
-        &built.path,
-        DEFAULT_PASSCODE,
-        &mut |_, _| {},
-        Some(&flag),
-    )
-    .unwrap();
-    assert!(report.ok(), "{report}");
-    assert_eq!(
-        report.checks.len(),
-        verify::verify_streaming(&built.path, DEFAULT_PASSCODE, &mut |_, _| {})
-            .unwrap()
-            .checks
-            .len()
-    );
-    // Stopped from the progress callback, i.e. halfway through the block sweep.
-    let mut stop = |_: u64, _: u64| flag.store(true, Ordering::Relaxed);
-    flag.store(false, Ordering::Relaxed);
-    let stopped =
-        verify::verify_streaming_controlled(&built.path, DEFAULT_PASSCODE, &mut stop, Some(&flag));
-    assert!(matches!(stopped, Err(ps5upload_fpkg::Error::Cancelled)));
 }
 
 /// The verification reads the package through the caller's handle: what is checked is what

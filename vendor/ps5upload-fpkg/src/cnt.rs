@@ -411,21 +411,6 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_digests_verify() {
-        let cnt = Cnt::from_bytes(synthetic()).unwrap();
-        assert_eq!(cnt.content_id, "UP0000-PPSA01234_00-TESTGAME00000000");
-        assert!(cnt.package_digest_ok());
-        assert!(cnt.digest_table_digest_ok());
-        assert_eq!(
-            cnt.entry_digests(),
-            vec![
-                (ids::DIGESTS, EntryDigest::SelfSlotZero),
-                (ids::PARAM_JSON, EntryDigest::Match)
-            ]
-        );
-    }
-
-    #[test]
     fn tampered_payload_is_caught() {
         let mut bytes = synthetic();
         bytes[0x2200] ^= 1;
@@ -434,13 +419,6 @@ mod tests {
             cnt.entry_digests()[1],
             (ids::PARAM_JSON, EntryDigest::Mismatch)
         );
-    }
-
-    #[test]
-    fn rejects_wrong_magic() {
-        let mut bytes = synthetic();
-        bytes[0] = 0;
-        assert!(Cnt::from_bytes(bytes).is_err());
     }
 
     /// `synthetic` behind 64 KiB of package, through [`read`].

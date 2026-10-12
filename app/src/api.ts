@@ -3,6 +3,7 @@
 // crates/ps5-dump-forge-core/src/lib.rs.
 
 import { transport } from "forge-transport";
+import { msg, num } from "./i18n";
 import type { PickOptions, Unlisten } from "./transport";
 
 type UnlistenFn = Unlisten;
@@ -154,7 +155,10 @@ export interface Inspection {
   describe: string;
   title_id: string | null;
   content_id: string | null;
+  /** In param.json's default language; `gameTitle` picks from `title_names`. */
   title_name: string | null;
+  /** Every `localizedParameters` title by language tag ("en-US", "ru-RU"). Missing from an older backend. */
+  title_names?: Record<string, string>;
   version: string | null;
   /** Required firmware, e.g. "7.00". */
   firmware: string | null;
@@ -252,6 +256,8 @@ export interface LibraryEntry {
   kind: Kind;
   title_id: string;
   title_name: string | null;
+  /** As `Inspection.title_names`. */
+  title_names?: Record<string, string>;
   version: string | null;
   has_cover: boolean;
   /** LZ4 packed (ampr_emu asset packs: `ampr_assets.index` at the root). Missing from an older backend. */
@@ -331,18 +337,20 @@ export function errorText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 }
 
+// IEC units stay as they are in every language; only the decimal mark follows it.
 export function prettyBytes(n: number): string {
-  if (n >= 2 ** 40) return `${(n / 2 ** 40).toFixed(2)} TiB`;
-  if (n >= 2 ** 30) return `${(n / 2 ** 30).toFixed(2)} GiB`;
-  if (n >= 2 ** 20) return `${(n / 2 ** 20).toFixed(1)} MiB`;
-  if (n >= 2 ** 10) return `${(n / 2 ** 10).toFixed(0)} KiB`;
+  if (n >= 2 ** 40) return `${num(n / 2 ** 40, 2)} TiB`;
+  if (n >= 2 ** 30) return `${num(n / 2 ** 30, 2)} GiB`;
+  if (n >= 2 ** 20) return `${num(n / 2 ** 20, 1)} MiB`;
+  if (n >= 2 ** 10) return `${num(n / 2 ** 10)} KiB`;
   return `${n} B`;
 }
 
 export function prettyDuration(ms: number): string {
+  const t = msg().duration;
   const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s} s`;
+  if (s < 60) return t.s(s);
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m} min ${s % 60} s`;
-  return `${Math.floor(m / 60)} h ${m % 60} min`;
+  if (m < 60) return t.ms(m, s % 60);
+  return t.hm(Math.floor(m / 60), m % 60);
 }

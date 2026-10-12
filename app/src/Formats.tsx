@@ -1,125 +1,78 @@
 // About: what the app is and (http build) how to reach the page at its own address, then
 // one comparison table of the targets and the plain folder (console speeds
 // from ShadowMountPlus 1.7's README and release notes; the LZ4 packed folder's from its
-// upstream authors, labelled as theirs) and the LZ4 credits. Nothing here talks to Rust.
+// upstream authors, labelled as theirs), the LZ4 credits and the language selector. Nothing
+// here talks to Rust.
 
-import { APP_NAME, serverAddress } from "./api";
+import { useState } from "react";
+
+import { APP_NAME, serverAddress, type Format } from "./api";
 import { AddressQr, CardHead, FormatPill, Modal, openOverlay, Prose } from "./common";
+import { getChoice, type Lang, LANGS, setLang, useMessages } from "./i18n";
 import { Icon, type IconName } from "./icons";
 
-type Rating = "good" | "ok" | "bad";
+export type Rating = "good" | "ok" | "bad";
 
-/** Each rating's icon and spoken prefix: the colour is never the only cue. */
-const RATING: Record<Rating, { icon: IconName; say: string }> = {
-  good: { icon: "check", say: "Good" },
-  ok: { icon: "minus", say: "Trade-off" },
-  bad: { icon: "x", say: "Drawback" },
-};
+/** Each rating's icon: the colour is never the only cue (its spoken prefix is a message). */
+const RATING_ICON: Record<Rating, IconName> = { good: "check", ok: "minus", bad: "x" };
 
-const COLUMNS = ["Console speed", "Size on disk"];
-
-/** A flat image holds the game's files as they are: about as large as the game. */
-const FLAT: [string, Rating] = ["Equal to the game size", "ok"];
-
-const ROWS: { kind: string; tagline: string; cells: [string, Rating][] }[] = [
-  {
-    kind: "pkg",
-    tagline: "Best, if your firmware allows",
-    cells: [
-      ["Native, full speed", "good"],
-      ["30–60% less, depending on the game", "good"],
-    ],
-  },
-  {
-    kind: "lz4",
-    tagline: "Experimental, for games that use AMPR",
-    cells: [
-      ["30–40% faster loading, upstream's numbers", "good"],
-      ["About half the game size, upstream's numbers", "good"],
-    ],
-  },
-  {
-    kind: "ffpkg",
-    tagline: "Recommended for ShadowMountPlus",
-    cells: [["Full image speed", "good"], FLAT],
-  },
-  {
-    kind: "exfat",
-    tagline: "Compatibility",
-    cells: [["Full image speed", "good"], FLAT],
-  },
-  {
-    kind: "ffpfs",
-    tagline: "Experimental",
-    cells: [["Full image speed", "good"], FLAT],
-  },
-  {
-    kind: "ffpfsc",
-    tagline: "Smallest, experimental",
-    cells: [
-      ["150–250 MB/s, may stutter", "bad"],
-      ["Depends on the compression level, usually 30–60% less", "good"],
-    ],
-  },
-  {
-    kind: "folder",
-    tagline: "Plain game files",
-    cells: [["Full drive speed", "good"], FLAT],
-  },
+/** The table's rows in order, with each cell's rating; the words are messages (`rows`). */
+const ROWS: { kind: Format; rates: [Rating, Rating] }[] = [
+  { kind: "pkg", rates: ["good", "good"] },
+  { kind: "lz4", rates: ["good", "good"] },
+  { kind: "ffpkg", rates: ["good", "ok"] },
+  { kind: "exfat", rates: ["good", "ok"] },
+  { kind: "ffpfs", rates: ["good", "ok"] },
+  { kind: "ffpfsc", rates: ["bad", "good"] },
+  { kind: "folder", rates: ["good", "ok"] },
 ];
 
-/** About's feature list: name, then a few words. */
-const FEATURES: [string, string][] = [
-  ["Convert", "between a folder, ffpkg, exfat, ffpfs, ffpfsc and fpkg, both ways."],
-  ["Inspect", "a dump's cover, firmware, backport, DLC and file name problems before you build."],
-  ["Verify", "every output after writing: a fast sample by default, every byte on request."],
-  ["Delete", "a dump from the disk, after you confirm."],
-  ["LZ4", "trace an AMPR game, then pack its assets (experimental)."],
-  ["AMPR runtime", "install or update ampr_emu in the converted copy."],
-  ["PS5 payload", "the same app on the console, open from any device on your network."],
-];
+export type Row = { tagline: string; cells: [string, string] };
 
 /** The header's address button: the big QR code and where to open the page, in a dialog (only
  * the http build has an address to show). */
 export function openConnect() {
+  openOverlay((close) => <Connect close={close} />);
+}
+
+function Connect({ close }: { close: () => void }) {
+  const t = useMessages().formats;
   const address = serverAddress();
-  openOverlay((close) => (
+  return (
     <Modal close={close} className="modal card connect-modal" labelledBy="connect-title">
       <div className="modal-head">
         <span className="head-icon">
           <Icon name="power" />
         </span>
-        <h2 id="connect-title">How to connect</h2>
+        <h2 id="connect-title">{t.howToConnect}</h2>
       </div>
       <div className="connect">
         <AddressQr size={240} />
-        <p className="connect-text">
-          Feel free to connect any device running on your local network via{" "}
-          <span className="path url">http://{address}</span> or scan this code.
-        </p>
+        <p className="connect-text">{t.connectText(<span className="path url">http://{address}</span>)}</p>
       </div>
       <div className="row end">
         <button type="button" autoFocus onClick={close}>
-          Close
+          {t.close}
         </button>
       </div>
     </Modal>
-  ));
+  );
 }
 
 export function Formats() {
+  const t = useMessages().formats;
   const address = serverAddress();
   return (
     <div className="screen">
       {/* The PS5 page: About and How to connect side by side; the app, with no address, About only. */}
       <div className={address ? "about-row" : undefined}>
         <section className="card" aria-labelledby="f-about">
-          <CardHead icon="info" title="About" id="f-about" />
-          <p className="about-text">
-            This tool can convert any dump format to another one, on any platform, including PS5.
-          </p>
+          <CardHead icon="info" title={t.about} id="f-about">
+            <LanguagePicker />
+          </CardHead>
+          <p className="about-text">{t.aboutText}</p>
           <ul className="about-text features">
-            {FEATURES.map(([name, what]) => (
+            {t.features.map(([name, what]) => (
               <li key={name}>
                 <b>{name}</b> <Prose text={what} />
               </li>
@@ -128,23 +81,21 @@ export function Formats() {
         </section>
         {address && (
           <section className="card about-connect" aria-labelledby="f-connect">
-            <CardHead title="How to connect on any device" id="f-connect" />
+            <CardHead title={t.connectAny} id="f-connect" />
             <AddressQr size={200} />
-            <p className="about-text">
-              Use <span className="path url">http://{address}</span> or scan this code.
-            </p>
+            <p className="about-text">{t.useAddress(<span className="path url">http://{address}</span>)}</p>
           </section>
         )}
       </div>
 
       <section className="card formats-card" aria-labelledby="f-title">
-        <CardHead icon="table" title="Compare formats" id="f-title" />
-        <div className="table-wrap" tabIndex={0} role="region" aria-label="Format comparison">
+        <CardHead icon="table" title={t.compare} id="f-title" />
+        <div className="table-wrap" tabIndex={0} role="region" aria-label={t.compareLabel}>
           <table className="compare">
             <thead>
               <tr>
-                <th scope="col">Format</th>
-                {COLUMNS.map((c) => (
+                <th scope="col">{t.format}</th>
+                {t.columns.map((c) => (
                   <th scope="col" key={c}>
                     {c}
                   </th>
@@ -156,15 +107,15 @@ export function Formats() {
                 <tr key={r.kind}>
                   <th scope="row">
                     <FormatPill kind={r.kind} />
-                    <span className="tagline">{r.tagline}</span>
+                    <span className="tagline">{t.rows[r.kind].tagline}</span>
                   </th>
-                  {r.cells.map(([text, rate], i) => (
+                  {r.rates.map((rate, i) => (
                     <td key={i}>
                       <span className={`chip ${rate}`}>
-                        <Icon name={RATING[rate].icon} />
+                        <Icon name={RATING_ICON[rate]} />
                         <span>
-                          <span className="visually-hidden">{RATING[rate].say}: </span>
-                          {text}
+                          <span className="visually-hidden">{t.rating[rate]}: </span>
+                          {t.rows[r.kind].cells[i]}
                         </span>
                       </span>
                     </td>
@@ -175,21 +126,49 @@ export function Formats() {
           </table>
         </div>
         <div className="credits">
+          <p className="muted">{t.upstream(APP_NAME)}</p>
           <p className="muted">
-            Upstream's numbers: what the authors of ampr_emu and Lazy_AMPR report, not measured by
-            {APP_NAME}; they vary by game. ampr_emu 0.4.2.1 is an upstream test build; known
-            issue: some games crash when saving.
+            {t.bundled} <span className="path">https://github.com/drakmor/ampr_emu</span>
           </p>
           <p className="muted">
-            LZ4 packed folders run on ampr_emu 0.4.2.1 by drakmor (GPL-3.0), bundled unmodified.
-            Source: <span className="path">https://github.com/drakmor/ampr_emu</span>
-          </p>
-          <p className="muted">
-            The trace-then-pack workflow follows Lazy_AMPR by Nazky:{" "}
-            <span className="path">https://github.com/Nazky/Lazy_AMPR</span>
+            {t.lazy} <span className="path">https://github.com/Nazky/Lazy_AMPR</span>
           </p>
         </div>
       </section>
     </div>
+  );
+}
+
+type Choice = Lang | "system";
+
+/** The UI language, right in the About card's header: the system's, or one chosen here (kept by
+ * i18n.ts). A native select drawn as a small pill (DESIGN.md), each language named in its own
+ * words; it holds any number of them. */
+function LanguagePicker() {
+  const t = useMessages().formats;
+  // Local too: the store switches only once the language's file has loaded.
+  const [choice, setChoice] = useState<Choice>(getChoice() ?? "system");
+  const choose = (c: Choice) => {
+    setChoice(c);
+    // A language file that can't load leaves the language as it was: so does the picker.
+    setLang(c === "system" ? null : c).catch(() => setChoice(getChoice() ?? "system"));
+  };
+  return (
+    <label className="head-lang">
+      <span>{t.language}</span>
+      <select
+        id="ui-language"
+        className="lang-select"
+        value={choice}
+        onChange={(e) => choose(e.target.value as Choice)}
+      >
+        <option value="system">{t.system}</option>
+        {(Object.entries(LANGS) as [Lang, string][]).map(([l, name]) => (
+          <option key={l} value={l} lang={l}>
+            {name}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

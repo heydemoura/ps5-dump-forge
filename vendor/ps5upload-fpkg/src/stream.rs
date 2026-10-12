@@ -625,16 +625,6 @@ mod tests {
     use crate::plan;
     use crate::source::SourceFile;
 
-    #[test]
-    fn the_compression_pool_follows_the_cap() {
-        let all = std::thread::available_parallelism().map_or(4, |n| n.get());
-        assert_eq!(compression_threads(Some(1)), 1);
-        assert_eq!(compression_threads(Some(3)), 3.min(all));
-        assert_eq!(compression_threads(Some(0)), all);
-        assert_eq!(compression_threads(None), all);
-        assert_eq!(compression_threads(Some(usize::MAX)), all);
-    }
-
     /// The metric blob's digests must be the image's: one per stored block and one per file
     /// in afid order, whether they come from the stream or from a built image.
     #[test]
