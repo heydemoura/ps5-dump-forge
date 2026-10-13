@@ -1223,7 +1223,7 @@ fn write_mode(
                 param_json: param_json.clone(),
                 icon_png: prepared.icon_png.clone(),
                 icon_dds: prepared.icon_dds.clone(),
-                extras: prepared.extras.clone(),
+                extras: &prepared.extras,
                 playgo_chunks: request.playgo_chunks,
                 kraken_spool: request
                     .kraken

@@ -90,15 +90,16 @@ impl MetaCodec {
 
 /// The metadata region, as the mount reads it and as the image stores it.
 ///
-/// The two are not the same buffer. The mount sees `plain` at `meta_base`; the image stores
-/// `image_tail` there, which for a compressed region is a container that expands back to `plain`.
+/// The two are not always the same bytes. The mount sees `plain` at `meta_base`; the image stores
+/// [`Metadata::image_tail`] there, which for a compressed region is a container that expands back
+/// to `plain`, and for a stored one is `plain` itself (held once).
 /// `blocks` is the per-256-KiB geometry that ties them together: the layout descriptor records it
 /// so the console can find each block's payload.
 pub struct Metadata {
     /// The region's logical bytes, from `meta_base` to the mount's end.
     pub plain: Vec<u8>,
-    /// What the image stores at `meta_base`.
-    pub image_tail: Vec<u8>,
+    /// What the image stores at `meta_base` when that is not `plain`: the codec's container.
+    container: Option<Vec<u8>>,
     /// One entry per 256 KiB of `plain`, with `payload_at` relative to `meta_base`.
     pub blocks: Vec<pfsc::BlockInfo>,
 }
@@ -118,8 +119,8 @@ impl Metadata {
             })
             .collect();
         Self {
-            image_tail: plain.clone(),
             plain,
+            container: None,
             blocks,
         }
     }
@@ -129,9 +130,14 @@ impl Metadata {
         let written = pfsc::write_zlib(&plain)?;
         Ok(Self {
             plain,
-            image_tail: written.container,
+            container: Some(written.container),
             blocks: written.blocks,
         })
+    }
+
+    /// What the image stores at `meta_base`.
+    pub fn image_tail(&self) -> &[u8] {
+        self.container.as_deref().unwrap_or(&self.plain)
     }
 
     pub fn for_codec(plain: Vec<u8>, codec: MetaCodec) -> Result<Self> {
@@ -534,12 +540,12 @@ pub fn write_with(
     }
     let metadata = Metadata::for_codec(region, codec)?;
     let meta_at = plan.meta_base as usize;
-    let tail_end = meta_at + metadata.image_tail.len();
+    let tail_end = meta_at + metadata.image_tail().len();
     if tail_end > image.len() {
         return format_err("the metadata region runs past the mount");
     }
     image.truncate(tail_end.div_ceil(BLOCK as usize) * BLOCK as usize);
-    image[meta_at..tail_end].copy_from_slice(&metadata.image_tail);
+    image[meta_at..tail_end].copy_from_slice(metadata.image_tail());
 
     Ok(InnerImage {
         image,
@@ -568,16 +574,15 @@ pub struct Span {
 ///
 /// A block is filled from the file bytes that land in it (a block can hold the tail of one
 /// file and the head of the next), the block-info table, or the metadata region — the two
-/// latter are held whole, because both are bounded by the file count rather than the
-/// package size. Nothing here is proportional to the image, so a 100 GB game streams.
+/// latter are held whole (the region once, its blocks copied out as they are asked for),
+/// because both are bounded by the file count rather than the package size. Nothing here is
+/// proportional to the image, so a 100 GB game streams.
 pub struct BlockSource<'a> {
     plan: &'a Plan,
     spans: Vec<Span>,
     table: Vec<u8>,
     table_block: u64,
     metadata: Metadata,
-    /// The metadata region's on-disk blocks, which is what the image stores there.
-    meta: Vec<Vec<u8>>,
     meta_block: u64,
     keystone: Vec<u8>,
     buf: Vec<u8>,
@@ -618,23 +623,12 @@ impl<'a> BlockSource<'a> {
             ));
         }
         let metadata = Metadata::for_codec(region, codec)?;
-        // Every on-disk block is whole: a caller writes them a block at a time, so a short tail
-        // block is zero-padded, exactly as the in-memory writer pads the image.
-        let mut meta: Vec<Vec<u8>> = metadata
-            .image_tail
-            .chunks(BLOCK as usize)
-            .map(<[u8]>::to_vec)
-            .collect();
-        if let Some(last) = meta.last_mut() {
-            last.resize(BLOCK as usize, 0);
-        }
         Ok(Self {
             plan,
             spans,
             table: block_info_table(plan),
             table_block: plan.data_end.div_ceil(BLOCK),
             metadata,
-            meta,
             meta_block: plan.meta_base / BLOCK,
             keystone: keystone(passcode).to_vec(),
             buf: vec![0u8; BLOCK as usize],
@@ -648,7 +642,7 @@ impl<'a> BlockSource<'a> {
 
     /// The on-disk image's size in blocks, which is what the outer image stores.
     pub fn disk_blocks(&self) -> u64 {
-        self.meta_block + self.meta.len() as u64
+        self.meta_block + (self.metadata.image_tail().len() as u64).div_ceil(BLOCK)
     }
 
     /// The region's logical bytes, which is what the install metadata describes.
@@ -667,8 +661,8 @@ impl<'a> BlockSource<'a> {
     }
 
     /// The metadata region's logical bytes — bounded by the file count, not the image size.
-    pub fn metadata_region(&self) -> Vec<u8> {
-        self.metadata.plain.clone()
+    pub fn metadata_region(&self) -> &[u8] {
+        &self.metadata.plain
     }
 
     /// Block `index` of the on-disk image. The buffer is reused between calls, and `read` fetches
@@ -685,9 +679,16 @@ impl<'a> BlockSource<'a> {
         }
         self.buf.fill(0);
         if index >= self.meta_block {
-            let at = (index - self.meta_block) as usize;
-            return match self.meta.get(at) {
-                Some(block) => Ok(block),
+            // Every on-disk block is whole: a caller writes them a block at a time, so a short
+            // tail block is zero-padded, exactly as the in-memory writer pads the image.
+            let tail = self.metadata.image_tail();
+            let from = ((index - self.meta_block) * BLOCK) as usize;
+            let to = (from + BLOCK as usize).min(tail.len());
+            return match tail.get(from..to) {
+                Some(bytes) => {
+                    self.buf[..bytes.len()].copy_from_slice(bytes);
+                    Ok(&self.buf)
+                }
                 None => format_err(format!("the metadata region has no block {index}")),
             };
         }
@@ -994,24 +995,30 @@ mod tests {
             .collect();
         let mut read_all =
             |path: &str| -> Result<Vec<u8>> { Ok(payloads.get(path).cloned().unwrap_or_default()) };
-        let whole = write(&plan, crate::crypto::DEFAULT_PASSCODE, &mut read_all, time).unwrap();
+        // Zlib leaves a short last metadata block, which the block source pads; Stored keeps
+        // the region once and serves its blocks from it.
+        for codec in [MetaCodec::Zlib, MetaCodec::Stored] {
+            let pass = crate::crypto::DEFAULT_PASSCODE;
+            let whole = write_with(&plan, pass, &mut read_all, time, codec).unwrap();
 
-        let mut source = BlockSource::new(&plan, crate::crypto::DEFAULT_PASSCODE, time).unwrap();
-        let mut image = Vec::with_capacity((source.disk_blocks() * BLOCK) as usize);
-        for index in 0..source.disk_blocks() {
-            let block = source
-                .block(index, &mut |path, offset, len| {
-                    let data = payloads.get(path).cloned().unwrap_or_default();
-                    let at = (offset as usize).min(data.len());
-                    let end = (at + len).min(data.len());
-                    Ok(data[at..end].to_vec())
-                })
-                .unwrap()
-                .to_vec();
-            image.extend_from_slice(&block);
+            let mut source = BlockSource::new_with(&plan, pass, time, codec).unwrap();
+            let mut image = Vec::with_capacity((source.disk_blocks() * BLOCK) as usize);
+            for index in 0..source.disk_blocks() {
+                let block = source
+                    .block(index, &mut |path, offset, len| {
+                        let data = payloads.get(path).cloned().unwrap_or_default();
+                        let at = (offset as usize).min(data.len());
+                        let end = (at + len).min(data.len());
+                        Ok(data[at..end].to_vec())
+                    })
+                    .unwrap()
+                    .to_vec();
+                image.extend_from_slice(&block);
+            }
+            assert_eq!(image.len(), whole.image.len());
+            assert!(image == whole.image, "the block source and write disagree");
+            assert_eq!(source.metadata_region(), whole.metadata.plain);
         }
-        assert_eq!(image.len(), whole.image.len());
-        assert!(image == whole.image, "the block source and write disagree");
     }
 
     /// `webbrowser.pkg` stores its keystone raw at the inner image's offset 0, so those

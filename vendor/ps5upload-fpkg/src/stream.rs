@@ -40,8 +40,8 @@ pub struct StreamRequest<'a> {
     pub param_json: Vec<u8>,
     pub icon_png: Vec<u8>,
     pub icon_dds: Vec<u8>,
-    /// The presentation entries beyond the icons.
-    pub extras: Vec<cnt_write::ExtraEntry>,
+    /// The presentation entries beyond the icons, borrowed: artwork can run to tens of MiB.
+    pub extras: &'a [cnt_write::ExtraEntry],
     /// PlayGo chunks; see [`crate::playgo`].
     pub playgo_chunks: u16,
     /// Compress the inner image with Kraken (see [`crate::kraken_image`]), spooling it where
@@ -259,10 +259,9 @@ pub fn write_package(
             (progress.phase)("compressing the image");
             let threads = compression_threads(request.threads);
             let keystone = crate::inner::keystone(request.passcode);
-            let metadata = source.metadata_region();
             let image = crate::kraken_image::compress(
                 plan,
-                &metadata,
+                source.metadata_region(),
                 &keystone,
                 read,
                 spool_file(out, where_to)?,
@@ -503,7 +502,7 @@ pub fn write_package(
         param_json: &request.param_json,
         icon_png: &request.icon_png,
         icon_dds: &request.icon_dds,
-        extras: &request.extras,
+        extras: request.extras,
         playgo_chunk: &playgo.chunk_dat,
         playgo_hash_table: &playgo.hash_table,
         playgo_ficm: &playgo.ficm,
@@ -540,7 +539,7 @@ pub fn write_package(
             image.image_len,
             inner_size,
             &digests_18,
-            &source.metadata_region(),
+            source.metadata_region(),
             &files,
             &si_write::kraken_blocks(image),
             plan.meta_base,
@@ -549,7 +548,7 @@ pub fn write_package(
         None => si_write::naps_meta_18(
             inner_size,
             &digests_18,
-            &source.metadata_region(),
+            source.metadata_region(),
             &files,
             plan.data_end,
             plan.meta_base,
@@ -710,7 +709,7 @@ mod tests {
                 blocks: blocks_streamed,
                 files: files_streamed,
             },
-            &source.metadata_region(),
+            source.metadata_region(),
             &list,
             plan.data_end,
             plan.meta_base,

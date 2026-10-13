@@ -1,0 +1,33 @@
+diff --git a/lzma-rust2/src/lzma2_reader_mt.rs b/lzma-rust2/src/lzma2_reader_mt.rs
+index 5d0fcd0..b0b689e 100644
+--- a/lzma-rust2/src/lzma2_reader_mt.rs
++++ b/lzma-rust2/src/lzma2_reader_mt.rs
+@@ -280,7 +280,12 @@ impl<R: Read> Lzma2ReaderMt<R> {
+ 
+                     // Read ahead while fewer units are queued than there are workers. Blocking as
+                     // soon as the queue is non-empty stalls the reader behind a single worker.
+-                    if self.work_queue.len() < self.max_workers as usize {
++                    // At most two units per worker are out (queued, decoding or decoded ahead
++                    // of the one awaited), so a worker that lags can't let decoded data pile up.
++                    let out = self.next_sequence_to_dispatch - self.next_sequence_to_return;
++                    if self.work_queue.len() < self.max_workers as usize
++                        && out < 2 * u64::from(self.max_workers)
++                    {
+                         match self.read_and_dispatch_chunk() {
+                             Ok(true) => {
+                                 // Successfully read and dispatched a chunk, loop to continue.
+@@ -455,7 +460,12 @@ impl<R: Read> Drop for Lzma2ReaderMt<R> {
+     fn drop(&mut self) {
+         self.shutdown_flag.store(true, Ordering::Release);
+         self.work_queue.close();
+-        // Worker threads will exit when the work queue is closed.
+-        // JoinHandles will be dropped, which is fine since we set the shutdown flag,
++        // Worker threads exit when the work queue is closed, once their current unit is done:
++        // wait for them, so their buffers are gone before another reader allocates its own.
++        // The receiver goes first, so a worker blocked sending a result returns instead.
++        drop(core::mem::replace(&mut self.result_rx, mpsc::sync_channel(0).1));
++        for handle in self.worker_handles.drain(..) {
++            let _ = handle.join();
++        }
+     }
+ }

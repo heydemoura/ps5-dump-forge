@@ -757,7 +757,13 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
     let part_path = part_path(&out, ctx.job);
     // Reads run one range ahead on their own thread; hashing stays here, and `HashingTree`
     // sees exactly the calls and bytes it would without read-ahead.
-    let mut ahead = Prefetch::new(source).context("starting the read-ahead thread")?;
+    // The folder writer reads `files()` in order, so its next file is read ahead too.
+    let mut ahead = if matches!(plan, Plan::Folder) {
+        Prefetch::sequential(source, crate::extract::CHUNK as usize)
+    } else {
+        Prefetch::new(source)
+    }
+    .context("starting the read-ahead thread")?;
     let mut hashing = HashingTree::new(&mut ahead);
     #[cfg(target_os = "freebsd")]
     let mut cadence = crate::durable::Cadence::new();

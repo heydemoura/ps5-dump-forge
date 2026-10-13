@@ -1,0 +1,374 @@
+use std::{
+    io::{Cursor, Read, Write},
+    num::{NonZero, NonZeroU64},
+    sync::{Arc, Mutex},
+};
+
+use lzma_rust2::{LzipOptions, LzipReader, LzipReaderMt, LzipWriter, LzipWriterMt};
+
+struct HugeMember {
+    pos: u64,
+    size: u64,
+}
+
+impl Read for HugeMember {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let count = buf.len().min(self.size.saturating_sub(self.pos) as usize);
+        for (offset, byte) in buf[..count].iter_mut().enumerate() {
+            let pos = self.pos + offset as u64;
+            *byte = if pos < 4 {
+                b"LZIP"[pos as usize]
+            } else if pos >= self.size - 8 {
+                self.size.to_le_bytes()[(pos - (self.size - 8)) as usize]
+            } else {
+                0
+            };
+        }
+        self.pos += count as u64;
+        Ok(count)
+    }
+}
+
+impl std::io::Seek for HugeMember {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.pos = match pos {
+            std::io::SeekFrom::Start(pos) => pos,
+            std::io::SeekFrom::End(0) => self.size,
+            _ => unreachable!(),
+        };
+        Ok(self.pos)
+    }
+}
+
+#[test]
+fn impossible_member_allocation_returns_error() {
+    let source = HugeMember {
+        pos: 0,
+        size: isize::MAX as u64 + 1,
+    };
+    let mut reader = LzipReaderMt::new(source, 1).unwrap();
+    let error = reader.read(&mut [0]).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+}
+
+#[test]
+fn memory_limit_rejects_large_member_output() {
+    let input = vec![b'x'; 2 * 1024 * 1024];
+    let mut options = LzipOptions::with_preset(0);
+    options.lzma_options.dict_size = 4096;
+    let mut writer = LzipWriter::new(Vec::new(), options);
+    writer.write_all(&input).unwrap();
+    let archive = writer.finish().unwrap();
+    assert!(archive.len() < 1024 * 1024 / 2);
+
+    let mut limited = LzipReaderMt::new_mem_limit(Cursor::new(archive.clone()), 1024, 2).unwrap();
+    let error = limited.read_to_end(&mut Vec::new()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+
+    let mut sufficient =
+        LzipReaderMt::new_mem_limit(Cursor::new(archive.clone()), 4096, 2).unwrap();
+    let mut output = Vec::new();
+    sufficient.read_to_end(&mut output).unwrap();
+    assert_eq!(output, input);
+
+    let mut unlimited = LzipReaderMt::new(Cursor::new(archive), 2).unwrap();
+    output.clear();
+    unlimited.read_to_end(&mut output).unwrap();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn forged_span_is_rejected_before_decoding_a_second_member() {
+    let mut first_options = LzipOptions::with_preset(0);
+    first_options.lzma_options.dict_size = 4096;
+    let first = LzipWriter::new(Vec::new(), first_options).finish().unwrap();
+    let mut options = LzipOptions::with_preset(0);
+    options.lzma_options.dict_size = 4096;
+    let mut writer = LzipWriter::new(Vec::new(), options);
+    writer.write_all(&vec![b'x'; 256 * 1024]).unwrap();
+    let second = writer.finish().unwrap();
+
+    let mut archive = first;
+    archive.extend(second);
+    let size = archive.len();
+    archive[size - 8..].copy_from_slice(&(size as u64).to_le_bytes());
+
+    let mut reader = LzipReaderMt::new_mem_limit(Cursor::new(archive), 128, 1).unwrap();
+    assert_eq!(reader.member_count(), 1);
+    let error = reader.read_to_end(&mut Vec::new()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn many_empty_members_do_not_exhaust_the_read_stack() {
+    let empty = LzipWriter::new(Vec::new(), LzipOptions::with_preset(0))
+        .finish()
+        .unwrap();
+    let mut archive = empty.repeat(20_000);
+    let mut last = LzipWriter::new(Vec::new(), LzipOptions::with_preset(0));
+    last.write_all(b"last").unwrap();
+    archive.extend(last.finish().unwrap());
+
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let mut reader = LzipReaderMt::new(Cursor::new(archive), 1).unwrap();
+            let mut output = Vec::new();
+            reader.read_to_end(&mut output).unwrap();
+            assert_eq!(output, b"last");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+static EXECUTABLE: &str = "tests/data/executable.exe";
+static PG100: &str = "tests/data/pg100.txt";
+static PG6800: &str = "tests/data/pg6800.txt";
+
+/// A sink that can be read while the writer still holds it.
+#[derive(Clone, Default)]
+struct SharedSink(Arc<Mutex<Vec<u8>>>);
+
+impl Write for SharedSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn flush_writes_out_every_member() {
+    let data = std::fs::read(PG100).unwrap();
+    let member_size = 128 * 1024;
+
+    for num_workers in [1, 4] {
+        let mut options = LzipOptions::with_preset(6);
+        options.lzma_options.dict_size = member_size as u32;
+        options.set_member_size(NonZeroU64::new(member_size));
+
+        let sink = SharedSink::default();
+        let mut writer = LzipWriterMt::new(sink.clone(), options, num_workers).unwrap();
+
+        let mut written = 0;
+
+        for chunk in data[..900 * 1024].chunks(300 * 1024) {
+            writer.write_all(chunk).unwrap();
+            writer.flush().unwrap();
+            written += chunk.len();
+
+            // Every member that was flushed is complete, so this is a valid file.
+            let compressed = sink.0.lock().unwrap().clone();
+            let mut uncompressed = Vec::new();
+            LzipReader::new(Cursor::new(compressed.as_slice()))
+                .read_to_end(&mut uncompressed)
+                .unwrap();
+
+            // We don't use assert_eq since the debug output would be too big.
+            assert!(uncompressed == data[..written]);
+        }
+
+        // Writing has to continue to work after the flushes.
+        writer.finish().unwrap();
+
+        let compressed = sink.0.lock().unwrap().clone();
+        let mut uncompressed = Vec::new();
+        LzipReader::new(Cursor::new(compressed.as_slice()))
+            .read_to_end(&mut uncompressed)
+            .unwrap();
+
+        assert!(uncompressed == data[..written]);
+    }
+}
+
+fn test_round_trip(path: &str, level: u32) {
+    let data = std::fs::read(path).unwrap();
+    let data_len = data.len() as u32;
+
+    let available_parallelism = std::thread::available_parallelism()
+        .unwrap_or(NonZero::new(1).unwrap())
+        .get()
+        .min(256) as u32;
+
+    let mut options = LzipOptions::with_preset(level);
+    let dict_size = options.lzma_options.dict_size;
+    options.set_member_size(NonZeroU64::new(dict_size as u64));
+
+    let mut compressed = Vec::new();
+
+    {
+        let mut writer =
+            LzipWriterMt::new(&mut compressed, options, available_parallelism).unwrap();
+        writer.write_all(&data).unwrap();
+        writer.finish().unwrap();
+    }
+
+    let mut uncompressed = Vec::new();
+
+    {
+        let cursor = Cursor::new(compressed);
+        let mut reader = LzipReaderMt::new(cursor, available_parallelism).unwrap();
+        reader.read_to_end(&mut uncompressed).unwrap();
+
+        if dict_size < data_len {
+            assert!(reader.member_count() > 1);
+        }
+    }
+
+    // We don't use assert_eq since the debug output would be too big.
+    assert!(uncompressed.as_slice() == data);
+}
+
+#[test]
+fn round_trip_executable_0() {
+    test_round_trip(EXECUTABLE, 0);
+}
+
+#[test]
+fn round_trip_executable_1() {
+    test_round_trip(EXECUTABLE, 1);
+}
+
+#[test]
+fn round_trip_executable_2() {
+    test_round_trip(EXECUTABLE, 2);
+}
+
+#[test]
+fn round_trip_executable_3() {
+    test_round_trip(EXECUTABLE, 3);
+}
+
+#[test]
+fn round_trip_executable_4() {
+    test_round_trip(EXECUTABLE, 4);
+}
+
+#[test]
+fn round_trip_executable_5() {
+    test_round_trip(EXECUTABLE, 5);
+}
+
+#[test]
+fn round_trip_executable_6() {
+    test_round_trip(EXECUTABLE, 6);
+}
+
+#[test]
+fn round_trip_executable_7() {
+    test_round_trip(EXECUTABLE, 7);
+}
+
+#[test]
+fn round_trip_executable_8() {
+    test_round_trip(EXECUTABLE, 8);
+}
+
+#[test]
+fn round_trip_executable_9() {
+    test_round_trip(EXECUTABLE, 9);
+}
+
+#[test]
+fn round_trip_pg100_0() {
+    test_round_trip(PG100, 0);
+}
+
+#[test]
+fn round_trip_pg100_1() {
+    test_round_trip(PG100, 1);
+}
+
+#[test]
+fn round_trip_pg100_2() {
+    test_round_trip(PG100, 2);
+}
+
+#[test]
+fn round_trip_pg100_3() {
+    test_round_trip(PG100, 3);
+}
+
+#[test]
+fn round_trip_pg100_4() {
+    test_round_trip(PG100, 4);
+}
+
+#[test]
+fn round_trip_pg100_5() {
+    test_round_trip(PG100, 5);
+}
+
+#[test]
+fn round_trip_pg100_6() {
+    test_round_trip(PG100, 6);
+}
+
+#[test]
+fn round_trip_pg100_7() {
+    test_round_trip(PG100, 7);
+}
+
+#[test]
+fn round_trip_pg100_8() {
+    test_round_trip(PG100, 8);
+}
+
+#[test]
+fn round_trip_pg100_9() {
+    test_round_trip(PG100, 9);
+}
+
+#[test]
+fn round_trip_pg6800_0() {
+    test_round_trip(PG6800, 0);
+}
+
+#[test]
+fn round_trip_pg6800_1() {
+    test_round_trip(PG6800, 1);
+}
+
+#[test]
+fn round_trip_pg6800_2() {
+    test_round_trip(PG6800, 2);
+}
+
+#[test]
+fn round_trip_pg6800_3() {
+    test_round_trip(PG6800, 3);
+}
+
+#[test]
+fn round_trip_pg6800_4() {
+    test_round_trip(PG6800, 4);
+}
+
+#[test]
+fn round_trip_pg6800_5() {
+    test_round_trip(PG6800, 5);
+}
+
+#[test]
+fn round_trip_pg6800_6() {
+    test_round_trip(PG6800, 6);
+}
+
+#[test]
+fn round_trip_pg6800_7() {
+    test_round_trip(PG6800, 7);
+}
+
+#[test]
+fn round_trip_pg6800_8() {
+    test_round_trip(PG6800, 8);
+}
+
+#[test]
+fn round_trip_pg6800_9() {
+    test_round_trip(PG6800, 9);
+}

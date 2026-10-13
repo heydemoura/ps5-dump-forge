@@ -234,6 +234,11 @@ trait Sink {
     fn enough(&self) -> bool {
         false
     }
+    /// Reads whole files front to back (a job's session), so a 7z block may decode on several
+    /// threads; small reads (Inspect, naming, covers, password probes) stay on one.
+    fn streams(&self) -> bool {
+        false
+    }
 }
 fn walk(
     path: &Path,

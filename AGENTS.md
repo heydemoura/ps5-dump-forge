@@ -57,6 +57,9 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `app/scripts/*.mjs`: plain-node checks (`check-paths`, `check-poller`, `check-launcher`, `smoke`).
 - `vendor/ps5upload-{fpkg,pkg}`: ps5upload v7.0.22 crates (readers, FPKG builder, verify) plus a
   local patch series in `vendor/patches/`; see `vendor/README.md`. Edition 2021 on purpose.
+  `vendor/lzma-rust2`: crates.io 0.22.0 + patch 0021 (bounded multithreaded LZMA2 decode, which
+  `sevenz.rs` sizes per block by dictionary and largest run), via `[patch.crates-io]`, excluded
+  from the workspace.
 - `scripts/`: checks and releases (see Commands); `check-versions.sh` also matches the tag on a tag build.
   `fuzz/`: cargo-fuzz targets, its own workspace.
 - `DESIGN.md`: the UI design system (tokens, components, colour/contrast rules, the cover glow);
@@ -81,6 +84,11 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   jobs alike, and only when none fits is the error "needs a password" (the UI's prompt); CLI `--password-stdin` / `FORGE_ARCHIVE_PASSWORD`. Multi-part: `.partN.rar`, `.rar`+`.rNN`,
   `.7z.NNN`/`.zip.NNN`, split `.z01`…`.zip`; first part only, missing parts named. 7z Deflate is refused: its
   `deflate` feature would switch the workspace's `flate2` to zlib-rs, replacing `.ffpfsc`'s miniz_oxide.
+  Memory (by user decision): a job stays within 512 MiB except for the archive's own dictionary,
+  which the decoder allocates whole: RAR is accepted up to 4 GiB and 7z up to 1 GiB, so an archive
+  packed with a dictionary over ~256 MiB goes past the cap. 7z LZMA2 decodes on several threads
+  only in a job's session (`Sink::streams`; small reads stay on one) and for a block that is a lone
+  LZMA2 coder, sized per block (dictionary + 6 × its largest run within 256 MiB; `sevenz::decode_threads`); RAR5 decodes on UnRAR's own threads (at most 8).
 - LZ4 packs are an asset-pack transform of a game folder (ampr_emu), not an SMP image format: `--to lz4`
   writes a folder (no extension) with `ampr_assets.index`, `.crc`, `ampr_assets-NNN.pak` volumes, loose
   leftovers and the runtime; converting that folder to an image is an ordinary second convert (packs are

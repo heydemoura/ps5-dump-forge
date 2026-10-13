@@ -37,8 +37,12 @@ struct Ahead {
 ///
 /// The writer still checks its cancel flag between reads. Dropping this waits for the worker,
 /// so a read already in a syscall finishes first.
-// ponytail: the next file is not read ahead, so a game of many small files gains little.
-// Upgrade: guess the next file in the writer's order (each writer has its own).
+///
+/// With [`Prefetch::sequential`] a range that ends its file is followed by the first `chunk`
+/// bytes of the next non-empty file of `files()`: for a writer that reads the files in that
+/// order (the folder writer), so an archive's decoder runs on across the file boundary.
+// ponytail: the image, `.pkg` and LZ4 writers read in their own orders, so for them the next
+// file is not read ahead. Upgrade: let each writer name its order.
 pub(crate) struct Prefetch {
     files: Vec<SourceFile>,
     empty_dirs: Vec<String>,
@@ -54,12 +58,27 @@ pub(crate) struct Prefetch {
 
 impl Prefetch {
     pub(crate) fn new(tree: Box<dyn SourceTree>) -> std::io::Result<Self> {
-        Self::with_window(tree, 0)
+        Self::start(tree, 0, None)
+    }
+
+    /// Also reads the next file ahead; only for a writer that reads `files()` in order, each
+    /// front to back in reads of `chunk` bytes at most (else a wrong guess costs a read, and an
+    /// archive a restart).
+    pub(crate) fn sequential(tree: Box<dyn SourceTree>, chunk: usize) -> std::io::Result<Self> {
+        Self::start(tree, 0, Some(chunk))
     }
 
     /// Reads ahead at least `window` bytes at a time: for a source that pays per read (a
     /// `.pkg`'s decode threads) and a writer that asks for less.
     pub(crate) fn with_window(tree: Box<dyn SourceTree>, window: usize) -> std::io::Result<Self> {
+        Self::start(tree, window, None)
+    }
+
+    fn start(
+        tree: Box<dyn SourceTree>,
+        window: usize,
+        next_file: Option<usize>,
+    ) -> std::io::Result<Self> {
         let (files, empty_dirs, describe) = (
             tree.files().to_vec(),
             tree.empty_dirs().to_vec(),
@@ -70,7 +89,7 @@ impl Prefetch {
         let (answers, answer) = sync_channel(1);
         let worker = std::thread::Builder::new()
             .name("read-ahead".into())
-            .spawn(move || serve(tree, asks, answers, window))?;
+            .spawn(move || serve(tree, asks, answers, window, next_file))?;
         let sizes = files.iter().map(|f| (f.path.clone(), f.size)).collect();
         Ok(Self {
             window,
@@ -116,11 +135,14 @@ fn serve(
     asks: Receiver<Ask>,
     answers: SyncSender<Result<Vec<u8>>>,
     window: usize,
+    next_file: Option<usize>,
 ) {
-    let sizes: HashMap<String, u64> = tree
-        .files()
+    let files = tree.files().to_vec();
+    // Each path's size and its place in `files`.
+    let sizes: HashMap<String, (u64, usize)> = files
         .iter()
-        .map(|f| (f.path.clone(), f.size))
+        .enumerate()
+        .map(|(i, f)| (f.path.clone(), (f.size, i)))
         .collect();
     let mut ahead: Option<Ahead> = None;
     for ask in asks {
@@ -147,10 +169,19 @@ fn serve(
                     _ => tree.read_range(&path, offset, len),
                 };
                 let next = match &answer {
-                    Ok(bytes) if !bytes.is_empty() && len <= AHEAD_MAX => offset
-                        .checked_add(bytes.len() as u64)
-                        .filter(|&at| sizes.get(&path).is_some_and(|&size| at < size))
-                        .map(|at| (path, at, len.max(window))),
+                    Ok(bytes) if !bytes.is_empty() && len <= AHEAD_MAX => {
+                        let at = offset.checked_add(bytes.len() as u64);
+                        match (at, sizes.get(&path)) {
+                            (Some(at), Some(&(size, _))) if at < size => {
+                                Some((path, at, len.max(window)))
+                            }
+                            (Some(_), Some(&(_, i))) => next_file.and_then(|chunk| {
+                                let f = files[i + 1..].iter().find(|f| f.size > 0)?;
+                                Some((f.path.clone(), 0, chunk.max(window)))
+                            }),
+                            _ => None,
+                        }
+                    }
                     _ => None,
                 };
                 (answer, next)
@@ -314,6 +345,24 @@ mod tests {
 
     fn at(path: &str, offset: u64, len: usize) -> (String, u64, usize) {
         (path.into(), offset, len)
+    }
+
+    #[test]
+    fn sequential_reads_the_next_non_empty_file_ahead() {
+        let data = bytes(500, 1);
+        let mem = Mem::new(&[("f", data.clone()), ("e", Vec::new()), ("g", bytes(10, 2))]);
+        let log = mem.log.clone();
+        let mut tree = Prefetch::sequential(Box::new(mem), 300).unwrap();
+        assert_eq!(tree.read_range("f", 0, 300).unwrap(), data[..300]);
+        assert_eq!(tree.read_range("f", 300, 200).unwrap(), data[300..]);
+        // The end of `f` is followed by the writer's first read of `g`, a whole chunk.
+        assert_eq!(
+            settled(&log, 3),
+            [at("f", 0, 300), at("f", 300, 300), at("g", 0, 300)]
+        );
+        assert_eq!(tree.read_range("g", 0, 10).unwrap(), bytes(10, 2));
+        // Served from the guess; nothing follows the last file.
+        assert_eq!(settled(&log, 3).len(), 3);
     }
 
     #[test]

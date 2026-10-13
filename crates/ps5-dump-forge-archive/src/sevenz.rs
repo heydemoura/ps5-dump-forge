@@ -1,7 +1,7 @@
 use super::*;
 use parts::Parts;
 use sevenz_rust2::{Archive, ArchiveEntry, BlockDecoder, EncoderMethod as M, Error, Password};
-use std::io::{Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 
 struct SecretPassword(Password);
 impl fmt::Debug for SecretPassword {
@@ -241,6 +241,95 @@ fn dictionary(id: &[u8], props: &[u8]) -> Option<u64> {
         _ => None,
     }
 }
+/// What one block's LZMA2 decode workers may hold together, so a job stays inside 512 MiB.
+const DECODE_BUDGET: u64 = 256 << 20;
+/// Larger packed blocks are not walked for [`largest_run`]: they decode on one thread.
+// ponytail: the walk reads the block once before it decodes, so past this a solid block decodes
+// on one thread (on a slow drive the extra read costs what the threads save). Upgrade: walk
+// while decoding, from the reader's own chunk headers, if large solid blocks matter.
+const WALK_MAX: u64 = 1 << 30;
+
+/// Decode threads for block `b`. sevenz-rust2 decodes LZMA2 on several threads, one run of
+/// chunks between dictionary resets per worker; with patch 0021 at most two runs per worker
+/// are out, each decoded into a buffer that may have doubled past it, plus the input and the
+/// run being served: a dictionary and six runs per worker. So the count follows the block's largest
+/// run, found by walking its chunk headers just before it decodes (the pages stay cached for
+/// the decoder). One thread unless the block is a lone LZMA2 coder, whose pack stream is then
+/// the LZMA2 stream, starting at `start` (a filter's place in a chain isn't public, and every
+/// LZMA2 coder of a chain would get the threads).
+fn decode_threads(
+    archive: &Archive,
+    b: usize,
+    start: Option<u64>,
+    source: &mut Parts,
+    cancel: &AtomicBool,
+) -> u32 {
+    let [lzma2] = archive.blocks[b].coders.as_slice() else {
+        return 1;
+    };
+    let packed = archive.pack_sizes().get(b).copied().unwrap_or(u64::MAX);
+    let (true, Some(start), Some(dict)) = (
+        lzma2.encoder_method_id() == M::ID_LZMA2 && packed <= WALK_MAX,
+        start,
+        dictionary(M::ID_LZMA2, lzma2.properties()),
+    ) else {
+        return 1;
+    };
+    // An empty stream stays on one thread: sevenz-rust2's threaded reader waits forever on one.
+    let Some(run) = largest_run(source, start, packed, cancel).filter(|&run| run > 0) else {
+        return 1;
+    };
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as u64;
+    let per_worker = dict.saturating_add(run.saturating_mul(6)).max(1);
+    (DECODE_BUDGET / per_worker).clamp(1, cores) as u32
+}
+
+/// The most bytes an LZMA2 stream of `len` bytes at `at` unpacks between dictionary resets
+/// (where sevenz-rust2's decoder splits work); `None` if it doesn't parse, or on cancel.
+fn largest_run(
+    source: &mut (impl Read + Seek),
+    at: u64,
+    len: u64,
+    cancel: &AtomicBool,
+) -> Option<u64> {
+    source.seek(SeekFrom::Start(at)).ok()?;
+    let (mut pos, mut run, mut most, mut chunks) = (0u64, 0u64, 0u64, 0u64);
+    let mut head = [0u8; 6];
+    while pos < len {
+        chunks += 1;
+        if chunks.is_multiple_of(4096) && check(cancel).is_err() {
+            return None;
+        }
+        source.read_exact(&mut head[..1]).ok()?;
+        let control = head[0];
+        let (more, unpacked, packed, reset) = match control {
+            0 => break,
+            1 | 2 => {
+                source.read_exact(&mut head[1..3]).ok()?;
+                let n = u64::from(u16::from_be_bytes([head[1], head[2]])) + 1;
+                (2, n, n, control == 1)
+            }
+            0x80.. => {
+                let more = if control >= 0xC0 { 5 } else { 4 };
+                source.read_exact(&mut head[1..=more]).ok()?;
+                let low = u64::from(u16::from_be_bytes([head[1], head[2]]));
+                let unpacked = (u64::from(control & 0x1F) << 16 | low) + 1;
+                let packed = u64::from(u16::from_be_bytes([head[3], head[4]])) + 1;
+                (more, unpacked, packed, control >= 0xE0)
+            }
+            _ => return None,
+        };
+        if reset {
+            run = 0;
+        }
+        run += unpacked;
+        most = most.max(run);
+        source.seek(SeekFrom::Current(packed as i64)).ok()?;
+        pos += 1 + more as u64 + packed;
+    }
+    Some(most)
+}
+
 fn open(
     paths: &[PathBuf],
     password: Option<&str>,
@@ -346,6 +435,22 @@ pub(super) fn walk(
             streams[b] += 1;
         }
     }
+    // Where each block's pack stream starts, when each block has exactly one (no BCJ2).
+    let one_each = archive.pack_sizes().len() == archive.blocks.len()
+        && !(archive.blocks.iter())
+            .any(|b| b.coders.iter().any(|c| c.encoder_method_id() == M::ID_BCJ2));
+    let starts: Vec<u64> = archive
+        .pack_sizes()
+        .iter()
+        .scan(
+            sevenz_rust2::SIGNATURE_HEADER_SIZE + archive.pack_pos(),
+            |at, &n| {
+                let start = *at;
+                *at = at.saturating_add(n);
+                Some(start)
+            },
+        )
+        .collect();
     for (i, &expected) in streams.iter().enumerate() {
         check(cancel)?;
         if sink.done() {
@@ -365,6 +470,15 @@ pub(super) fn walk(
         if !decoder.entries().iter().any(|e| sink.wants(&e.name)) {
             continue;
         }
+        // The check's one-thread decoder ends here (NLL), freeing `source` for the walk.
+        let start = starts.get(i).copied().filter(|_| one_each);
+        let threads = if sink.streams() {
+            decode_threads(&archive, i, start, &mut source, cancel)
+        } else {
+            1
+        };
+        check(cancel)?;
+        let decoder = BlockDecoder::new(threads, i, &archive, &pw.0, &mut source);
         let mut failure = None;
         let result = decoder.for_each_entries(&mut |e, reader| {
             let result = (|| {
@@ -426,6 +540,70 @@ pub(super) fn walk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn threaded_lzma2_decodes_the_runs_largest_run_measures() {
+        use lzma_rust2::{Lzma2Options, Lzma2ReaderMt, Lzma2WriterMt};
+        use std::io::Write;
+        let data: Vec<u8> = (0..3u32 << 20)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8 & 0x3F)
+            .collect();
+        let mut options = Lzma2Options::with_preset(1);
+        options.lzma_options.dict_size = 64 << 10;
+        options.chunk_size = std::num::NonZeroU64::new(256 << 10);
+        let mut writer = Lzma2WriterMt::new(Vec::new(), options, 4).unwrap();
+        writer.write_all(&data).unwrap();
+        let packed = writer.finish().unwrap();
+        let go = AtomicBool::new(false);
+        let mut cursor = std::io::Cursor::new(&packed);
+        assert_eq!(
+            largest_run(&mut cursor, 0, packed.len() as u64, &go),
+            Some(256 << 10)
+        );
+        let mut out = Vec::new();
+        Lzma2ReaderMt::new(&packed[..], 64 << 10, None, 4)
+            .read_to_end(&mut out)
+            .unwrap();
+        assert!(out == data, "threaded decode differs");
+        // Dropped part way, the reader waits for its workers (patch 0021) without hanging.
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = Lzma2ReaderMt::new(&packed[..], 64 << 10, None, 4);
+            let mut first = [0u8; 4096];
+            reader.read_exact(&mut first).unwrap();
+            drop(reader);
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("dropping a threaded reader returns");
+    }
+
+    #[test]
+    fn largest_run_follows_dictionary_resets() {
+        let mut lzma2 = vec![0xAA]; // a byte before the stream
+        // Compressed with a reset (props): 1000 bytes from 10.
+        lzma2.extend([0xE0, 0x03, 0xE7, 0, 9, 0x5D]);
+        lzma2.extend([0; 10]);
+        // Compressed, no reset: 500 more from 5.
+        lzma2.extend([0x80, 0x01, 0xF3, 0, 4]);
+        lzma2.extend([0; 5]);
+        // Uncompressed with a reset, then without: 300 + 100.
+        lzma2.extend([0x01, 0x01, 0x2B]);
+        lzma2.extend([0; 300]);
+        lzma2.extend([0x02, 0x00, 0x63]);
+        lzma2.extend([0; 100]);
+        lzma2.push(0x00);
+        let len = lzma2.len() as u64 - 1;
+        let mut cursor = std::io::Cursor::new(lzma2.clone());
+        let go = AtomicBool::new(false);
+        assert_eq!(largest_run(&mut cursor, 1, len, &go), Some(1500));
+        lzma2[1] = 0x03; // not a control byte
+        assert_eq!(
+            largest_run(&mut std::io::Cursor::new(lzma2), 1, len, &go),
+            None
+        );
+    }
+
     #[test]
     fn memory_limits() {
         // An encoded header of one LZMA2 coder: property `dict`, unpack size `size` (7z number).

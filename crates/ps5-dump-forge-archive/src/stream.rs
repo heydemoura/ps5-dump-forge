@@ -384,6 +384,9 @@ impl Feed {
 }
 
 impl Sink for Feed {
+    fn streams(&self) -> bool {
+        true
+    }
     fn wants(&mut self, p: &str) -> bool {
         // A ZIP record or a 7z block's entries, before any decoding: the target, and an empty
         // file to check.

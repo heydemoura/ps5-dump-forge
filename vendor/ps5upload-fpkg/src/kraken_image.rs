@@ -162,7 +162,7 @@ fn pipeline_local<T: Send, U: Send>(
 ) -> Result<()> {
     use std::sync::mpsc::sync_channel;
     use std::sync::{Arc, Mutex};
-    let depth = threads * 8;
+    let depth = threads * 2;
     std::thread::scope(|s| {
         let (tx_in, rx_in) = sync_channel::<(u64, T)>(depth);
         let (tx_out, rx_out) = sync_channel::<(u64, Result<U>)>(depth);

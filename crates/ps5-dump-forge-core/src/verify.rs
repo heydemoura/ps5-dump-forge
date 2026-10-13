@@ -99,7 +99,12 @@ impl Digester {
     }
 
     /// A short tail is the last slice.
-    fn finish(mut self) -> Digest {
+    fn finish(self) -> Digest {
+        self.seal().wait()
+    }
+
+    /// Hands the short tail over like [`Digester::finish`] without waiting for the pool.
+    fn seal(mut self) -> Sealed {
         if !self.len.is_multiple_of(SLICE) {
             let tail = std::mem::take(&mut self.buf);
             self.slices.push(if tail.len() <= INLINE_MAX {
@@ -112,8 +117,17 @@ impl Digester {
         } else if self.buf.capacity() > 0 {
             pool().give_back(std::mem::take(&mut self.buf));
         }
+        Sealed(self.slices)
+    }
+}
+
+/// A file's slices, some maybe still being hashed.
+struct Sealed(Vec<Slice>);
+
+impl Sealed {
+    fn wait(self) -> Digest {
         let slices = self
-            .slices
+            .0
             .into_iter()
             .map(|s| match s {
                 Slice::Ready(hash) => hash,
@@ -214,12 +228,17 @@ pub(crate) struct Expected {
 /// their hashes are then dropped and computed by a second read instead.
 const MAX_IN_FLIGHT: usize = 64;
 
+/// Files read whole whose last slices may still be hashing: the writer goes on to the next
+/// file instead of waiting at each file's end; past this many the oldest is waited for.
+const MAX_SEALED: usize = 64;
+
 /// A source that hashes each file as the writer reads it front to back, so the source is
 /// usually read once, not twice. Files read any other way are hashed afterwards.
 pub(crate) struct HashingTree<'a> {
     inner: &'a mut dyn SourceTree,
     sizes: HashMap<String, u64>,
     in_flight: HashMap<String, Digester>,
+    sealed: std::collections::VecDeque<(String, Sealed)>,
     done: HashMap<String, Digest>,
 }
 
@@ -234,6 +253,7 @@ impl<'a> HashingTree<'a> {
             inner,
             sizes,
             in_flight: HashMap::new(),
+            sealed: std::collections::VecDeque::new(),
             done: HashMap::new(),
         }
     }
@@ -260,19 +280,32 @@ impl<'a> HashingTree<'a> {
             let digester = self.in_flight.remove(path).expect("present above");
             // Only a file covered exactly, front to back, keeps its digest and slices.
             if digester.len == size {
-                self.done.insert(path.to_string(), digester.finish());
+                if self.sealed.len() >= MAX_SEALED
+                    && let Some((path, sealed)) = self.sealed.pop_front()
+                {
+                    self.done.insert(path, sealed.wait());
+                }
+                self.sealed.push_back((path.to_string(), digester.seal()));
             }
         }
     }
 
     /// The expected manifest: digests made during the write, the rest read again now.
-    pub(crate) fn expected(self, ctx: &Ctx, mode: Mode) -> anyhow::Result<Expected> {
+    pub(crate) fn expected(mut self, ctx: &Ctx, mode: Mode) -> anyhow::Result<Expected> {
+        self.wait_sealed();
         expected_from(self.inner, &self.done, ctx, mode)
     }
 
     /// The digests of the files the writer read whole, front to back: the source's bytes.
-    pub(crate) fn into_digests(self) -> HashMap<String, Digest> {
+    pub(crate) fn into_digests(mut self) -> HashMap<String, Digest> {
+        self.wait_sealed();
         self.done
+    }
+
+    fn wait_sealed(&mut self) {
+        for (path, sealed) in self.sealed.drain(..) {
+            self.done.insert(path, sealed.wait());
+        }
     }
 }
 
@@ -389,39 +422,18 @@ fn read_each(
     Ok(())
 }
 
-/// BLAKE3 of `len` bytes of `path` from `offset`. `step` gets the bytes of each chunk.
-fn hash_range(
-    tree: &mut dyn SourceTree,
-    path: &str,
-    offset: u64,
-    len: u64,
-    ctx: &Ctx,
-    step: &mut dyn FnMut(u64),
-) -> anyhow::Result<blake3::Hash> {
-    let mut hasher = blake3::Hasher::new();
-    read_each(tree, path, offset, len, ctx, &mut |bytes| {
-        hasher.update(bytes);
-        step(bytes.len() as u64);
-    })?;
-    Ok(hasher.finalize())
-}
-
-/// Hashes all of `f` in `output` slice by slice; the first slice that differs from `want`.
-fn first_bad_slice(
-    output: &mut dyn SourceTree,
-    f: &SourceFile,
-    want: &Digest,
-    ctx: &Ctx,
-    step: &mut dyn FnMut(u64),
-) -> anyhow::Result<Option<usize>> {
-    let mut digester = Digester::new();
-    read_each(output, &f.path, 0, f.size, ctx, &mut |bytes| {
-        digester.update(bytes);
-        step(bytes.len() as u64);
-    })?;
-    let got = digester.finish().slices;
-    let n = got.len().max(want.slices.len());
-    Ok((0..n).find(|&i| got.get(i) != want.slices.get(i)))
+/// The part of sample `s` whose hash differs from `want`: its first bad slice for a whole
+/// file, `s` itself for a slice. `got` hashes the bytes `s` covers, slice by slice.
+fn mismatch(files: &[SourceFile], want: &Digest, s: Sample, got: Digest) -> Option<Sample> {
+    match s.slice {
+        None => {
+            let n = got.slices.len().max(want.slices.len());
+            (0..n)
+                .find(|&i| got.slices.get(i) != want.slices.get(i))
+                .map(|i| slice(files, s.file, i as u64))
+        }
+        Some(i) => (got.slices.first() != want.slices.get(i)).then_some(s),
+    }
 }
 
 /// One range fast mode compares: a whole file (`slice` None) or one of its slices.
@@ -650,28 +662,47 @@ pub(crate) fn compare(
             .collect(),
         Mode::Fast { seed, seam } => plan(&expected.files, seed, seam),
     };
+    // Each sample hashes on the pool while the next is read; compared in order, at most
+    // `MAX_SEALED` behind. A slice sample is whole slices from a slice boundary, so its
+    // digester's slices are the file's.
+    let mut sealed = std::collections::VecDeque::new();
+    let mut bad = Vec::new();
+    let check = |(s, got): (Sample, Sealed)| {
+        mismatch(&expected.files, &expected.digests[s.file], s, got.wait())
+    };
     for s in samples {
-        let (f, digest) = (&expected.files[s.file], &expected.digests[s.file]);
-        let bad = match s.slice {
-            None => first_bad_slice(output, f, digest, ctx, &mut step)?
-                .map(|i| slice(&expected.files, s.file, i as u64)),
-            Some(i) => {
-                let got = hash_range(output, &f.path, s.offset, s.len, ctx, &mut step)?;
-                (digest.slices.get(i) != Some(&got)).then_some(s)
-            }
-        };
-        if let Some(bad) = bad {
-            wrong.push(if f.size <= SLICE {
-                f.path.clone()
-            } else {
-                format!(
-                    "{} (bytes {}..{})",
-                    f.path,
-                    bad.offset,
-                    bad.offset + bad.len
-                )
-            });
+        let mut digester = Digester::new();
+        read_each(
+            output,
+            &expected.files[s.file].path,
+            s.offset,
+            s.len,
+            ctx,
+            &mut |bytes| {
+                digester.update(bytes);
+                step(bytes.len() as u64);
+            },
+        )?;
+        if sealed.len() >= MAX_SEALED
+            && let Some(first) = sealed.pop_front()
+        {
+            bad.extend(check(first));
         }
+        sealed.push_back((s, digester.seal()));
+    }
+    bad.extend(sealed.into_iter().filter_map(check));
+    for bad in bad {
+        let f = &expected.files[bad.file];
+        wrong.push(if f.size <= SLICE {
+            f.path.clone()
+        } else {
+            format!(
+                "{} (bytes {}..{})",
+                f.path,
+                bad.offset,
+                bad.offset + bad.len
+            )
+        });
     }
     if !wrong.is_empty() {
         bail!(
@@ -919,7 +950,13 @@ mod tests {
         let mut mem = Mem::new(&[("f", bytes(100, 0))]);
         mem.piece = 7;
         let read = |mem: &mut Mem, offset, len| {
-            with_ctx(|ctx| hash_range(mem, "f", offset, len, ctx, &mut |_| {}))
+            let mut hasher = blake3::Hasher::new();
+            with_ctx(|ctx| {
+                read_each(mem, "f", offset, len, ctx, &mut |b| {
+                    hasher.update(b);
+                })
+            })
+            .map(|()| hasher.finalize())
         };
         assert_eq!(
             read(&mut mem, 10, 50).unwrap(),
