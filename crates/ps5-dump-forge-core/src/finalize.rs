@@ -692,7 +692,8 @@ mod imp {
     }
 }
 
-/// `*.part` entries in `dir`, sorted. Listing only: the user decides what to delete.
+/// `*.part` entries in `dir`, sorted. Listing only: the user
+/// decides what to delete.
 pub(crate) fn stale_parts(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();

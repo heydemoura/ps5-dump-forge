@@ -69,6 +69,9 @@
 .fmt-ffpfsc { --h: #ffc580; --h-bg: rgba(255, 170, 60, 0.15);   --h-line: rgba(255, 190, 110, 0.5); }
 .fmt-pkg    { --h: #8fe0ab; --h-bg: rgba(47, 210, 122, 0.15);   --h-line: rgba(110, 225, 160, 0.5); }
 .fmt-lz4    { --h: #d6e875; --h-bg: rgba(190, 220, 60, 0.14);   --h-line: rgba(210, 232, 110, 0.5); }
+/* Archives (.zip, .7z, .rar; sources only): one sand hue for the three, the label tells them
+   apart (text 8.7:1 on its tint over --card, 9.5:1 over --inset). */
+.fmt-archive { --h: #e8c9a6; --h-bg: rgba(205, 160, 110, 0.15); --h-line: rgba(225, 190, 150, 0.5); }
 
 * { box-sizing: border-box; }
 html, body { background: var(--page); }
@@ -375,6 +378,8 @@ select.lang-select option { background: var(--card); color: var(--fg); }
   padding: 10px 12px; border-radius: 12px; background: var(--inset); border: 1px solid var(--line);
 }
 .field.backport > .note-line, .field.verify > .note-line { margin-top: 8px; }
+/* A second switch in the same box (Convert's Update AMPR under Full verification). */
+.field.verify > .switch + .switch { margin-top: 12px; }
 .field.verify + button.link { margin-top: 8px; }
 /* The trace's room (image targets): a range in the box, like the .ffpfsc level. */
 .field.lz4 > .range-label { display: flex; justify-content: space-between; margin: 12px 4px 4px; }
@@ -512,6 +517,9 @@ button.link .icon { width: 15px; height: 15px; }
 .empty.lz4 .empty-icon { background: var(--lz4-tint); color: var(--lz4-ink); }
 .empty.lz4 .row { margin-top: 8px; }
 .kinds { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin: 6px 0 12px; }
+/* Under the pickers: what an archive source may be. */
+/* An archive left locked (its password dialog cancelled): the reason and Enter password…. */
+.row.locked { margin-top: 12px; }
 
 .game { display: flex; align-items: center; gap: 16px; }
 .cover {
@@ -726,6 +734,10 @@ pre.code { padding: 14px 16px; }
 /* The delete question's path, whole (it wraps). */
 .modal p.out-box { margin: 14px 0 0; font-size: 12px; }
 .deleted-note { margin: 0 4px; font-size: 12.5px; }
+/* The password question: the delete question's frame; its text (red once a password failed)
+   over a full-width input. */
+.modal.password p#pw-text { margin: 12px 0 10px; }
+.pw-input { display: block; width: 100%; margin-bottom: 20px; }
 /* LZ4's "How LZ4 works": the quit modal's frame, wider; the body scrolls, title and Close stay. */
 .modal.help { width: 560px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
 .head-icon.lz4 { color: var(--lz4-ink); }
@@ -746,6 +758,12 @@ pre.code { padding: 14px 16px; }
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* After a waiting text ("Checking", "Reading the source", "Scanning", "Loading"): ".", "..",
+   "..." in turn; each dot keeps its place, so nothing shifts (static "..." with reduced motion). */
+.dots span:nth-child(2) { animation: dot-2 1.2s infinite; }
+.dots span:nth-child(3) { animation: dot-3 1.2s infinite; }
+@keyframes dot-2 { 0%, 33% { opacity: 0; } 34%, 100% { opacity: 1; } }
+@keyframes dot-3 { 0%, 66% { opacity: 0; } 67%, 100% { opacity: 1; } }
 
 /* No spinning, sliding or fading for people who asked for less motion. */
 @media (prefers-reduced-motion: reduce) {

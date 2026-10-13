@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Build and package the macOS release:
 #
-#   dist/ps5-dump-forge-<ver>-macos-universal.zip  one folder: PS5 Dump Forge.app, ps5-dump-forge (CLI),
-#                                                   README.md, docs/LZ4.md, LICENSE, THIRD-PARTY-NOTICES.md; the app and
-#                                                   the CLI are arm64+x86_64 universal binaries (lipo-joined
-#                                                   for the CLI, `tauri build --target
+#   dist/ps5-dump-forge-<ver>-macos-universal.zip  one folder: PS5 Dump Forge.app and ps5-dump-forge (CLI),
+#                                                   nothing else (README, licenses and source are on the
+#                                                   release page); both are arm64+x86_64 universal binaries
+#                                                   (lipo-joined for the CLI, `tauri build --target
 #                                                   universal-apple-darwin` for the app)
-#   dist/ps5-dump-forge-<ver>-source.tar.gz        `git archive HEAD` (GPL: the source ships with it)
 #   dist/SHA256SUMS
 #
 # Ad-hoc signed only (no Developer ID, no notarization): Tauri signs "PS5 Dump Forge.app" with
@@ -123,26 +122,26 @@ check() {
     done
   done
   run_cli_slices "$cli_bin"
-  for f in README.md docs/LZ4.md LICENSE THIRD-PARTY-NOTICES.md; do
-    [[ -s "$dir/$f" ]] || { echo "release-macos.sh: $f missing" >&2; exit 1; }
-  done
+  # The app and the CLI, nothing beside them.
+  local held
+  held=$(ls -A "$dir" | LC_ALL=C sort | tr '\n' '|')
+  [[ $held == "PS5 Dump Forge.app|ps5-dump-forge|" ]] ||
+    { echo "release-macos.sh: $dir holds [$held], want the app and the CLI only" >&2; exit 1; }
 }
 
 # Stage the folder, sign the CLI, verify it, zip it, then unzip and verify again (what a user
 # actually gets).
 name=ps5-dump-forge-$version-macos-universal
-src=$dist/ps5-dump-forge-$version-source.tar.gz
 zip=$dist/$name.zip
 
 mkdir -p "$dist"
-rm -f "$dist"/ps5-dump-forge-*-macos-*.zip "$src" "$dist/SHA256SUMS"
+rm -f "$dist"/ps5-dump-forge-*-macos-*.zip "$dist/SHA256SUMS"
 
 pkg=$stage/$name
 mkdir "$pkg"
 ditto "$app" "$pkg/PS5 Dump Forge.app"
 cp "$cli" "$pkg/ps5-dump-forge"
 codesign --force -s - "$pkg/ps5-dump-forge"
-cp README.md LICENSE THIRD-PARTY-NOTICES.md "$pkg/" && mkdir -p "$pkg/docs" && cp docs/LZ4.md "$pkg/docs/"
 check "$pkg"
 
 # ditto keeps the bundle's symlinks, permissions and signature intact (zip(1) can break them).
@@ -154,11 +153,7 @@ mkdir "$stage/unzipped"
 ditto -x -k "$zip" "$stage/unzipped"
 check "$stage/unzipped/$name"
 
-[[ -z $(git status --porcelain) ]] ||
-  echo "release-macos.sh: warning: uncommitted changes; the source tarball holds HEAD only" >&2
-git archive --format=tar.gz --prefix="ps5-dump-forge-$version/" -o "$src" HEAD
-
-(cd "$dist" && shasum -a 256 "$name.zip" "$(basename "$src")" > SHA256SUMS)
+(cd "$dist" && shasum -a 256 "$name.zip" > SHA256SUMS)
 echo "== $dist"
-ls -l "$zip" "$src"
+ls -l "$zip"
 cat "$dist/SHA256SUMS"

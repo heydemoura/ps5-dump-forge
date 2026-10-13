@@ -268,6 +268,37 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
+## UnRAR and unrar_sys (UnRAR license; MIT or Apache-2.0)
+
+`.rar` sources are extracted with the **UnRAR** source code by Alexander Roshal (version 7.1.0,
+as bundled by [unrar_sys](https://crates.io/crates/unrar_sys) 0.5.8, which compiles it; the crate's
+own code is MIT or Apache-2.0, Danyel Bayraktar, https://github.com/muja/unrar.rs). Forge calls
+UnRAR's C API through its own wrapper (`crates/ps5-dump-forge-archive/src/rar.rs`) and uses it
+only to extract. UnRAR is linked into every build (desktop app, CLI and PS5 payload). Its license
+is reproduced verbatim in `vendor/LICENSE-UnRAR.txt`; the GPLv3 §7 additional permission that
+lets it be combined with Forge is in `vendor/LICENSE-UnRAR-exception.md` (both ship in every release). The notice its license
+requires:
+
+```
+UnRAR source code may be used in any software to handle
+RAR archives without limitations free of charge, but cannot be
+used to develop RAR (WinRAR) compatible archiver and to
+re-create RAR compression algorithm, which is proprietary.
+Distribution of modified UnRAR source code in separate form
+or as a part of other software is permitted, provided that
+full text of this paragraph, starting from "UnRAR source code"
+words, is included in license, or in documentation if license
+is not available, and in source code comments of resulting package.
+```
+
+## sevenz-rust2 (Apache-2.0)
+
+`.7z` sources are read with [sevenz-rust2](https://github.com/hasenbanck/sevenz-rust) 0.24
+(decoding only; LZMA/LZMA2, PPMd, BZip2 and AES-256), licensed under the Apache License,
+Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). Its codec crates (`lzma-rust2`,
+`ppmd-rust`, `bzip2` with `libbz2-rs-sys`, `aes`) are under their own permissive licenses, as
+stated in each package's metadata.
+
 ## Tauri and other dependencies
 
 The app is built with [Tauri](https://tauri.app) 2 (`tauri`, `tauri-build`,

@@ -45,12 +45,17 @@ pub(crate) enum Kind {
     Ffpfs,
     Ffpfsc,
     Pkg,
+    /// A `.zip`, `.7z` or `.rar` (any part of a set) holding a game folder.
+    Archive(ps5_dump_forge_archive::ArchiveFormat),
 }
 
 impl Kind {
     pub(crate) fn of(path: &Path) -> anyhow::Result<Self> {
         if path.is_dir() {
             return Ok(Self::Folder);
+        }
+        if let Some(format) = ps5_dump_forge_archive::detect(path) {
+            return Ok(Self::Archive(format));
         }
         let ext = path
             .extension()
@@ -64,7 +69,8 @@ impl Kind {
             "ffpfsc" => Self::Ffpfsc,
             "pkg" => Self::Pkg,
             _ => bail!(
-                "{} is neither a folder nor a supported image (.exfat, .ffpkg, .ffpfs, .ffpfsc, .pkg)",
+                "{} is neither a folder nor a supported image (.exfat, .ffpkg, .ffpfs, .ffpfsc, \
+                 .pkg) or archive (.zip, .7z, .rar)",
                 path.display()
             ),
         })
@@ -78,6 +84,7 @@ impl Kind {
             Self::Ffpfs => "ffpfs",
             Self::Ffpfsc => "ffpfsc",
             Self::Pkg => "pkg",
+            Self::Archive(f) => crate::archive::name(f),
         }
     }
 }
@@ -104,6 +111,10 @@ pub(crate) fn open_source(
         Kind::Ffpfsc => open_ffpfsc(path)?.0,
         // The debug passcode: packages this app and ps5upload build use it.
         Kind::Pkg => Box::new(FpkgSource::open(path, None).map_err(with_path)?),
+        Kind::Archive(_) => bail!(
+            "{}: an archive is read through its conversion; convert it first",
+            path.display()
+        ),
     };
     Ok(Box::new(JunkFiltered::new(image)))
 }
@@ -133,6 +144,8 @@ fn reopen(e: ps5upload_fpkg::Error) -> anyhow::Error {
 pub(crate) struct SourceStamp {
     path: PathBuf,
     seen: Option<Seen>,
+    /// An archive's other parts.
+    parts: Vec<(PathBuf, Seen)>,
 }
 
 /// (length, modification time, identity).
@@ -147,6 +160,7 @@ impl SourceStamp {
         Ok(Self {
             path: path.to_path_buf(),
             seen,
+            parts: Vec::new(),
         })
     }
 
@@ -155,6 +169,7 @@ impl SourceStamp {
         Ok(Self {
             path: path.to_path_buf(),
             seen: Some(Self::seen(path)?),
+            parts: Vec::new(),
         })
     }
 
@@ -173,6 +188,7 @@ impl SourceStamp {
         Ok(Self {
             path: path.to_path_buf(),
             seen: Some((meta.len(), meta.modified().ok(), id)),
+            parts: Vec::new(),
         })
     }
 
@@ -183,9 +199,17 @@ impl SourceStamp {
     /// The file still has the length, modification time and identity it had when stamped
     /// (always true for a folder's stamp, which holds none).
     pub(crate) fn unchanged(&self) -> bool {
-        self.seen
-            .as_ref()
-            .is_none_or(|seen| Self::seen(&self.path).ok().as_ref() == Some(seen))
+        let same = |path: &Path, seen: &Seen| Self::seen(path).ok().as_ref() == Some(seen);
+        self.seen.as_ref().is_none_or(|seen| same(&self.path, seen))
+            && self.parts.iter().all(|(p, seen)| same(p, seen))
+    }
+
+    /// Also stamps an archive's other parts (`parts` may hold the stamped path too).
+    pub(crate) fn with_parts(mut self, parts: &[PathBuf]) -> anyhow::Result<Self> {
+        for p in parts.iter().filter(|p| **p != self.path) {
+            self.parts.push((p.clone(), Self::seen(p)?));
+        }
+        Ok(self)
     }
 
     fn seen(path: &Path) -> anyhow::Result<Seen> {
@@ -398,7 +422,13 @@ pub(crate) fn lz4_plan(
         "a pack plan needs an LZ4 Pack request"
     );
     let kind = Kind::of(&req.source)?;
-    let source = open_source(&req.source, kind, ctx.cancel)?;
+    let source = match kind {
+        Kind::Archive(format) => {
+            let stamp = SourceStamp::take(&req.source, kind)?;
+            crate::archive::open(req, ctx, format, stamp)?.0
+        }
+        _ => open_source(&req.source, kind, ctx.cancel)?,
+    };
     ctx.log(format!("source: {}", source.describe()));
     let (mut source, packs) = crate::lz4::open(req, source, ctx)?;
     let (info, _) = preflight::input(source.as_mut());
@@ -445,12 +475,15 @@ pub(crate) fn log_cadence(cadence: &mut crate::durable::Cadence, ctx: &Ctx) {
     }
 }
 
-fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> {
+pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> {
     ctx.progress("scan", 0, 1);
     let kind = Kind::of(&req.source)?;
     // Before the open: a change after this point, however early, fails the publish.
     let stamp = SourceStamp::take(&req.source, kind)?;
-    let source = open_source(&req.source, kind, ctx.cancel)?;
+    let (source, stamp) = match kind {
+        Kind::Archive(format) => crate::archive::open(req, ctx, format, stamp)?,
+        _ => (open_source(&req.source, kind, ctx.cancel)?, stamp),
+    };
     ctx.log(format!("source: {}", source.describe()));
     // The job's one timestamp, in whole seconds, for what it generates (an LZ4 manifest and
     // path index).

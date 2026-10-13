@@ -30,17 +30,28 @@ const MAX_RUNTIME: u64 = 64 << 20;
 /// The largest `ampr_emu.index` read for traces (2 M records and their paths fit).
 const MAX_INDEX: u64 = 512 << 20;
 
-/// Which runtime `tree` carries at `fakelib/libSceAmpr.sprx` (`None` without one).
-pub(crate) fn runtime_kind(tree: &mut dyn SourceTree) -> RuntimeKind {
+/// Which runtime `tree` carries at `fakelib/libSceAmpr.sprx` (`None` without one), and the
+/// ampr_emu version it names itself with, when it does.
+pub(crate) fn runtime_of(tree: &mut dyn SourceTree) -> (RuntimeKind, Option<String>) {
+    let (kind, version, _) = runtime_full(tree);
+    (kind, version)
+}
+
+/// [`runtime_of`], and whether the runtime holds the pack format ([`runtime::reads_packs`]).
+fn runtime_full(tree: &mut dyn SourceTree) -> (RuntimeKind, Option<String>, bool) {
     let Some(size) = size_of(tree, RUNTIME) else {
-        return RuntimeKind::None;
+        return (RuntimeKind::None, None, false);
     };
     if size > MAX_RUNTIME {
-        return RuntimeKind::Other;
+        return (RuntimeKind::Other, None, false);
     }
     match tree.read_range(RUNTIME, 0, size as usize) {
-        Ok(bytes) if bytes.len() as u64 == size => runtime::classify(&bytes),
-        _ => RuntimeKind::Other,
+        Ok(bytes) if bytes.len() as u64 == size => (
+            runtime::classify(&bytes),
+            runtime::version_of(&bytes),
+            runtime::reads_packs(&bytes),
+        ),
+        _ => (RuntimeKind::Other, None, false),
     }
 }
 
@@ -252,7 +263,12 @@ pub(crate) fn prepare(
     let target = packing(req);
     let trace = req.lz4 == Some(Lz4Mode::Trace);
     let unpatch = req.lz4 == Some(Lz4Mode::Unpatch);
-    let kind = runtime_kind(tree.as_mut());
+    let (kind, version, packs_ok) = runtime_full(tree.as_mut());
+    // Another build of ampr_emu, as new as the bundled one or newer, that reads packs: Pack
+    // keeps it (upstream's no-pack build of the same version is replaced).
+    let current = kind == RuntimeKind::Other
+        && packs_ok
+        && version.as_deref().is_some_and(runtime::not_older);
     // In place, `in_place_findings` says it once.
     if unpatch && packs.packed && !req.lz4_in_place {
         findings.push(format!(
@@ -327,6 +343,13 @@ pub(crate) fn prepare(
             }
         });
         Some(runtime::RELEASE)
+    } else if target && current {
+        ctx.log(format!(
+            "LZ4: keeping the game's ampr_emu {} at {RUNTIME} (the bundled one is {})",
+            version.as_deref().unwrap_or_default(),
+            runtime::VERSION
+        ));
+        None
     } else if target || kind == RuntimeKind::ForgeTrace {
         ctx.log(match kind {
             RuntimeKind::ForgeTrace => {

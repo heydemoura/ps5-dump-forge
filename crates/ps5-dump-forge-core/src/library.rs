@@ -434,6 +434,8 @@ fn probe_image(path: &Path, kind: Kind) -> Result<Option<LibraryEntry>, String> 
         Kind::Ffpfs => Format::Ffpfs,
         Kind::Ffpfsc => Format::Ffpfsc,
         Kind::Pkg => Format::Pkg,
+        // `image_kind` names none: the Library does not list archives.
+        Kind::Archive(_) => return Ok(None),
     };
     let has_cover = cover.is_some_and(|s| (1..=MAX_LIBRARY_COVER).contains(&s));
     // The image is open already: its file list, then 8 bytes of the manifest when listed.
@@ -704,15 +706,134 @@ fn scan_inner(
     (found, root_error)
 }
 
+/// How deep inside an archive its game folder may sit (the archive's root is 0).
+const ARCHIVE_DEPTH: usize = 4;
+/// Candidate game folders whose `param.json` are read; more are refused unread.
+// ponytail: real archives hold one or two games; 64 bounds a crafted one.
+const ARCHIVE_CANDIDATES: usize = 64;
+/// The candidates' `param.json` bytes read in all.
+// ponytail: the buffers come back together from `read_files` (no per-file callback), so
+// this is also the peak; real `param.json` files are a few KiB each.
+const ARCHIVE_PARAM_BUDGET: u64 = 8 << 20;
+
+/// The "more than one game" error for these roots: the first few, then a count.
+fn several_games(roots: &[&str]) -> anyhow::Error {
+    const SHOWN: usize = 5;
+    let mut names: Vec<&str> = roots
+        .iter()
+        .take(SHOWN)
+        .map(|r| r.trim_end_matches('/'))
+        .collect();
+    let more = roots.len().saturating_sub(SHOWN);
+    let more = format!("and {more} more");
+    if roots.len() > SHOWN {
+        names.push(&more);
+    }
+    anyhow::anyhow!(
+        "More than one PS5 game inside this archive: {}",
+        names.join(", ")
+    )
+}
+
+/// The game folder inside an archive: `""` (its root) or `"Game/"`. Recognized as a folder is
+/// here: `eboot.bin` beside `sce_sys/param.json` (1 B..4 MiB) that parses to a title ID, the
+/// outermost one (a game is not entered), `__MACOSX` and junk names skipped. The listing
+/// alone decides when it names one candidate; with several, their `param.json` are read.
+pub(crate) fn archive_game_root(
+    path: &Path,
+    password: Option<&str>,
+    listing: &ps5_dump_forge_archive::Listing,
+    cancel: &AtomicBool,
+) -> anyhow::Result<String> {
+    let files: std::collections::HashMap<&str, u64> = listing
+        .entries
+        .iter()
+        .filter(|e| {
+            !e.dir
+                && !e
+                    .path
+                    .split('/')
+                    .any(|c| c == "__MACOSX" || scan::is_junk(c))
+        })
+        .map(|e| (e.path.as_str(), e.size))
+        .collect();
+    let param = |root: &str| format!("{root}sce_sys/param.json");
+    let mut roots: Vec<&str> = files
+        .keys()
+        .filter_map(|p| p.strip_suffix("eboot.bin"))
+        .filter(|r| (r.is_empty() || r.ends_with('/')) && r.matches('/').count() <= ARCHIVE_DEPTH)
+        .filter(|r| {
+            files
+                .get(param(r).as_str())
+                .is_some_and(|s| (1..=MAX_PARAM_JSON).contains(s))
+        })
+        .collect();
+    roots.sort_unstable();
+    if roots.len() > ARCHIVE_CANDIDATES {
+        return Err(several_games(&roots));
+    }
+    if roots.len() > 1 {
+        let wanted: HashSet<String> = roots.iter().map(|r| param(r)).collect();
+        let budget: u64 = wanted.iter().map(|p| files[p.as_str()]).sum();
+        if budget > ARCHIVE_PARAM_BUDGET {
+            return Err(several_games(&roots));
+        }
+        let params = ps5_dump_forge_archive::read_files(
+            path,
+            password,
+            &|p| wanted.contains(p),
+            budget,
+            cancel,
+        )?;
+        // Each buffer is parsed and dropped in turn.
+        let games: HashSet<String> = params
+            .into_iter()
+            .filter(|(_, b)| parse_param(b).title_id.is_some())
+            .map(|(p, _)| p)
+            .collect();
+        roots.retain(|r| games.contains(&param(r)));
+    }
+    let mut outer: Vec<&str> = Vec::new();
+    for r in roots {
+        if !outer.iter().any(|o| r.starts_with(o)) {
+            outer.push(r);
+        }
+    }
+    match outer[..] {
+        [] => anyhow::bail!("No PS5 game inside this archive"),
+        [root] => Ok(root.to_string()),
+        _ => Err(several_games(&outer)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> PathBuf {
+    /// A fresh temp folder, removed when dropped.
+    struct Tmp(PathBuf);
+    impl std::ops::Deref for Tmp {
+        type Target = PathBuf;
+        fn deref(&self) -> &PathBuf {
+            &self.0
+        }
+    }
+    impl AsRef<Path> for Tmp {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tmp(name: &str) -> Tmp {
         let dir = std::env::temp_dir().join(format!("forge-library-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir.canonicalize().unwrap()
+        Tmp(dir.canonicalize().unwrap())
     }
 
     fn put(root: &Path, rel: &str, bytes: &[u8]) {

@@ -15,7 +15,7 @@ import {
   type JobReport,
   type VerifyReport,
 } from "./api";
-import { basename, CardHead, FormatPill, kindLabel, PathLine } from "./common";
+import { basename, CardHead, Dots, FormatPill, kindLabel, PathLine } from "./common";
 import { useMessages } from "./i18n";
 import type { Messages } from "./locales/en";
 import { Icon, type IconName } from "./icons";
@@ -155,6 +155,9 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
   else if (job.stage === undefined) [status, tone] = [t.queued, ""];
   else [status, tone] = [(t.stages as Record<string, string | undefined>)[job.stage] ?? job.stage, "blue"];
   const running = !result && job.stage !== undefined;
+  // A stage that has not moved the bar (reading the source, checking, planning, finishing, or a
+  // pass before its first bytes) may sit a while: dots show the job is alive.
+  const waiting = running && !cancelling && job.done === job.stageDone;
   const lz4 = lz4Job(job.request);
   // Packing straight into an image: its write pass packs too.
   if (running && job.stage === "write" && lz4?.id === "pack" && targetKind(job.request!) !== "lz4")
@@ -202,7 +205,10 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
       </header>
       {running && <progress value={job.shown} max={1} aria-label={`${name}: ${status}`} />}
       <p className="job-status">
-        <span className={`tag status ${tone}`}>{status}</span>
+        <span className={`tag status ${tone}`}>
+          {status}
+          {waiting && <Dots />}
+        </span>
         {running && job.total > 0 && (
           <span className="meta">
             <strong>{Math.floor(100 * job.shown)}%</strong>

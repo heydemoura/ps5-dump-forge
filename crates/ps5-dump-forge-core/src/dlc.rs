@@ -35,9 +35,9 @@ pub struct Dlc {
 }
 
 /// The DLC emulator's list, at the game root.
-const DLC_EMU: &str = "dlc_emu.ini";
+pub(crate) const DLC_EMU: &str = "dlc_emu.ini";
 /// A list of a few hundred DLC is a few KiB; anything bigger is not one.
-const MAX_DLC_EMU: u64 = 1024 * 1024;
+pub(crate) const MAX_DLC_EMU: u64 = 1024 * 1024;
 
 /// Every DLC in `tree`, by content id. `game` is the game's own content id.
 pub(crate) fn find(tree: &mut dyn SourceTree, game: Option<&str>) -> Vec<Dlc> {

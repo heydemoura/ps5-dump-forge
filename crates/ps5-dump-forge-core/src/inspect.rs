@@ -17,7 +17,7 @@ use crate::preflight::{self, GameInfo, listing};
 use crate::scan::JunkFiltered;
 use crate::{Format, InspectFile, Inspection, Lz4Facts, Lz4Packed};
 use ps5_dump_forge_lz4::reader;
-use ps5upload_fpkg::source::SourceTree;
+use ps5upload_fpkg::source::{SourceFile, SourceTree};
 use serde_json::Value;
 
 const ALREADY_SMP: &str = "already 512-byte sectors + 64 KiB clusters; conversion only rewrites it";
@@ -54,8 +54,9 @@ fn maker_version<R: Read + Seek>(r: &mut R, exfat: bool) -> Option<String> {
     (!version.is_empty() && printable).then_some(version)
 }
 
-pub(crate) fn inspect(path: &Path) -> anyhow::Result<Inspection> {
+pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Inspection> {
     let kind = Kind::of(path)?;
+    let mut archive = None;
     let mut details = Vec::new();
     let mut pfs_findings = Vec::new();
     let mut cnt_id = None;
@@ -122,6 +123,22 @@ pub(crate) fn inspect(path: &Path) -> anyhow::Result<Inspection> {
             pfs_facts("inner PFS", inner.header(), &mut details, &mut pfs_findings);
         }
         Box::new(JunkFiltered::new(tree))
+    } else if let Kind::Archive(format) = kind {
+        let (tree, facts) = archive_tree(path, password, format)?;
+        details.push(format!(
+            "archive: {} bytes in {} part(s){}{}; game folder {}",
+            facts.archive_bytes,
+            facts.volumes.len(),
+            if facts.solid { ", solid" } else { "" },
+            if facts.encrypted { ", encrypted" } else { "" },
+            if facts.root.is_empty() {
+                "at the root"
+            } else {
+                &facts.root
+            },
+        ));
+        archive = Some(facts);
+        Box::new(JunkFiltered::new(Box::new(tree)))
     } else {
         open_source(path, kind, &AtomicBool::new(false))?
     };
@@ -256,7 +273,166 @@ pub(crate) fn inspect(path: &Path) -> anyhow::Result<Inspection> {
         details,
         findings,
         lz4,
+        archive,
     })
+}
+
+/// The most an archive's inspection unpacks into memory.
+const ARCHIVE_READ_BUDGET: u64 = 256 << 20;
+
+/// An archive's game folder as inspecting sees it: its listing, and the bytes
+/// [`archive_reads`] chose; reading past those fails, so a check that needs more says so.
+struct ArchiveTree {
+    files: Vec<SourceFile>,
+    dirs: Vec<String>,
+    /// Path → (its size, the bytes read from its start).
+    bytes: BTreeMap<String, (u64, Vec<u8>)>,
+    describe: String,
+}
+
+impl SourceTree for ArchiveTree {
+    fn files(&self) -> &[SourceFile] {
+        &self.files
+    }
+
+    fn read(&mut self, path: &str) -> ps5upload_fpkg::Result<Vec<u8>> {
+        self.read_range(path, 0, usize::MAX)
+    }
+
+    fn read_range(
+        &mut self,
+        path: &str,
+        offset: u64,
+        len: usize,
+    ) -> ps5upload_fpkg::Result<Vec<u8>> {
+        if let Some((size, head)) = self.bytes.get(path) {
+            let end = offset.saturating_add(len as u64).min(*size);
+            if end <= head.len() as u64 {
+                return Ok(head[offset.min(end) as usize..end as usize].to_vec());
+            }
+        }
+        Err(ps5upload_fpkg::Error::Format(format!(
+            "{path}: not unpacked for inspecting the archive"
+        )))
+    }
+
+    /// Every folder; [`JunkFiltered`] keeps the empty ones.
+    fn empty_dirs(&self) -> &[String] {
+        &self.dirs
+    }
+
+    fn describe(&self) -> String {
+        self.describe.clone()
+    }
+}
+
+/// An archive's listing, its game folder and the few files inspecting reads (in memory).
+fn archive_tree(
+    path: &Path,
+    password: Option<&str>,
+    format: ps5_dump_forge_archive::ArchiveFormat,
+) -> anyhow::Result<(ArchiveTree, crate::ArchiveFacts)> {
+    let cancel = AtomicBool::new(false);
+    let password = crate::archive::password(path, password, &cancel)?;
+    let password = password.as_deref();
+    let listing = ps5_dump_forge_archive::list(path, password)?;
+    let root = crate::library::archive_game_root(path, password, &listing, &cancel)?;
+    let under = |p: &str| p.strip_prefix(root.as_str()).map(str::to_string);
+    let files: Vec<SourceFile> = listing
+        .entries
+        .iter()
+        .filter(|e| !e.dir)
+        .filter_map(|e| {
+            Some(SourceFile {
+                path: under(&e.path)?,
+                size: e.size,
+            })
+        })
+        .collect();
+    let dirs = listing
+        .entries
+        .iter()
+        .filter(|e| e.dir)
+        .filter_map(|e| under(&e.path))
+        .filter(|d| !d.is_empty())
+        .collect();
+    let keep = archive_reads(&files);
+    let mut bytes = ps5_dump_forge_archive::read_heads(
+        path,
+        password,
+        &|p, _| under(p).and_then(|p| keep.get(&p).copied()),
+        keep.values().sum(),
+        &cancel,
+    )?;
+    let bytes = files
+        .iter()
+        .filter_map(|f| {
+            let head = bytes.remove(&format!("{root}{}", f.path))?;
+            Some((f.path.clone(), (f.size, head)))
+        })
+        .collect();
+    let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    let facts = crate::ArchiveFacts {
+        format,
+        archive_bytes: listing.archive_bytes,
+        volumes: listing.volumes.iter().filter_map(name).collect(),
+        solid: listing.solid,
+        encrypted: listing.encrypted,
+        root,
+    };
+    let describe = format!(
+        "{} archive {}",
+        crate::archive::name(format),
+        path.display()
+    );
+    Ok((
+        ArchiveTree {
+            files,
+            dirs,
+            bytes,
+            describe,
+        },
+        facts,
+    ))
+}
+
+/// What inspecting an archive unpacks, path → bytes from its start: whole metadata, cover,
+/// `eboot.bin`, `fakelib*/` and the LZ4 manifest, then other executables smallest first,
+/// each only while the sum stays within [`ARCHIVE_READ_BUDGET`].
+fn archive_reads(files: &[SourceFile]) -> BTreeMap<String, u64> {
+    use ps5_dump_forge_lz4::{MANIFEST, format::PAK_HEADER};
+    let lower = |f: &SourceFile| f.path.to_ascii_lowercase();
+    let mut wanted: Vec<(&SourceFile, u64)> = Vec::new();
+    for f in files {
+        let l = lower(f);
+        let metadata = (l.ends_with("sce_sys/param.json") || l.ends_with("sce_sys/param.sfo"))
+            && f.size <= preflight::MAX_PARAM_JSON;
+        let small = (f.path == "sce_sys/icon0.png" && f.size <= MAX_COVER)
+            || (l == crate::dlc::DLC_EMU && f.size <= crate::dlc::MAX_DLC_EMU);
+        if metadata || small {
+            wanted.push((f, f.size));
+        } else if f.path == MANIFEST {
+            let all = f.size <= FULL_PARSE_BYTES;
+            wanted.push((f, if all { f.size } else { PAK_HEADER as u64 }));
+        }
+    }
+    let code = |f: &&SourceFile| f.path.eq_ignore_ascii_case("eboot.bin") || is_fakelib(&f.path);
+    wanted.extend(files.iter().filter(code).map(|f| (f, f.size)));
+    let mut rest: Vec<&SourceFile> = files
+        .iter()
+        .filter(|f| !code(f) && crate::sdk::is_executable(&f.path))
+        .collect();
+    rest.sort_by_key(|f| f.size);
+    wanted.extend(rest.into_iter().map(|f| (f, f.size)));
+    let mut keep = BTreeMap::new();
+    let mut sum = 0u64;
+    for (f, n) in wanted {
+        if !keep.contains_key(&f.path) && sum.saturating_add(n) <= ARCHIVE_READ_BUDGET {
+            sum += n;
+            keep.insert(f.path.clone(), n);
+        }
+    }
+    keep
 }
 
 /// The LZ4 facts of a source; a damaged manifest becomes a finding. `None` without libSceAmpr
@@ -270,7 +446,7 @@ fn lz4_facts(tree: &mut dyn SourceTree, findings: &mut Vec<String>) -> Option<Lz
     let imports_ampr = size(tree, "eboot.bin").is_some()
         && ps5upload_fpkg::source::imports_ampr(tree, "eboot.bin");
     let journal_bytes = size(tree, JOURNAL);
-    let kind = crate::lz4::runtime_kind(tree);
+    let (kind, runtime_version) = crate::lz4::runtime_of(tree);
     let mut packed = None;
     let mut manifest_error = None;
     let holds_packs = reader::detect(tree).unwrap_or(false);
@@ -310,6 +486,11 @@ fn lz4_facts(tree: &mut dyn SourceTree, findings: &mut Vec<String>) -> Option<Lz
         manifest_error,
         runtime: runtime.to_string(),
         shipped_runtime_version: ps5_dump_forge_lz4::runtime::VERSION,
+        runtime_current: kind == RuntimeKind::Other
+            && runtime_version
+                .as_deref()
+                .is_some_and(ps5_dump_forge_lz4::runtime::not_older),
+        runtime_version,
         journal_bytes,
         traces_zip: (journal_bytes.is_some() && size(tree, INDEX).is_some()).then(|| {
             let param = size(tree, "sce_sys/param.json")
@@ -589,7 +770,8 @@ fn pkg_header(path: &Path) -> anyhow::Result<(Vec<String>, Option<String>)> {
 
 /// `[GAME_NAME]-[TITLE_ID]` from the source, brackets included, e.g.
 /// `[Astro Bot]-[PPSA01234].ffpkg`; parts it lacks are left out, and with neither it is
-/// [`default_output`]'s name. An empty `dir` is the folder holding the source.
+/// [`default_output`]'s name. An empty `dir` is the folder holding the source. `password`: an
+/// archive's (else its listing or `param.json` may be locked).
 /// ponytail: the source is opened again (a folder scanned, a package's image walked) for
 /// every generated name, each format or folder change; metadata only, cache it per source
 /// if a big game makes that slow.
@@ -598,10 +780,16 @@ pub(crate) fn generated_output(
     format: Format,
     dir: &Path,
     taken: &[PathBuf],
+    password: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     let dir = &output_dir(source, dir)?;
-    let mut tree = open_source(source, Kind::of(source)?, &AtomicBool::new(false))?;
-    let info = preflight::input(tree.as_mut()).0;
+    let info = match Kind::of(source)? {
+        Kind::Archive(_) => archive_info(source, password)?,
+        kind => {
+            let mut tree = open_source(source, kind, &AtomicBool::new(false))?;
+            preflight::input(tree.as_mut()).0
+        }
+    };
     let parts = NameParts::of(&info);
     let mut stem = match parts.stem(usize::MAX) {
         Some(stem) => stem,
@@ -746,10 +934,15 @@ fn with_extension(dir: &Path, name: &str, format: Format) -> PathBuf {
 }
 
 /// `<TITLE_ID>.<ext>` (else the source's own name) in `dir`; an empty `dir` is the folder
-/// holding the source.
-pub(crate) fn default_output(source: &Path, format: Format, dir: &Path) -> anyhow::Result<PathBuf> {
+/// holding the source. `password`: an archive's.
+pub(crate) fn default_output(
+    source: &Path,
+    format: Format,
+    dir: &Path,
+    password: Option<&str>,
+) -> anyhow::Result<PathBuf> {
     let dir = output_dir(source, dir)?;
-    let title = game_info(source).ok().and_then(|i| i.title_id);
+    let title = game_info(source, password).ok().and_then(|i| i.title_id);
     Ok(with_extension(&dir, &default_stem(source, title)?, format))
 }
 
@@ -773,9 +966,10 @@ fn default_stem(source: &Path, title_id: Option<String>) -> anyhow::Result<Strin
 
 /// The source's title id (and `param.json` where it is cheap), read as cheaply as each
 /// source allows: a package's header gives the title id without opening its image.
-fn game_info(source: &Path) -> anyhow::Result<GameInfo> {
+fn game_info(source: &Path, password: Option<&str>) -> anyhow::Result<GameInfo> {
     let kind = Kind::of(source)?;
     let info = match kind {
+        Kind::Archive(_) => archive_info(source, password)?,
         // Straight from disk: naming an output needs no full scan of the folder.
         Kind::Folder => {
             let param = source.join("sce_sys").join("param.json");
@@ -807,6 +1001,27 @@ fn game_info(source: &Path) -> anyhow::Result<GameInfo> {
         }
     };
     Ok(info)
+}
+
+/// An archive's `param.json` alone, from its game folder: no other file is unpacked.
+fn archive_info(source: &Path, password: Option<&str>) -> anyhow::Result<GameInfo> {
+    let cancel = AtomicBool::new(false);
+    let password = crate::archive::password(source, password, &cancel)?;
+    let password = password.as_deref();
+    let listing = ps5_dump_forge_archive::list(source, password)?;
+    let root = crate::library::archive_game_root(source, password, &listing, &cancel)?;
+    let param = format!("{root}sce_sys/param.json");
+    let mut files = ps5_dump_forge_archive::read_files(
+        source,
+        password,
+        &|p| p == param,
+        preflight::MAX_PARAM_JSON,
+        &cancel,
+    )?;
+    Ok(files
+        .remove(&param)
+        .map(|b| preflight::parse_param(&b))
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -857,24 +1072,24 @@ mod tests {
         .unwrap();
         // No firmware in the name, whatever param.json says.
         assert_eq!(
-            generated_output(&game, Format::Exfat, &root, &[]).unwrap(),
+            generated_output(&game, Format::Exfat, &root, &[], None).unwrap(),
             root.join("[Astro Bot]-[PPSA01234].exfat")
         );
         assert_eq!(
-            generated_output(&game, Format::Folder, &root, &[]).unwrap(),
+            generated_output(&game, Format::Folder, &root, &[], None).unwrap(),
             root.join("[Astro Bot]-[PPSA01234]")
         );
         // Taken names are skipped, never offered.
         std::fs::write(root.join("[Astro Bot]-[PPSA01234].exfat"), b"").unwrap();
         std::fs::write(root.join("[Astro Bot]-[PPSA01234]-2.exfat"), b"").unwrap();
         assert_eq!(
-            generated_output(&game, Format::Exfat, &root, &[]).unwrap(),
+            generated_output(&game, Format::Exfat, &root, &[], None).unwrap(),
             root.join("[Astro Bot]-[PPSA01234]-3.exfat")
         );
         // A running job's output counts as taken too.
         let running = [root.join("[Astro Bot]-[PPSA01234]-3.exfat")];
         assert_eq!(
-            generated_output(&game, Format::Exfat, &root, &running).unwrap(),
+            generated_output(&game, Format::Exfat, &root, &running, None).unwrap(),
             root.join("[Astro Bot]-[PPSA01234]-4.exfat")
         );
         // No name: only the title id.
@@ -884,14 +1099,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            generated_output(&game, Format::Ffpkg, &root, &[]).unwrap(),
+            generated_output(&game, Format::Ffpkg, &root, &[], None).unwrap(),
             root.join("[PPSA01234].ffpkg")
         );
         // Nothing usable: the source's own name, still never a taken one.
         std::fs::write(game.join("sce_sys/param.json"), "{}").unwrap();
         std::fs::write(root.join("game.ffpkg"), b"").unwrap();
         assert_eq!(
-            generated_output(&game, Format::Ffpkg, &root, &[]).unwrap(),
+            generated_output(&game, Format::Ffpkg, &root, &[], None).unwrap(),
             root.join("game-2.ffpkg")
         );
     }
@@ -922,8 +1137,8 @@ mod tests {
         param(&"Long Game Name ".repeat(6));
         // An LZ4 packed folder is named as a folder: no extension.
         assert_eq!(
-            generated_output(&game, Format::Lz4, &root, &[]).unwrap(),
-            generated_output(&game, Format::Folder, &root, &[]).unwrap()
+            generated_output(&game, Format::Lz4, &root, &[], None).unwrap(),
+            generated_output(&game, Format::Folder, &root, &[], None).unwrap()
         );
         // Every output cuts it, a folder and a .pkg too.
         for (format, max) in [
@@ -934,7 +1149,7 @@ mod tests {
             (Format::Pkg, 63),
             (Format::Folder, 63),
         ] {
-            let path = generated_output(&game, format, &root, &[]).unwrap();
+            let path = generated_output(&game, format, &root, &[], None).unwrap();
             let s = match format {
                 Format::Folder => path.file_name().unwrap().to_str().unwrap().to_string(),
                 _ => stem(&path),
@@ -944,7 +1159,7 @@ mod tests {
             assert!(s.ends_with("]-[PPSA01234]"), "{s}");
             // With a `-N` suffix the name gives up more room.
             std::fs::write(&path, b"").unwrap();
-            let next = stem(&generated_output(&game, format, &root, &[]).unwrap());
+            let next = stem(&generated_output(&game, format, &root, &[], None).unwrap());
             assert!(
                 next.len() <= max && next.ends_with("]-[PPSA01234]-2"),
                 "{next}"
@@ -952,7 +1167,7 @@ mod tests {
         }
         // Cut at a character boundary, never inside one, and no trailing space.
         param(&"ゼルダ ".repeat(12));
-        let pfsc = generated_output(&game, Format::Ffpfsc, &root, &[]).unwrap();
+        let pfsc = generated_output(&game, Format::Ffpfsc, &root, &[], None).unwrap();
         let s = stem(&pfsc);
         assert!(s.len() <= 58, "{s}");
         assert!(s.starts_with("[ゼルダ ゼルダ") && !s.contains(" ]"), "{s}");
@@ -960,7 +1175,7 @@ mod tests {
         // A short name is left whole.
         param("Astro Bot");
         assert_eq!(
-            generated_output(&game, Format::Ffpfsc, &root, &[]).unwrap(),
+            generated_output(&game, Format::Ffpfsc, &root, &[], None).unwrap(),
             root.join("[Astro Bot]-[PPSA01234].ffpfsc")
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -980,23 +1195,24 @@ mod tests {
         // Never a bare name the process's working directory would resolve.
         let next_to = root.join("homebrew");
         assert_eq!(
-            generated_output(&game, Format::Ffpkg, Path::new(""), &[]).unwrap(),
+            generated_output(&game, Format::Ffpkg, Path::new(""), &[], None).unwrap(),
             next_to.join("[Astro Bot]-[PPSA01234].ffpkg")
         );
         assert_eq!(
-            default_output(&game, Format::Exfat, Path::new("")).unwrap(),
+            default_output(&game, Format::Exfat, Path::new(""), None).unwrap(),
             next_to.join("PPSA01234.exfat")
         );
         // A trailing separator names the same folder.
         let slash = PathBuf::from(format!("{}/", game.display()));
         assert_eq!(
-            default_output(&slash, Format::Exfat, Path::new("")).unwrap(),
+            default_output(&slash, Format::Exfat, Path::new(""), None).unwrap(),
             next_to.join("PPSA01234.exfat")
         );
         // A trailing `..` is the folder it climbs to (`convert ..`), not its lexical parent.
         // Compared as folders: Windows' `absolute` resolves `..` itself (keeping 8.3 names
         // like RUNNER~1), Unix's goes through `canonicalize` (`\\?\` on Windows).
-        let up = default_output(&game.join("sce_sys/.."), Format::Exfat, Path::new("")).unwrap();
+        let up =
+            default_output(&game.join("sce_sys/.."), Format::Exfat, Path::new(""), None).unwrap();
         assert_eq!(up.file_name(), Some("PPSA01234.exfat".as_ref()));
         assert_eq!(
             up.parent().unwrap().canonicalize().unwrap(),

@@ -1,0 +1,23 @@
+[package]
+name = "ps5-dump-forge-archive"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crc32fast = "1.5"
+flate2 = "1"
+serde.workspace = true
+# Decode only. No `deflate`: it turns on flate2's `zlib-rs` backend for the whole workspace
+# (feature unification), replacing the miniz_oxide that `.ffpfsc` compresses with.
+sevenz-rust2 = { version = "0.24", default-features = false, features = ["aes256", "bzip2", "ppmd"] }
+# Bundles and builds the UnRAR C++ source; `rar.rs` is our wrapper over its C API.
+unrar_sys = "0.5.8"
+
+[build-dependencies]
+# build.rs checks UnRAR's ABI assumptions (wchar_t, long) with the C++ compiler that builds it.
+cc = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_env, values("ps5"))'] }

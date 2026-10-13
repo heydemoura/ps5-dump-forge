@@ -56,16 +56,8 @@ const en = {
     unreadable: "Can't build: this source couldn't be read (see Source).",
     blocked: (first: string, more: number) =>
       `Can't build: ${first}${more > 0 ? ` (and ${num(more)} more, see Source)` : ""}.`,
-    runtime: (install: boolean, version: string) =>
-      `${install ? "Install" : "Replace"} the AMPR runtime (ampr_emu ${version})`,
-    runtimeNone:
-      "This game uses AMPR but has no fakelib/libSceAmpr.sprx: the output gets the bundled one.",
-    runtimeOther:
-      "fakelib/libSceAmpr.sprx isn't a runtime Forge ships (it may be newer or older): the output gets the bundled one instead.",
-    runtimeRest:
-      "The trace journal and logs are left out and a fresh ampr_emu.index is written. Only the output changes, never the source. Off: copied as it is.",
-    runtimeWarn: (version: string) =>
-      `ampr_emu ${version} is an upstream test build; known issue: some games crash when saving.`,
+    runtime: "Update AMPR",
+    runtimeHint: "This game's ampr_emu isn't the latest version.",
     removeBackport: "Remove backport",
     /** What "Remove backport" leaves out and keeps: the emulators by name, and any other homebrew libraries. */
     removeHint: (libs: number, emulators: string[], other: boolean) =>
@@ -138,6 +130,8 @@ const en = {
       `Upstream's numbers: what the authors of ampr_emu and Lazy_AMPR report, not measured by ${app}; they vary by game. ampr_emu 0.4.2.1 is an upstream test build; known issue: some games crash when saving.`,
     bundled: "LZ4 packed folders run on ampr_emu 0.4.2.1 by drakmor (GPL-3.0), bundled unmodified. Source:",
     lazy: "The trace-then-pack workflow follows Lazy_AMPR by Nazky:",
+    unrar:
+      ".rar archives are read with the bundled UnRAR library by Alexander Roshal (extract only, under the UnRAR license).",
     language: "Language",
     system: "System",
   },
@@ -154,13 +148,14 @@ const en = {
     firstOf: (max: number, n: number) => `first ${num(max)} of ${num(n)}`,
     fileCount: (n: number) => `${num(n)} ${plural(n, { one: "file", other: "files" })}`,
     noMatch: (f: string) => `No files match “${f}”.`,
+    noListing: "Archive file listing is not supported.",
     emptyDirs: (n: number) => `Empty folders (${num(n)})`,
     noParam: "No sce_sys/param.json.",
     reader: "Reader",
-    leftovers: "Leftover .part files",
+    leftovers: "Leftover files and folders",
     found: (n: number) => `${num(n)} found`,
     leftoversNote: (app: string) =>
-      `Unfinished outputs, usually from interrupted jobs. Remove only the ones you recognize, and only when no job is running; ${app} never deletes them itself.`,
+      `Unfinished outputs and unpacked archives, usually from interrupted jobs. Remove only the ones you recognize, and only when no job is running; ${app} never deletes them itself.`,
     checked: (n: number) => `Folders checked (${num(n)})`,
   },
   // JobList.tsx
@@ -226,8 +221,8 @@ const en = {
   // Library.tsx
   library: {
     pickTitle: "Choose a Library folder",
-    scanningIn: (name: string) => `Scanning ${name}…`,
-    scanning: "Scanning…",
+    scanningIn: (name: string) => `Scanning ${name}`,
+    scanning: "Scanning",
     cantScanFolder: "Can’t scan this folder",
     chooseAnother: "Choose another folder…",
     pickPrompt: "Pick a folder with your library to scan",
@@ -266,23 +261,25 @@ const en = {
     scenarios: { trace: "Trace", pack: "Pack/Unpack" },
     actions: { patch: "Patch", unpatch: "Unpatch", pack: "Pack", unpack: "Unpack" },
     scenarioInfo: (s: Scenario, packed: boolean): string => s === "trace"
-      ? "Makes this game record which assets it reads while you play (ampr_commands.bin), for Pack to use. Unpatch puts the release runtime back."
+      ? "Records which assets the game reads while you play, for Pack to use."
       : packed
-        ? "Unpack: writes the game's LZ4 packs back as plain files, into a folder or a plain image."
-        : "Pack: packs the game's assets into LZ4 volumes that the bundled AMPR emulator (ampr_emu) reads while the game runs, into a folder or a plain image. A packed source is unpacked instead.",
+        ? "Writes the game's LZ4 packs back as plain files."
+        : "Packs the game's assets into LZ4 volumes that ampr_emu reads while the game runs.",
     traceInfo: (a: TraceAct, image: boolean): string => a === "patch"
       ? image
-        ? "Rebuilds this image with the trace runtime and room for the trace, then replaces it."
-        : "Installs the trace runtime in this folder where it is: no copy is written."
+        ? "Rebuilds this image with the trace runtime, then replaces it."
+        : "Installs the trace runtime in this folder."
       : image
-        ? "Rebuilds this image with Forge's release runtime (0.4.2.1), without the recorded traces, then replaces it."
-        : "Puts Forge's release runtime (0.4.2.1) back in this folder where it is: no copy is written.",
+        ? "Rebuilds this image with the release runtime, then replaces it."
+        : "Puts the release runtime back in this folder.",
     noAmpr: "the game doesn't use AMPR",
+    noRuntime: "the game has no ampr_emu",
+    noRuntimeWarn: "This game has no ampr_emu, so LZ4 can't convert it.",
     packedFirst: "the source is LZ4 packed: unpack it first",
     damaged: "its LZ4 packs are damaged",
+    archive: "an archive can't be traced: convert it first",
     chooseFirst: "choose a source first",
     notRead: "the source isn't read yet",
-    anyFormat: "Need ffpfsc or fpkg? Write a folder here, then convert it to any format on the Convert tab.",
     pickProfile: "LZ4 profile",
     profileFilter: "LZ4 profile (TOML)",
     pickTracesFolder: "LZ4 traces (a folder with ampr_commands.bin and ampr_emu.index)",
@@ -290,81 +287,81 @@ const en = {
     pickTracesZip: "LZ4 traces (zip)",
     unreadable: "Can't start: this source couldn't be read (see Source).",
     pending: (a: TraceAct): string => a === "patch"
-      ? "Can't patch while a job is running or queued: patch once they have finished."
-      : "Can't unpatch while a job is running or queued: unpatch once they have finished.",
+      ? "Can't patch while jobs are running or queued."
+      : "Can't unpatch while jobs are running or queued.",
     replacing: "A job is already rebuilding this image: wait for it to finish.",
     blocked: (a: Lz4Action, first: string, more: number) =>
       `Can't ${a}: ${first}${more > 0 ? ` (and ${num(more)} more, see Source)` : ""}.`,
     chooseGame: "Choose a game folder or image first.",
-    nothing: "Nothing to do here: this game doesn't use AMPR (its eboot.bin doesn't import libSceAmpr), and it isn't LZ4 packed.",
+    nothing: "Nothing to do: this game doesn't use AMPR and isn't LZ4 packed.",
     unavailable: (items: string[]) => `Not for this source: ${items.join("; ")}.`,
     readOnly: (kind: string): ReactNode => <>
-      Can't patch or unpatch <b>{kind}</b>: it is read-only on the console, so the game can't write its trace there. Convert it to <b>ffpkg</b> (or <b>exfat</b>) on the Convert tab, then patch that.
+      <b>{kind}</b> is read-only on the console, so it can't be traced. Convert it to <b>ffpkg</b> or <b>exfat</b> first.
     </>,
     action: "Action",
     traceAction: "Trace action",
     changes: (a: TraceAct, image: boolean) => a === "patch"
-      ? `Changes this ${image ? "image" : "folder"}: the trace runtime replaces fakelib/libSceAmpr.sprx (no backup kept) and a fresh ampr_emu.index lists its files.`
-      : `Changes this ${image ? "image" : "folder"}: Forge's release runtime (0.4.2.1) replaces fakelib/libSceAmpr.sprx (no backup kept), ampr_commands.bin and the trace logs are deleted, and a fresh ampr_emu.index lists its files.`,
-    replay: (web: boolean) => `Play, then pick this source again: Pack/Unpack uses the traces it recorded${web ? ", and Trace offers them as a zip for a computer" : ""}. Each launch overwrites the previous session's trace.`,
+      ? `Changes this ${image ? "image" : "folder"}: the trace runtime replaces fakelib/libSceAmpr.sprx, with no backup.`
+      : `Changes this ${image ? "image" : "folder"}: the release runtime comes back and the traces are deleted, with no backup.`,
+    replay: (web: boolean) => `Play, then pick this source again to use its traces.${web ? " Trace also offers them as a zip." : ""}`,
     room: "Room for the trace",
-    roomHint: "Free space added to the image for the game to write its trace into. Mount the image writable with ShadowMountPlus image_rw= or nothing is recorded: reserved space alone does not make it writable.",
-    alreadyRelease: "This source already has the release runtime: only the index is written again.",
-    spaceHint: "Needs free space about the image's size next to it; the image is replaced only after the copy verifies.",
-    deletesTraces: (a: TraceAct, bytes: string, web: boolean) => `${a === "patch" ? "Patch" : "Unpatch"} deletes the traces this source recorded (ampr_commands.bin, ${bytes}): ${web ? "download them above or pack with them first." : "pack with them or copy them first."}`,
+    roomHint: "Free space for the game's trace. Mount the image with image_rw=, or nothing is recorded.",
+    alreadyRelease: "Already on the release runtime: only the index is rewritten.",
+    spaceHint: "Needs about the image's size of free space; the image is replaced only once the copy verifies.",
+    deletesTraces: (a: TraceAct, bytes: string, web: boolean) => `${a === "patch" ? "Patch" : "Unpatch"} deletes this source's traces (${bytes}): ${web ? "download them first." : "copy them first."}`,
     useProfile: "Use a rules profile instead",
     profile: "Profile",
     choose: "Choose…",
-    profileHint: "A TOML file of pack rules. It replaces the traces: choosing one clears the other.",
+    profileHint: "A TOML file of pack rules, used instead of traces.",
     target: "Target",
     packInto: "Pack into",
-    direct: "Packs into the image directly: no temporary folder; the packed files are read twice.",
+    direct: "Packs straight into the image; the game's files are read twice.",
     targetFormat: "Target format",
-    unpackFolder: "A new game folder with its LZ4 packs written back as plain files.",
+    unpackFolder: "A new game folder with the packs written back as plain files.",
     unpackHint: (n: number | null) =>
-      `${n === null ? "Writes the packed files back as plain files" : `Writes the ${num(n)} packed ${plural(n, { one: "file back as a plain file", other: "files back as plain files" })}`}; keeps the AMPR runtime and its index.`,
+      n === null
+        ? "Writes the packed files back as plain files."
+        : `Writes ${num(n)} packed ${plural(n, { one: "file", other: "files" })} back as plain files.`,
     waitJobs: "Wait for the running jobs to finish",
-    saveHint: "Save the files Pack would pack as an editable rules profile",
+    saveHint: "Save Pack's file list as an editable rules profile",
     saving: "Saving…",
     saveProfile: "Save as profile",
-    saved: (name: string, packed: number, loose: number) => `Saved ${name}: ${num(packed)} ${plural(packed, { one: "file", other: "files" })} packed, ${num(loose)} loose. Edit it and load it with “Use a rules profile instead”.`,
+    saved: (name: string, packed: number, loose: number) => `Saved ${name}: ${num(packed)} ${plural(packed, { one: "file", other: "files" })} packed, ${num(loose)} loose.`,
     likelyFail: (fmt: string): ReactNode => <>
       Likely to fail as <b>{fmt}</b>: it refuses file names listed in Source.
     </>,
-    collides: (a: Lz4Action, folder: boolean) => `A job is already writing this ${folder ? "folder" : "file"}: ${a === "pack" ? "Pack" : "Unpack"} again would fail. Pick another name.`,
+    collides: (a: Lz4Action, folder: boolean) => `A job is already writing this ${folder ? "folder" : "file"}: ${a === "pack" ? "Pack" : "Unpack"} needs another name.`,
     already: (a: Lz4Action, fmt: string): ReactNode => <>
       Already writing this game as <b>{fmt}</b>; {a === "pack" ? "Pack" : "Unpack"} again makes a second copy.
     </>,
-    profileRules: "Packs what the profile's rules say, except the files the engine opens directly (container indexes, configs, media) — those stay loose.",
-    chosenRules: "Packs the files the game read in the chosen traces, except those the engine opens directly (container indexes, configs, media) — those stay loose.",
-    ownRules: "Packs the files the game read in its last traced session (this source's traces), except those the engine opens directly (container indexes, configs, media) — those stay loose.",
-    guessRules: "No traces in this source: packs by a built-in guess, which is less reliable. Record traces first (Trace → Patch), or choose traces copied from the console, or a profile.",
+    profileRules: "Packs what the profile's rules say; files the engine opens directly stay loose.",
+    chosenRules: "Packs the files the game read in these traces; files the engine opens directly stay loose.",
+    ownRules: "Packs the files the game read in its last traced session; files the engine opens directly stay loose.",
+    guessRules: "No traces: packs by a less reliable built-in guess. Trace first, or choose traces or a profile.",
     recorded: "Recorded traces",
-    recordedHint: (bytes: string) => `ampr_commands.bin (${bytes}): Pack/Unpack loads these traces by itself.`,
-    downloadHint: "Close the game and wait about a minute first: while the image is mounted, its file on disk can lag behind what the game wrote. Use a computer's browser opened at this console's Forge address, then pick the zip in LZ4 → Pack/Unpack → Traces on your computer. A download fails if the game or a sync changes the source meanwhile: close the game and download again.",
+    recordedHint: (bytes: string) => `ampr_commands.bin (${bytes}): Pack uses these traces.`,
+    downloadHint: "Close the game and wait a minute, then download from a computer's browser. Pick the zip there in Pack/Unpack → Traces.",
     download: (bytes: string, zip: string) => `Download traces (${bytes}) as ${zip}`,
-    missingIndex: "No ampr_emu.index in this source: Pack needs it beside ampr_commands.bin, whose file ids it names.",
-    truncatedJournal: "A journal cut off at the end still packs: Pack stops at its last whole record.",
+    missingIndex: "No ampr_emu.index in this source: Pack needs it beside ampr_commands.bin.",
+    truncatedJournal: "A journal cut off at the end still packs, up to its last whole record.",
     fakelibWarning: (recorded: boolean): string => recorded
-      ? "Few or no traces? Turn off any fakelib updater while tracing: it overwrites fakelib/libSceAmpr.sprx, and then nothing is recorded. Turn it off, Patch again and replay."
-      : "Turn off any fakelib updater while tracing: it overwrites fakelib/libSceAmpr.sprx, and then nothing is recorded.",
+      ? "Few or no traces? Turn off the fakelib updater, Patch again and replay."
+      : "Turn off the fakelib updater while tracing, or nothing is recorded.",
     emptyTitle: "Choose a game that uses AMPR",
-    experimental: "Experimental: traces and LZ4 packs for ampr_emu. No guarantee the game runs afterwards; keep a copy of the original game.",
-    chooseSource: "Choose source…",
+    experimental: "Experimental: keep a copy of the original game.",
+    chooseSource: "Choose source",
     source: "Source",
-    gameFolder: "Game folder…",
-    image: "Image…",
     traces: "Traces",
     optionalTraces: "Traces (optional)",
     unlock: "Unlock to choose other traces",
     loaded: "Traces are already loaded from this source",
-    lockedHint: (bytes: string) => `Its own ampr_commands.bin (${bytes}) and ampr_emu.index. Click the lock to choose other traces instead.`,
+    lockedHint: (bytes: string) => `This source's own traces (${bytes}). Click the lock to choose others.`,
     clear: "Clear",
     zip: "Zip…",
     folder: "Folder…",
-    tracesHint: "Pick the [game name]-[title ID]-amprtrace.zip from Trace → Download traces, or a folder with ampr_commands.bin and ampr_emu.index.",
+    tracesHint: "Pick the amprtrace zip from Download traces, or a folder with both trace files.",
     useOwn: "Use the source's traces",
-    patchResult: (a: TraceAct, n: number) => `${a === "patch" ? "Patched: the trace runtime" : "Unpatched: Forge's release runtime (0.4.2.1)"} is in fakelib/libSceAmpr.sprx and ampr_emu.index lists ${num(n)} ${plural(n, { one: "file", other: "files" })}.`,
+    patchResult: (a: TraceAct, n: number) => `${a === "patch" ? "Patched: the trace runtime is installed" : "Unpatched: the release runtime is back"}; the index lists ${num(n)} ${plural(n, { one: "file", other: "files" })}.`,
     removed: (files: string[]) =>
       `Removed the old trace ${plural(files.length, { one: "file", other: "files" })}: ${files.join(", ")}.`,
   },
@@ -372,11 +369,21 @@ const en = {
   lz4Help: {
     title: "How LZ4 works",
     close: "Close",
-    warning:
-      "Experimental, for AMPR games only. ampr_emu 0.4.2.1 is a test build: some games crash when saving. Keep a copy of the original game.",
+    warning: "Experimental, for AMPR games only. Keep a copy of the original game.",
     body: () => (
       <>
-        <h3>1. Trace</h3>
+        <h3>1. Pack/Unpack</h3>
+        <ol>
+          <li>
+            Choose the original game, <b>Pack/Unpack</b>, and the traces (or a profile).
+          </li>
+          <li>Write a packed folder or a plain image; a folder converts to any format in <b>Convert</b>.</li>
+          <li>
+            A packed source shows <b>Unpack</b> instead: the loose files come back.
+          </li>
+        </ol>
+
+        <h3>2. Trace</h3>
         <ol>
           <li>
             Choose the game's <b>ffpkg</b> or <b>exfat</b>, then <b>Trace</b> → <b>Patch</b>.
@@ -387,17 +394,6 @@ const en = {
           </li>
           <li>
             <b>Download traces</b> from the PS5 page, or copy ampr_commands.bin and ampr_emu.index.
-          </li>
-        </ol>
-
-        <h3>2. Pack/Unpack</h3>
-        <ol>
-          <li>
-            Choose the original game, <b>Pack/Unpack</b>, and the traces (or a profile).
-          </li>
-          <li>Write a packed folder or a plain image; a folder converts to any format in <b>Convert</b>.</li>
-          <li>
-            A packed source shows <b>Unpack</b> instead: the loose files come back.
           </li>
         </ol>
       </>
@@ -411,10 +407,10 @@ const en = {
     allDrives: "All drives",
     truncated: (n: number) =>
       plural(n, { one: "Only the first entry is shown.", other: `Only the first ${num(n)} entries are shown.` }),
-    loading: "Loading…",
+    loading: "Loading",
     noDrives: "No drives found.",
     noFolders: "No folders here.",
-    noImages: "No folders or PS5 images here.",
+    noImages: "No folders, PS5 images or archives here.",
     noFiles: (ext: string[]) => `No folders or ${dotted(ext, " or ")} files here.`,
     cancel: "Cancel",
     chooseFolder: "Choose this folder",
@@ -423,17 +419,16 @@ const en = {
   common: {
     folder: "Folder",
     pickFolder: "Game folder",
-    pickImage: "Game image",
-    pickImageFilter: "PS5 image or package",
-    chooseFolder: "Choose folder…",
-    chooseImage: "Choose image…",
+    pickImage: "Game image or archive",
+    pickImageFilter: "Images and archives",
+    pickFolderButton: "Folder",
+    pickImageButton: "Image/Archive",
     source: "Source",
-    emptyTitle: "Choose a game folder or image",
-    emptyText:
-      "A PS5 game folder (sce_sys/param.json and eboot.bin at its root), or an image or package of one.",
+    emptyTitle: "Choose a game folder, image or archive",
+    emptyText: "A PS5 game folder or an image, package or archive of one.",
     accepted: "Accepted sources",
     unknownTitle: "Unknown title",
-    reading: "Reading the source…",
+    reading: "Reading the source",
     unreadable: "Unreadable source",
     backport: "Backport",
     emulators: "Emulators",
@@ -470,7 +465,6 @@ const en = {
     runtimeIs: (label: string) => `runtime ${label}`,
     backportLibs: (exclusive: boolean, n: number) =>
       `${exclusive ? "fakelib2/, mounted alone" : "fakelib/"}, ${num(n)} backport ${plural(n, { one: "library", other: "libraries" })}`,
-    noFindings: "No preflight findings",
     findings: "Preflight findings",
     dlcTitle: (n: number) => `Embedded DLC (${num(n)})`,
     dlcLabel: "Embedded DLC",
@@ -483,6 +477,15 @@ const en = {
     backportFiles: "Backport files",
     emulatorsIn: "Emulators in fakelib",
     qr: (url: string) => `QR code: ${url}`,
+    needsPassword: "This archive needs a password.",
+    enterPassword: "Enter password",
+    inArchive: (ext: string, size: string) => `in a ${ext} archive · ${size}`,
+    archive: "Archive",
+    parts: (n: number) => `${num(n)} ${plural(n, { one: "part", other: "parts" })}`,
+    archiveRoot: (root: string) => `game in ${root}`,
+    archiveAtRoot: "game at the archive's root",
+    solid: "solid",
+    encrypted: "password-protected",
   },
   // delete.tsx
   delete: {
@@ -491,6 +494,19 @@ const en = {
       `${folder ? "The folder and everything in it" : "The image file"} will be deleted for good: no Trash, no undo. If deleting stops part way, some of it may already be gone.`,
     no: "No",
     yes: "Yes, delete",
+    archiveTitle: "Delete this archive?",
+    archiveText:
+      "The archive file will be deleted for good: no Trash, no undo. Other parts of a multi-part archive are left as they are.",
+  },
+  // password.tsx
+  password: {
+    title: "This archive needs a password",
+    text: "Enter its password to open it.",
+    wrong: "The password is not correct.",
+    label: "Password",
+    cancel: "Cancel",
+    unlock: "Unlock",
+    checking: "Checking…",
   },
   // main-http.tsx
   launch: {

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build and package the Windows releases (Git Bash, e.g. on GitHub's windows-latest, windows-11-arm):
 #
-#   dist/ps5-dump-forge-<ver>-windows-<arch>.zip      one folder: PS5 Dump Forge.exe, ps5-dump-forge.exe
-#                                                    (CLI), README.md, docs/LZ4.md, LICENSE, THIRD-PARTY-NOTICES.md;
-#                                                    uses the installed WebView2 Runtime (Evergreen)
+#   dist/ps5-dump-forge-<ver>-windows-<arch>.zip      one folder: PS5 Dump Forge.exe and ps5-dump-forge.exe
+#                                                    (CLI), nothing else (README, licenses and source are on
+#                                                    the release page); uses the installed WebView2 Runtime
+#                                                    (Evergreen)
 #   dist/ps5-dump-forge-<ver>-windows-x86-64-webview2.zip
 #                                                    x86-64 only: the same plus WebView2/, Microsoft's
 #                                                    Fixed Version runtime (x86-64), which the app
@@ -135,9 +136,12 @@ check() {
     ! grep -aqi 'vcruntime140' "$dir/$f" ||
       { echo "release-windows.sh: $dir/$f imports the VC++ runtime" >&2; exit 1; }
   done
-  for f in README.md docs/LZ4.md LICENSE THIRD-PARTY-NOTICES.md; do
-    [[ -s "$dir/$f" ]] || { echo "release-windows.sh: $f missing" >&2; exit 1; }
-  done
+  # The app and the CLI (and the webview2 zip's runtime), nothing beside them.
+  local held want="PS5 Dump Forge.exe|ps5-dump-forge.exe|"
+  [[ $variant == webview2 ]] && want="PS5 Dump Forge.exe|WebView2|ps5-dump-forge.exe|"
+  held=$(ls -A "$dir" | LC_ALL=C sort | tr '\n' '|')
+  [[ $held == "$want" ]] ||
+    { echo "release-windows.sh: $dir holds [$held], want [$want]" >&2; exit 1; }
   if [[ $variant == webview2 ]]; then
     pe_machine "$dir/WebView2/msedgewebview2.exe" 6486 ||
       { echo "release-windows.sh: $dir/WebView2/msedgewebview2.exe missing or not x86-64" >&2; exit 1; }
@@ -157,7 +161,6 @@ package_and_check() {
   mkdir "$pkg"
   cp "$app_exe" "$pkg/PS5 Dump Forge.exe"
   cp "$cli_exe" "$pkg/ps5-dump-forge.exe"
-  cp README.md LICENSE THIRD-PARTY-NOTICES.md "$pkg/" && mkdir -p "$pkg/docs" && cp docs/LZ4.md "$pkg/docs/"
   if [[ $variant == webview2 ]]; then
     cp -R "$runtime" "$pkg/WebView2"
   fi

@@ -87,7 +87,9 @@ pub fn extraction_findings(
     let mut clashes = Vec::new();
     let key = |p: &str| -> String {
         if case_insensitive {
-            p.nfc().collect::<String>().to_lowercase()
+            // ponytail: full Unicode uppercase stands in for the exFAT/NTFS upcase tables (σ
+            // and ς both fold to Σ there); it over-folds a few (ß, as SS), refusing more.
+            p.nfc().collect::<String>().to_uppercase()
         } else {
             p.to_string()
         }

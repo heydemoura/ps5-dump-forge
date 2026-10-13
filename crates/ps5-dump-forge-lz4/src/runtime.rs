@@ -45,9 +45,69 @@ pub fn classify(bytes: &[u8]) -> RuntimeKind {
     }
 }
 
+/// The ampr_emu version a runtime names itself with (`AMPR_EMU_VERSION`, "0.4.2.1 (c) Drakmor",
+/// in its log line): the dotted number before the first " (c) Drakmor". `None` for a runtime
+/// that names no version that way (another author's, or one built differently).
+pub fn version_of(bytes: &[u8]) -> Option<String> {
+    const MARK: &[u8] = b" (c) Drakmor";
+    // Every marker must name the same, well-formed version; anything else is `None`.
+    let mut found: Option<String> = None;
+    let marks = bytes
+        .windows(MARK.len())
+        .enumerate()
+        .filter(|(_, w)| *w == MARK);
+    for (at, _) in marks {
+        let start = bytes[..at]
+            .iter()
+            .rposition(|b| !(b.is_ascii_digit() || *b == b'.'))
+            .map_or(0, |i| i + 1);
+        let v = std::str::from_utf8(&bytes[start..at]).ok()?;
+        let numbers = v.split('.').all(|p| p.parse::<u64>().is_ok());
+        if !numbers || !v.contains('.') || found.as_deref().is_some_and(|f| f != v) {
+            return None;
+        }
+        found = Some(v.to_owned());
+    }
+    found
+}
+
+/// Whether a runtime holds the pack format's magics (`AMPRPAK4` manifest, `AMPRDAT3` volumes),
+/// as both builds Forge ships do; upstream's no-pack build reads no packs.
+// ponytail: a name check, not proof the runtime reads this exact layout; the version decides
+// the rest.
+pub fn reads_packs(bytes: &[u8]) -> bool {
+    let has = |m: &[u8]| bytes.windows(m.len()).any(|w| w == m);
+    has(b"AMPRPAK4") && has(b"AMPRDAT3")
+}
+
+/// Whether `version` (dotted numbers) is [`VERSION`] or newer: such a runtime is kept as it is.
+pub fn not_older(version: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    let (mut a, mut b) = (parts(version), parts(VERSION));
+    let n = a.len().max(b.len());
+    a.resize(n, 0);
+    b.resize(n, 0);
+    a >= b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions() {
+        assert_eq!(version_of(RELEASE).as_deref(), Some(VERSION));
+        assert_eq!(version_of(TRACE).as_deref(), Some(VERSION));
+        assert_eq!(version_of(b"x\x000.5 (c) Drakmor").as_deref(), Some("0.5"));
+        assert_eq!(version_of(b"no version here"), None);
+        assert_eq!(version_of(b"0.5 (c) Drakmor..0.3.9 (c) Drakmor"), None);
+        assert_eq!(version_of(b"0.18446744073709551616 (c) Drakmor"), None);
+        assert_eq!(version_of(b"x0.5. (c) Drakmor"), None);
+        assert_eq!(version_of(b"0.4.2.1 (c) Drakmor 0.5.. (c) Drakmor"), None);
+        assert!(reads_packs(RELEASE) && reads_packs(TRACE) && !reads_packs(b"AMPRPAK4 only"));
+        assert!(not_older("0.4.2.1") && not_older("0.4.3") && not_older("0.5") && not_older("1.0"));
+        assert!(!not_older("0.4.2") && !not_older("0.4.1.9") && !not_older("0.3.9.9"));
+    }
 
     #[test]
     fn pinned_sizes_and_hashes() {

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+mod archive;
 mod backport;
 mod convert;
 mod delete;
@@ -44,6 +45,9 @@ pub use dlc::Dlc;
 pub use extract::extraction_findings;
 pub use finalize::rename_no_replace;
 pub use library::{LibraryEntry, LibraryScan};
+pub use ps5_dump_forge_archive::{
+    ARCHIVE_PASSWORD_REQUIRED, ARCHIVE_PASSWORD_WRONG, ArchiveFormat,
+};
 pub use scan::ScannedFolder;
 
 /// What a conversion produces.
@@ -105,10 +109,34 @@ pub enum KrakenLevel {
     Smallest,
 }
 
+/// An archive's password. `Debug` prints `<redacted>` and [`ConvertRequest`] never serializes
+/// it, so it reaches no log, event, job list or report.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
+pub struct ArchivePassword(String);
+
+impl ArchivePassword {
+    pub fn new(password: impl Into<String>) -> Self {
+        Self(password.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ArchivePassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 /// One conversion: any readable source to one target format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConvertRequest {
-    /// A game folder, `.exfat`, `.ffpkg`, `.ffpfs`, `.ffpfsc` or `.pkg`.
+    /// A game folder, `.exfat`, `.ffpkg`, `.ffpfs`, `.ffpfsc` or `.pkg`, or a `.zip`, `.7z` or
+    /// `.rar` holding one game folder (its first part, for a multi-part set), read straight
+    /// from the archive with nothing unpacked to disk.
     pub source: PathBuf,
     pub format: Format,
     /// The final output path (file, or directory for `Folder`). Must not exist yet. Ignored
@@ -164,6 +192,9 @@ pub struct ConvertRequest {
     /// [`lz4_patch`], the explicit exceptions to "never touch the source".
     #[serde(default)]
     pub lz4_in_place: bool,
+    /// For an archive source that needs one. Never serialized.
+    #[serde(default, skip_serializing)]
+    pub archive_password: Option<ArchivePassword>,
 }
 
 /// The trace space a request without one gets, in MiB.
@@ -191,7 +222,8 @@ pub type JobId = u64;
 pub enum Event {
     Progress {
         job: JobId,
-        /// `scan`, `preflight`, `measure` (LZ4 into an image), `write`, `pack` (LZ4 folder),
+        /// `extract` (an archive source, first), `scan`, `preflight`, `measure` (LZ4 into an
+        /// image), `write`, `pack` (LZ4 folder),
         /// `verify`, `finalize`, or an FPKG build stage.
         stage: String,
         /// Bytes over the whole job, every pass (write, verify, ...) included, so one bar
@@ -284,7 +316,7 @@ impl Jobs {
 /// What `inspect` found in a source.
 #[derive(Debug, Clone, Serialize)]
 pub struct Inspection {
-    /// `folder`, `exfat`, `ffpkg`, `ffpfs`, `ffpfsc` or `pkg`.
+    /// `folder`, `exfat`, `ffpkg`, `ffpfs`, `ffpfsc` or `pkg`; `zip`, `7z` or `rar` for an archive.
     pub kind: String,
     /// The source reader's one-line description.
     pub describe: String,
@@ -332,6 +364,23 @@ pub struct Inspection {
     /// AMPR / LZ4 pack facts; `None` when the title does not import `libSceAmpr` and holds
     /// no LZ4 artifact (packs, journal, path index, Forge's runtime).
     pub lz4: Option<Lz4Facts>,
+    /// An archive source: the archive's own facts (`files` and `total_bytes` are the game's,
+    /// unpacked). `None` for anything else.
+    pub archive: Option<ArchiveFacts>,
+}
+
+/// What an archive source is.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchiveFacts {
+    pub format: ArchiveFormat,
+    /// Every part on disk.
+    pub archive_bytes: u64,
+    /// The parts' file names, the first one first.
+    pub volumes: Vec<String>,
+    pub solid: bool,
+    pub encrypted: bool,
+    /// The game folder inside the archive (`Game/`); empty when the game is at its root.
+    pub root: String,
 }
 
 /// What `inspect` found about LZ4 asset packs in a source. The containing-format facts of
@@ -350,6 +399,11 @@ pub struct Lz4Facts {
     pub runtime: String,
     /// The ampr_emu version of the runtimes Forge ships (and installs on unpatch).
     pub shipped_runtime_version: &'static str,
+    /// The ampr_emu version the game's own runtime names itself with, when it does.
+    pub runtime_version: Option<String>,
+    /// The game's runtime is another ampr_emu build, [`Lz4Facts::shipped_runtime_version`] or
+    /// newer: nothing to update (Convert offers no update, Pack keeps it).
+    pub runtime_current: bool,
     /// Size of the trace journal (`ampr_commands.bin`), when present.
     pub journal_bytes: Option<u64>,
     /// With the journal and its `ampr_emu.index` both present: the name [`lz4_traces`] gives
@@ -386,7 +440,15 @@ pub struct InspectFile {
 }
 
 pub fn inspect(path: &Path) -> anyhow::Result<Inspection> {
-    inspect::inspect(path)
+    inspect::inspect(path, None)
+}
+
+/// [`inspect`] with an archive's password (ignored for any other source). An archive is read
+/// from its listing and the few files inspecting needs, in memory; without the password it
+/// needs the error is exactly [`ARCHIVE_PASSWORD_REQUIRED`], with a wrong one
+/// [`ARCHIVE_PASSWORD_WRONG`].
+pub fn inspect_with(path: &Path, password: Option<&str>) -> anyhow::Result<Inspection> {
+    inspect::inspect(path, password)
 }
 
 /// What [`lz4_patch`] or [`lz4_unpatch`] did to a game folder.
@@ -502,7 +564,18 @@ pub fn lz4_traces(source: &Path) -> anyhow::Result<Result<Lz4Traces, String>> {
 /// The default output path for `source` in `format`: in `dir`, named from the title id. An
 /// empty `dir` is the folder holding the source (absolute, never the working directory).
 pub fn default_output(source: &Path, format: Format, dir: &Path) -> anyhow::Result<PathBuf> {
-    inspect::default_output(source, format, dir)
+    inspect::default_output(source, format, dir, None)
+}
+
+/// [`default_output`] with an archive's password (ignored for any other source): without the
+/// one an archive with encrypted headers needs, the name is the archive's own.
+pub fn default_output_with(
+    source: &Path,
+    format: Format,
+    dir: &Path,
+    password: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    inspect::default_output(source, format, dir, password)
 }
 
 /// The output path for `source` in `format` in `dir` (empty: the folder holding the source),
@@ -518,7 +591,21 @@ pub fn generated_output(
     dir: &Path,
     taken: &[PathBuf],
 ) -> anyhow::Result<PathBuf> {
-    inspect::generated_output(source, format, dir, taken)
+    inspect::generated_output(source, format, dir, taken, None)
+}
+
+/// [`generated_output`] with an archive's password (ignored for any other source). An archive
+/// is named from its game folder's `param.json`, the only file read; without the password it
+/// needs the error is exactly [`ARCHIVE_PASSWORD_REQUIRED`], with a wrong one
+/// [`ARCHIVE_PASSWORD_WRONG`].
+pub fn generated_output_with(
+    source: &Path,
+    format: Format,
+    dir: &Path,
+    taken: &[PathBuf],
+    password: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    inspect::generated_output(source, format, dir, taken, password)
 }
 
 /// Leftover `*.part` files/dirs from earlier jobs in `dir`. Never deleted automatically.

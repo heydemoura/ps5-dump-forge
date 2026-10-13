@@ -135,6 +135,7 @@ mod tests {
             lz4_traces: None,
             lz4_trace_space_mib: 256,
             lz4_in_place: false,
+            archive_password: None,
         }
     }
 
@@ -181,5 +182,15 @@ mod tests {
         assert_eq!(snap[0]["id"], 9);
         assert_eq!(snap[0]["done"]["result"]["Err"], "cancelled");
         assert!(t.unfinished().is_empty());
+        // The job list never shows an archive's password.
+        t.admit(
+            41,
+            ConvertRequest {
+                archive_password: Some(ps5_dump_forge_core::ArchivePassword::new("Secret1")),
+                ..request("/o/y")
+            },
+        );
+        let snap = serde_json::to_string(&t.snapshot()).unwrap();
+        assert!(snap.contains("/o/y") && !snap.contains("Secret1"), "{snap}");
     }
 }

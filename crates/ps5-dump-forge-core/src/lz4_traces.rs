@@ -115,6 +115,13 @@ pub(crate) fn open(source: &Path) -> anyhow::Result<Result<Lz4Traces, String>> {
         }))
     };
     let kind = Kind::of(source)?;
+    if let Kind::Archive(_) = kind {
+        anyhow::bail!(
+            "{}: traces are downloaded from the traced game folder or image, not a .{} archive",
+            source.display(),
+            kind.name()
+        );
+    }
     let param_path = "sce_sys/param.json";
     if kind == Kind::Folder {
         let mut files = Vec::new();

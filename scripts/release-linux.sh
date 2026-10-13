@@ -2,8 +2,9 @@
 # Build and package the Linux release (e.g. on GitHub's ubuntu-22.04 and ubuntu-22.04-arm):
 #
 #   dist/ps5-dump-forge-<ver>-linux-<arch>.tar.gz  one folder: PS5 Dump Forge.AppDir (Tauri's AppImage,
-#                                                extracted whole), forge.sh (the launcher), ps5-dump-forge
-#                                                (CLI), README.md, docs/LZ4.md, LICENSE, THIRD-PARTY-NOTICES.md
+#                                                extracted whole) with forge.sh (its launcher), and
+#                                                ps5-dump-forge (CLI); nothing else (README, licenses and
+#                                                source are on the release page)
 #
 # An extracted AppDir instead of the AppImage: it needs no FUSE, and the app keeps its WebView data
 # in data/ next to forge.sh (core's app_dir: the folder holding the *.AppDir). The AppDir is kept
@@ -111,9 +112,11 @@ check() {
     sed -n '/^FORGE_HOST_VARS="/,/"$/p' "$dir/forge.sh" | grep -qw -- "$v" ||
       { echo "release-linux.sh: AppRun sets $v, but forge.sh does not keep it for host tools" >&2; exit 1; }
   done
-  for f in README.md docs/LZ4.md LICENSE THIRD-PARTY-NOTICES.md; do
-    [[ -s "$dir/$f" ]] || { echo "release-linux.sh: $f missing" >&2; exit 1; }
-  done
+  # The app (AppDir + forge.sh) and the CLI; the GUI run adds its data/ later.
+  local held
+  held=$(ls -A "$dir" | grep -vx data | LC_ALL=C sort | tr '\n' '|')
+  [[ $held == "$appdir_name|forge.sh|ps5-dump-forge|" ]] ||
+    { echo "release-linux.sh: $dir holds [$held], want the AppDir, forge.sh and the CLI only" >&2; exit 1; }
   "$dir/ps5-dump-forge" inspect "$fixture" > /dev/null
 }
 
@@ -144,7 +147,6 @@ mkdir "$pkg"
 mv "$stage/squashfs-root" "$pkg/$appdir_name"
 find "$pkg/$appdir_name" -type d -exec chmod 755 {} +
 cp "$cli" "$pkg/ps5-dump-forge"
-cp README.md LICENSE THIRD-PARTY-NOTICES.md "$pkg/" && mkdir -p "$pkg/docs" && cp docs/LZ4.md "$pkg/docs/"
 cat > "$pkg/forge.sh" <<'EOF'
 #!/bin/sh
 # Starts PS5 Dump Forge from the AppDir next to this script (its WebView data goes to data/ here).

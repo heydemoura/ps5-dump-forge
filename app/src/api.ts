@@ -12,6 +12,13 @@ const listen = transport.listen;
 
 /** What a source can be (its containing file system or package); each is also a target. */
 export type Kind = "folder" | "exfat" | "ffpkg" | "ffpfs" | "ffpfsc" | "pkg";
+/** An archive holding one game folder: a source only (Inspect, Convert, LZ4 Pack/Unpack), never a
+ * target. Jobs read it in place, with nothing unpacked to disk. */
+export type ArchiveKind = "zip" | "7z" | "rar";
+/** Core's two password errors (`ps5_dump_forge_archive`), matched as they are; the UI shows its
+ * own words for them. */
+export const ARCHIVE_PASSWORD_REQUIRED = "This archive needs a password.";
+export const ARCHIVE_PASSWORD_WRONG = "The password is not correct.";
 /** A target: every source kind, plus the LZ4 packed folder (a folder, read as one). */
 export type Format = Kind | "lz4";
 /** What a job does with LZ4 asset packs, besides the target: install the trace runtime, write
@@ -56,6 +63,9 @@ export interface ConvertRequest {
   lz4_traces?: string | null;
   /** With `"trace"` into an image: the free space added for the trace, 64–1024 MiB in 64 MiB steps; missing: 256. */
   lz4_trace_space_mib?: number;
+  /** For an archive source: the password inspect accepted. Never echoed back (the job list
+   * from the server has none). */
+  archive_password?: string | null;
 }
 
 /** How the output was verified. `samples` and `seed` are 0 for full. */
@@ -139,6 +149,11 @@ export interface Lz4Facts {
   /** The ampr_emu version of the runtimes Forge ships (and installs on unpatch), e.g.
    * "0.4.2.1"; missing from an older backend. */
   shipped_runtime_version?: string;
+  /** The ampr_emu version the game's own runtime names itself with, when it does. */
+  runtime_version?: string | null;
+  /** The game's runtime is another ampr_emu build, as new as the bundled one or newer:
+   * nothing to update. */
+  runtime_current?: boolean;
   /** Size of the trace journal (ampr_commands.bin), when present. */
   journal_bytes: number | null;
   /** With the journal and its ampr_emu.index both present: the name Get traces' zip takes. */
@@ -150,7 +165,21 @@ export interface InspectFile {
   size: number;
 }
 
+/** An archive source: what the archive itself is. */
+export interface ArchiveFacts {
+  format: ArchiveKind;
+  /** Every part on disk. */
+  archive_bytes: number;
+  /** The parts' file names, the first one first. */
+  volumes: string[];
+  solid: boolean;
+  encrypted: boolean;
+  /** The game folder inside the archive ("Game/"); "" when the game is at its root. */
+  root: string;
+}
+
 export interface Inspection {
+  /** A `Kind`, or an `ArchiveKind` for an archive. */
   kind: string;
   describe: string;
   title_id: string | null;
@@ -191,6 +220,8 @@ export interface Inspection {
   total_bytes: number;
   details: string[];
   findings: string[];
+  /** An archive source: the archive's own facts (`files` and `total_bytes` are unpacked). */
+  archive?: ArchiveFacts | null;
 }
 
 /** Save as profile: the pack plan Forge resolved for a Pack request, as an editable TOML. */
@@ -277,16 +308,19 @@ export interface LibraryScan {
 export const runtimePlatform: () => Promise<RuntimePlatform> = transport.platform;
 
 export const api = {
-  inspect: (path: string) => invoke<Inspection>("inspect", { path }),
-  defaultOutput: (source: string, format: Format, dir: string) =>
-    invoke<string>("default_output", { source, format, dir }),
+  /** `password`: for an archive that needs one (else core answers `ARCHIVE_PASSWORD_REQUIRED`). */
+  inspect: (path: string, password?: string) =>
+    invoke<Inspection>("inspect", password === undefined ? { path } : { path, password }),
+  /** `password`: an archive's, as `inspect` takes it (else a locked one can't be named). */
+  defaultOutput: (source: string, format: Format, dir: string, password: string | null = null) =>
+    invoke<string>("default_output", { source, format, dir, password }),
   /**
    * `[GAME_NAME]-[TITLE_ID].<ext>` (brackets included) in `dir`, from the
    * source's param.json; never
    * an existing path nor one in `taken` (outputs of running jobs): `-2`, `-3`, ... instead.
    */
-  generatedOutput: (source: string, format: Format, dir: string, taken: string[]) =>
-    invoke<string>("generated_output", { source, format, dir, taken }),
+  generatedOutput: (source: string, format: Format, dir: string, taken: string[], password: string | null = null) =>
+    invoke<string>("generated_output", { source, format, dir, taken, password }),
   startJob: (request: ConvertRequest) => invoke<JobId>("start_job", { request }),
   cancelJob: (id: JobId) => invoke<void>("cancel_job", { id }),
   /** Patch a game folder in place for LZ4 tracing: the trace runtime in fakelib/, a fresh
@@ -306,7 +340,8 @@ export const api = {
   libraryScan: (root?: string) => invoke<LibraryScan>("library_scan", root ? { root } : {}),
   /** A dump's cover as a data URL, or null. */
   libraryCover: (path: string) => invoke<string | null>("library_cover", { path }),
-  /** Leftover `.part` files in these folders (deduplicated, missing ones skipped). */
+  /** Leftover `.part` files in these folders (deduplicated,
+   * missing ones skipped). */
   staleParts: (dirs: string[]) => invoke<string[]>("stale_parts", { dirs }),
   /** Show a finished job's output in Finder, Explorer or its folder (Rust looks the path up by
    * job id). The http build does nothing here: the job row shows the path instead. */

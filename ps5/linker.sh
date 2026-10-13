@@ -11,10 +11,16 @@ for arg in "$@"; do
     *) args+=("$arg") ;;
   esac
 done
+# A dependency that also declares a cdylib (sevenz-rust2) gets a .so nothing loads: link it bare,
+# without the shim objects, whose versioned symbols only resolve in the payload's own link.
+for arg in "$@"; do
+  [[ "$arg" == -shared ]] && exec "$PS5_PAYLOAD_SDK/bin/prospero-clang" "${args[@]}"
+done
 obj=/work/target/ps5/shim
 mapfile -t wraps < /work/ps5/shim/syscalls.link
-# rustc passes -nodefaultlibs, so the SDK's native imports are named here.
+# rustc passes -nodefaultlibs, so the SDK's native imports are named here; libc++ and libc++abi
+# (static) are for UnRAR's C++ (unrar_sys).
 exec "$PS5_PAYLOAD_SDK/bin/prospero-clang" "${args[@]}" \
   "$obj/freebsd11.o" "$obj/syscalls.o" "$obj/entry.o" "$obj/compat.o" "$obj/launcher.o" "${wraps[@]}" \
   -Wl,--wrap=main -Wl,--wrap=fcntl -Wl,--wrap=sysctl -Wl,--error-limit=0 \
-  -ldl -lunwind -lc -lkernel_web -lSceLibcInternal -lSceNet -lSceSystemService -lSceAppInstUtil
+  -ldl -lc++ -lc++abi -lunwind -lc -lkernel_web -lSceLibcInternal -lSceNet -lSceSystemService -lSceAppInstUtil

@@ -52,10 +52,10 @@ gradient notice bar) and the app icon (near-black navy with a blue edge and an o
 |---|---|---|
 | Folder | `fmt-folder` | white `#ececf4` |
 | exfat | `fmt-exfat` | magenta `#ffa3e6` |
-| ffpkg | `fmt-ffpkg` | blue `#a3c0ff` (the default target) |
+| ffpkg | `fmt-ffpkg` | blue `#a3c0ff` |
 | ffpfs | `fmt-ffpfs` | teal `#7ee0e0` |
 | ffpfsc | `fmt-ffpfsc` | amber `#ffc580` |
-| fpkg | `fmt-pkg` | green `#8fe0ab` |
+| fpkg | `fmt-pkg` | green `#8fe0ab` (Convert's default target) |
 | LZ4 packed folder | `fmt-lz4` | lime `#d6e875` (only the LZ4 tab's Pack target picker offers it) |
 
 **Semantic tags.** Tinted pills for states: `.tag.blue` Writing, `.tag.green` Done, `.tag.red` Failed,
@@ -134,10 +134,10 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
 - **Switch** (`.switch`): a native checkbox drawn as a switch, blue when on. Disabled, only the track
   dims; the reason sits under it as a `.note-line.warn`. Remove backport (only for a source with
   backport libraries) and Full verification (off by default) each sit in their own inset box
-  (`.field.backport`, `.field.verify`: `--inset`, `--line` border, 12px radius). Convert's **AMPR
-  runtime** switch (`.field.ampr-runtime`, unboxed) shows for an AMPR title, not packed, whose
-  `fakelib/libSceAmpr.sprx` is missing or not one Forge ships ("Install…" / "Replace…"), on for each new
-  source; on, a `.note-line.warn` names the runtime's known saving crash. A combination core
+  (`.field.backport`, `.field.verify`: `--inset`, `--line` border, 12px radius). Convert's **Update
+  AMPR** switch sits in the Full verification box (a second `.switch`, with a one-line hint) and shows for
+  an AMPR title, not packed, whose own ampr_emu names a version older than the bundled one; on for each
+  new source. A combination core
   would refuse disables Build with the reason in a `.note-line.block` beside it.
 - **LZ4 tab** (`Lz4.tsx`): a Source card, then an "LZ4 asset packs" card whose head holds a red
   `.small.help-btn` **How LZ4 works**. The empty Source is `.empty.lz4` (yellow icon and glow): "Choose a
@@ -156,8 +156,8 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
     Choose… opens a Zip… / Folder… `.menu`), locked to the source's own traces when they load by
     themselves (`.lock-box`: dashed `--line-hi` border, a round lock button; unlocked, a `button.link`
     "Use the source's traces" locks it again), a collapsed `details.fold.rules` "Use a rules profile
-    instead", then the Target picker: LZ4 packed folder | ffpkg (default) | exfat | ffpfs. **Unpack**:
-    Folder (default) | ffpkg | exfat | ffpfs.
+    instead", then the Target picker: Folder (the LZ4 packed folder, shown as Folder) | exfat (default) | ffpkg | ffpfs. **Unpack**:
+    Folder | exfat (default) | ffpkg | ffpfs.
   - Pack and Unpack end like Convert (Full verification, Output, Generate name; shared in
     `target.tsx`). In `.build-actions`, left of Pack, the `.neon-btn` **Save as profile** (download
     icon, "Saving…" while it runs); the row wraps under the switch when narrow.
@@ -168,7 +168,14 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
 - **Format names** go without the dot in the UI (ffpkg, exfat, ffpfs, ffpfsc, fpkg; Folder and LZ4 as
   they are): pills and pickers in their own style, running text in bold (`Prose` in `common.tsx`, or
   `<b>`). Paths and file names keep the extension (`game.ffpkg`).
+  - **Archive pills** (`.fmt-archive`): zip, 7z and rar share one sand hue (text 8.7:1 on its tint over
+    `--card`, 9.5:1 over `--inset`); the label tells them apart. Sources only: the empty state's
+    accepted kinds and an archive source's head, never a target picker.
 - **Stat tiles** (`.tiles`, `.tile`, `.value`, `.note`): two per row, four from 680 to 879px;
+  an archive source adds an "in a .7z archive · <size>" `.tag` to the Size tile everywhere and, in
+  Inspect, a `.tile.wide` **Archive** tile: the part count as the value, then "game in <folder>" (or
+  "at the archive's root") · solid · password-protected as its note, and the part names as a `.path`
+  note when there are several.
   `.tile.wide` spans the row (the `LZ4 (AMPR)` tile: Packed, Damaged packs, Traced or Plain). A traced
   source's tile is `.tile.neon` wherever it shows: static muted lime, magenta and cyan straps over
   `--inset`, a `--neon-line` ring with a faint `--neon-glow`, the state in `--neon-ink` (on the
@@ -197,6 +204,10 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   links).
 - **Empty state** (`.empty`): an inset well with a round blue icon (`.empty-icon`; `.bad` red for an
   error), a 16px title, one line of help, the accepted kinds as tags, and its buttons.
+  - **Source pickers** (`PickButtons` in `common.tsx`): **Folder** (primary, folder icon) and
+    **Image/Archive** (secondary, archive icon; one file dialog for images, packages and archives,
+    `.001`/`.z01` first parts included). Once a source is chosen the same two sit in the Source card's
+    head as `.small` buttons.
 - **Modal** (`.modal-backdrop`, `.modal`): a 440px card on a blurred dark backdrop. `Modal` +
   `openOverlay` (`common.tsx`) render it in its own root with the whole app behind it `inert`: Escape
   and a click outside cancel, Tab stays inside, focus returns to the opener, a quit request closes it
@@ -205,6 +216,13 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
     Trace and Pack/Unpack as short numbered steps; the body scrolls (focusable), title and Close stay.
   - **How to connect** (`.connect-modal`, `openConnect` in `Formats.tsx`): the 240px QR code over one
     centred 16px line, one Close.
+  - **Password** (`.modal.password`, `password.tsx`): opens when inspecting an archive answers "needs
+    a password". The lock icon and "This archive needs a password", the path in an `.out-box`, one line
+    (muted; `.bad` "The password is not correct." after a failed try, `aria-live`), a full-width
+    `type="password"` input (`.pw-input`, focused, selected again after a wrong try), **Cancel** and a
+    primary **Unlock** ("Checking…" while it runs). Cancel leaves the source locked: the Source card
+    shows the red reason and a `.small` **Enter password** (lock icon) in `.row.locked`. The password
+    stays in memory with that source (inspect, naming and its jobs), never stored or shown.
   - **Delete** (`confirmDelete` in `delete.tsx`, `role="alertdialog"`, shared by Inspect and the
     Library): the warn icon, "Delete this folder?" / "Delete this image?", the whole path in an
     `.out-box`, a muted line (for good, no Trash or undo), and two buttons: **No** (focused first) and
@@ -284,8 +302,9 @@ spots). Add a path there rather than importing an icon set.
 
 ## Motion
 
-Only short fades and transforms: the hero glow (0.5s), the switch and fold chevrons (0.15s), and the
-spinners. `prefers-reduced-motion: reduce` turns all of them off. Straps are static.
+Only short fades and transforms: the hero glow (0.5s), the switch and fold chevrons (0.15s), the
+spinners, and the dots after a waiting text (`Dots`, `.dots`: ".", "..", "..." in turn over 1.2s; a job row's
+status while its stage has not moved the bar, "Reading the source", "Scanning", the picker's "Loading"). `prefers-reduced-motion: reduce` turns all of them off. Straps are static.
 
 ## Copy
 

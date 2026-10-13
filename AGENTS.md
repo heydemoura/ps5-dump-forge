@@ -35,6 +35,11 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `core/src/lz4_patch.rs` is the in-place folder patch and unpatch; `core/src/lz4_profile.rs` is Save as profile.
   `tree.rs` is `PackedTree`, the packs served as a `SourceTree` from a `writer::measure` pass.
   `vendor/ampr_emu/`: the two upstream 0.4.2.1 `.sprx` runtimes + the source archive (see its README).
+- `crates/ps5-dump-forge-archive`: `.zip`/`.7z`/`.rar` sources (`detect`, `list`, `read_files`, `Reader`,
+  `ArchiveError`, the two password strings). `zip.rs` own reader (ZIP64, STORED + Deflate via `flate2`), `sevenz.rs`
+  over `sevenz-rust2` (decode only), `rar.rs` our FFI wrapper over `unrar_sys` (bundles UnRAR's C++; every target,
+  the PS5 payload included), `parts.rs` multi-part naming, `stream.rs` the `Reader`. Glue: `core/src/archive.rs` (`ArchiveTree`), `inspect.rs`,
+  `library::archive_game_root`. Licence: `vendor/LICENSE-UnRAR.txt`, `vendor/LICENSE-UnRAR-exception.md` (copied into every release).
 - `crates/ps5-dump-forge-cli`: binary `ps5-dump-forge` (`inspect`, `convert`, `serve`), JSON-lines events.
 - `crates/ps5-dump-forge-server`: `serve`, std-only HTTP/1.1 (`http.rs`), routes mirroring the Tauri commands
   (`api.rs`), job table for polling (`table.rs`), roots (`paths.rs`), PS5 tile (`tile.rs`), self copy
@@ -60,7 +65,22 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
 
 ## Key decisions
 - Every reader/writer meets at `ps5upload_fpkg::source::SourceTree` (sizes up front, `read_range`,
-  `empty_dirs`, `Send`). Any source converts to any target with no staging.
+  `empty_dirs`, `Send`). Any source converts to any target with no staging, archives included.
+- Archive sources (`.zip`/`.7z`/`.rar`, one game root ≤ 4 levels deep, found by the Library's recognition from the
+  listing) are read in place, never unpacked to disk: `core/src/archive.rs` serves the game folder as an
+  `ArchiveTree` over the archive crate's `Reader`, which decodes front to back on its own thread (a session; bounded
+  queue) and serves the entry asked for, skipping those before it; an entry the session went past (or a ZIP/7z skip
+  that never recorded it) starts a new session from the archive's start: cheap when non-solid (header skips),
+  a re-decode of everything before it when solid (by user decision: no temporary files, even for solid
+  archives). Verification hashes as written, so nothing re-reads the archive. The source stamp covers every
+  part. Every part of a multi-part source is guarded from delete while its job is unfinished; trace/in-place/patch refuse an archive; the Library lists none. Inspect reads only the entries it needs (no
+  extraction). Passwords for 7z and rar only (encrypted zip refused), `ArchivePassword` redacted in `Debug`, never
+  serialized or logged; with none given, `archive::password` tries `KNOWN_PASSWORDS` (by user decision: six
+  release-site passwords, in order; one fits when the game folder's `param.json` reads, and when that
+  file is in the clear, the game's smallest encrypted file too; `Entry::encrypted`) for Inspect, naming and
+  jobs alike, and only when none fits is the error "needs a password" (the UI's prompt); CLI `--password-stdin` / `FORGE_ARCHIVE_PASSWORD`. Multi-part: `.partN.rar`, `.rar`+`.rNN`,
+  `.7z.NNN`/`.zip.NNN`, split `.z01`…`.zip`; first part only, missing parts named. 7z Deflate is refused: its
+  `deflate` feature would switch the workspace's `flate2` to zlib-rs, replacing `.ffpfsc`'s miniz_oxide.
 - LZ4 packs are an asset-pack transform of a game folder (ampr_emu), not an SMP image format: `--to lz4`
   writes a folder (no extension) with `ampr_assets.index`, `.crc`, `ampr_assets-NNN.pak` volumes, loose
   leftovers and the runtime; converting that folder to an image is an ordinary second convert (packs are
@@ -83,12 +103,16 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   to the source's own when it is traced, or a profile; Unpack when the source is packed), then **Trace** (a
   folder, `.exfat` or `.ffpkg`: Patch / Unpatch; a folder through `lz4_patch`/`lz4_unpatch`, an image
   through a conversion with `lz4: "trace"|"unpatch"`, `format` = the source's, `lz4_in_place: true`;
-  Download traces in the web build once a journal is there). Target pickers (a UI limit; core and CLI keep
-  `.ffpfsc`): Pack folder/`.ffpkg` (default)/`.exfat`/`.ffpfs`, Unpack folder/`.ffpkg`/`.exfat`/`.ffpfs`.
-  Convert sends `lz4: null` except for its **AMPR runtime** switch (shown when inspect reports
-  `Lz4Facts.shipped_runtime_version` for an AMPR title, not packed, no damaged manifest, runtime `none`:
-  install, or `other`: replace; on for each new source), which sends `lz4: "unpatch"`, never
-  `lz4_in_place`. Job rows: an LZ4 tab job has a yellow edge and an `LZ4 pack|unpack|trace|unpatch` tag;
+  Download traces in the web build once a journal is there). An AMPR game without its own ampr_emu (runtime `none`) gets
+  no LZ4 action in the tab, Pack included (by user decision; the right card says why, the source card stays). Target pickers (a UI limit; core and CLI keep
+  `.ffpfsc`): Pack folder/`.exfat` (default)/`.ffpkg`/`.ffpfs`, Unpack folder/`.exfat` (default)/`.ffpkg`/`.ffpfs`.
+  Convert sends `lz4: null` except for its **Update AMPR** switch (in the Full verification box, with a one-line
+  reason; on for each new source), which sends `lz4: "unpatch"`, never `lz4_in_place`. It shows only for an AMPR
+  title, not packed, no damaged manifest, whose own runtime (`other`) names an ampr_emu version
+  (`Lz4Facts.runtime_version`, from `runtime::version_of`: the "<ver> (c) Drakmor" string) older than the bundled
+  one: not without a runtime, nor for one whose version can't be read. A runtime at least the bundled version
+  (`not_older`; `Lz4Facts.runtime_current`) is left alone: no switch, and Pack keeps it when it also holds the pack format's
+  magics (`runtime::reads_packs`; upstream's no-pack build is replaced; Patch/Unpatch still install theirs). Job rows: an LZ4 tab job has a yellow edge and an `LZ4 pack|unpack|trace|unpatch` tag;
   Convert's runtime job is tagged `AMPR runtime`.
 - The recommended trace path is a traced `.ffpkg` mounted `image_rw=`, then **Download traces** (http build
   only; the desktop app points at Pack): `GET /api/lz4_traces?source=` streams one STORED zip
@@ -176,7 +200,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   computer answers 400 "choose a folder to scan"; on the PS5 the reply adds `storage` `{free, total}`
   (bytes, `statfs` of `/data`; absent when `statfs` fails), shown in the header as "Free 312 GB of 825 GB"
   (decimal GB, whole numbers, one decimal under 10 GB)) and `POST /api/library_cover` `{path}` (409 while
-  stopping, 429 when the shared cap of 2 concurrent source reads (inspections, covers, scans) is full).
+  stopping, 429 when the shared cap of 2 concurrent source reads (inspections, naming, covers, scans) stays full for
+  30 s: a read waits for a slot first, at most 4 waiting; 409 once stopping).
   A chosen folder may be on any filesystem, a network share included; mounts nested inside it are walked,
   a chosen root that is a link is resolved first, links inside the walk are never followed,
   `/mnt/shadowmnt` is refused.
@@ -249,8 +274,9 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   (`sceSystemServiceParamGetInt` LANG, mapped to the UI's languages, else English); English elsewhere.
 - No settings and no config file: the UI keeps choices in memory until it closes, except the UI
   language, which `localStorage` keeps (`forge.lang`; by user decision; unreadable storage falls back to
-  the system languages). Defaults: target
-  `.ffpkg` (SMP 1.7's recommendation; `.exfat` is for compatibility), exFAT inside a `.ffpfsc` at zlib
+  the system languages). Defaults: Convert's target
+  fpkg (`.pkg`), exfat for a `.pkg` source (by user decision; picker order Folder, fpkg, exfat, ffpfsc, ffpkg,
+  ffpfs), exFAT inside a `.ffpfsc` at zlib
   level 6, all cores for compression (`serve`: cores − 1), `.pkg` Kraken level `fast` (also `balanced`,
   `smallest`; tests use `fast` only), no extra free space beyond each format's built-in spare, output next
   to the source (an empty output `dir` is the source's folder, never the process's working directory).

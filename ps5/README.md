@@ -28,7 +28,9 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
   (every path looked like neither file nor folder), so the CLI asserts the struct sizes at compile time.
   It deletes the CLI's linked output first, so a C change always relinks (a rebuild takes ~8 s). Output
   and `CARGO_HOME` live in `target/ps5/`. `panic-strategy` is `abort`: a job panic ends the payload and
-  leaves its `.part`, which the next start lists.
+  leaves its `.part`, which the next start lists. UnRAR's C++ (`unrar_sys`: `.rar` sources work on the
+  console too) is built with `prospero-clang++` (`CXX_`/`CXXFLAGS_x86_64_ps5_freebsd`), and `linker.sh`
+  links the SDK's libc++, libc++abi and libunwind.
 - Two stages, because a running payload can't read its own file: stage 1 (`target/ps5/stage1.elf`, no
   copy inside), then stage 2, the release ELF, with `FORGE_SELF_ELF` naming stage 1, which the server's
   `build.rs` embeds (see [Self copy](#tile-self-copy-and-launch-on-open)). `FORGE_DEBUG_API` stops after stage 1.

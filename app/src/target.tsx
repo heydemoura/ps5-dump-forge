@@ -1,10 +1,20 @@
 // Pieces of a Target card that Convert and LZ4 share: format copy, the per-format settings,
 // Full verification, and the output name (generated or typed) with its folder.
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { api, errorText, pick, type Format, type InnerFormat, type KrakenLevel } from "./api";
-import { basename, dirname, FormatPicker, IMAGE_EXTENSIONS, joinPath, kindLabel, Prose, SEPARATORS } from "./common";
+import {
+  basename,
+  dirname,
+  FormatPicker,
+  IMAGE_EXTENSIONS,
+  isPasswordRequired,
+  joinPath,
+  kindLabel,
+  Prose,
+  SEPARATORS,
+} from "./common";
 import { msg, useMessages } from "./i18n";
 import type { Messages } from "./locales/en";
 import { Icon, type IconName } from "./icons";
@@ -157,7 +167,12 @@ export function KrakenField(props: {
 }
 
 /** Full verification: re-read every byte instead of sampling. */
-export function VerifySwitch(props: { checked: boolean; onChange: (on: boolean) => void }) {
+export function VerifySwitch(props: {
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  /** More switches for the same box (Convert's Update AMPR). */
+  children?: ReactNode;
+}) {
   const t = useMessages().target;
   return (
     <div className="field verify">
@@ -174,6 +189,7 @@ export function VerifySwitch(props: { checked: boolean; onChange: (on: boolean) 
           <span className="muted hint">{t.fullVerifyHint}</span>
         </span>
       </label>
+      {props.children}
     </div>
   );
 }
@@ -230,13 +246,6 @@ export function running(jobs: Job[]): string[] {
   return jobs.flatMap((j) => (j.request && !j.result ? [j.request.output] : []));
 }
 
-/** `preferred` (never "folder"), unless an image is already in that format: then it
- * extracts instead. */
-export function startFormat(preferred: Format, path: string, isImage: boolean): Format {
-  if (!isImage) return preferred;
-  return path.toLowerCase().endsWith(`.${preferred}`) ? "folder" : preferred;
-}
-
 /**
  * The output of a screen's job: a generated name (`[GAME_NAME]-[TITLE_ID]`, the next free one)
  * or a typed one, in a folder that starts as the source's. `format` is the target this render
@@ -253,19 +262,25 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
   const choiceSeq = useRef(0);
   // The output's folder, kept while a new name is pending (output is empty then).
   const outDir = useRef("");
+  // The password that opened an archive source (names read its param.json); in memory only.
+  const password = useRef<string | null>(null);
+  // This render's naming, for `opened`, which lands after an inspection began on an older render.
+  const live = useRef({ generate, typed: false });
+  live.current = { generate, typed: !generate && output !== "" };
 
   // Recompute the name, keeping the folder.
   const refresh = async (src: string, fmt: Format, gen = generate, taken = running(jobs)) => {
     const seq = ++outputSeq.current;
     try {
       const out = gen
-        ? await api.generatedOutput(src, fmt, outDir.current, taken)
-        : await api.defaultOutput(src, fmt, outDir.current);
+        ? await api.generatedOutput(src, fmt, outDir.current, taken, password.current)
+        : await api.defaultOutput(src, fmt, outDir.current, password.current);
       if (seq !== outputSeq.current) return;
       if (out) outDir.current = dirname(out);
       setOutput(out);
     } catch (e) {
-      if (seq === outputSeq.current) onError(errorText(e));
+      // A locked archive: the screen asks for its password, then `opened` names it.
+      if (seq === outputSeq.current && !isPasswordRequired(errorText(e))) onError(errorText(e));
     }
   };
 
@@ -289,9 +304,19 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
     reset(src: string, fmt: Format | null) {
       choiceSeq.current++;
       outputSeq.current++;
+      password.current = null;
       outDir.current = dirname(src);
       setOutput("");
       if (fmt) void refresh(src, fmt);
+    },
+    /** The source opened, with `pw` (an archive's password, or null): names use it from now
+     * on; a fresh name for `fmt` now (none when null, or when a name was typed meanwhile). */
+    opened(src: string, fmt: Format | null, pw: string | null) {
+      password.current = pw;
+      if (!fmt || live.current.typed) return;
+      outputSeq.current++;
+      setOutput("");
+      void refresh(src, fmt, live.current.generate);
     },
     /** A new target: a typed name keeps its stem, a generated one is made again. */
     retarget(src: string | null, fmt: Format) {

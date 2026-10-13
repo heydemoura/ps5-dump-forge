@@ -133,6 +133,7 @@ export function Formats() {
           <p className="muted">
             {t.lazy} <span className="path">https://github.com/Nazky/Lazy_AMPR</span>
           </p>
+          <p className="muted">{t.unrar}</p>
         </div>
       </section>
     </div>

@@ -3,8 +3,7 @@ name: Release
 # A `v*` tag builds the macOS, Windows, Linux and PS5 releases and creates a *draft* GitHub Release
 # with the macOS universal (arm64 + Intel) zip, the two Windows x86-64 zips (with and without a
 # bundled WebView2 runtime), the Windows arm64 zip, the Linux x86-64 and arm64 tarballs, the PS5
-# payload (one plain .elf), the source tarball (GPL-3.0: the source ships with every release) and
-# SHA256SUMS; publishing the draft is a manual step on GitHub, after checking its assets.
+# payload (one plain .elf) and SHA256SUMS (the source is GitHub's own archive of the tag); publishing the draft is a manual step on GitHub, after checking its assets.
 # `workflow_dispatch` is a dry run, even on a tag: same build, artifact kept on the run,
 # nothing published.
 on:
@@ -38,8 +37,7 @@ jobs:
         with:
           node-version: lts/*
       # Builds PS5 Dump Forge.app (tauri build, universal) and the CLI (both targets,
-      # lipo-joined), assembles and verifies the zip, writes the source
-      # tarball and SHA256SUMS into dist/.
+      # lipo-joined), assembles and verifies the zip, writes SHA256SUMS into dist/.
       - run: scripts/release-macos.sh
       - uses: actions/upload-artifact@v7
         with:
@@ -183,14 +181,13 @@ jobs:
           cd dist
           rm -f SHA256SUMS
           # merge-multiple lets a mislabelled leg overwrite another's archive, or a leg go missing:
-          # require exactly the eight archives of this tag before checksumming.
+          # require exactly the seven archives of this tag before checksumming.
           ver=${GITHUB_REF_NAME#v}
           printf '%s\n' \
             "ps5-dump-forge-$ver-linux-arm64.tar.gz" \
             "ps5-dump-forge-$ver-linux-x86-64.tar.gz" \
             "ps5-dump-forge-$ver-macos-universal.zip" \
             "ps5-dump-forge-$ver-ps5.elf" \
-            "ps5-dump-forge-$ver-source.tar.gz" \
             "ps5-dump-forge-$ver-windows-arm64.zip" \
             "ps5-dump-forge-$ver-windows-x86-64-webview2.zip" \
             "ps5-dump-forge-$ver-windows-x86-64.zip" | LC_ALL=C sort > ../expected.txt
@@ -220,8 +217,7 @@ jobs:
             echo "PS5 (jailbroken, with an ELF loader): load ps5-dump-forge-$ver-ps5.elf, e.g. send it to elfldr's port 9021 or list it in the webkit autoloader's autoload.txt, then open http://<ps5-ip>:8095 in a browser."
             echo "The web UI has no access control: use it on a trusted network. Tested on a PS5 (firmware 13.60): .exfat and folder output from .ffpkg and folder sources on the internal SSD, and the home-screen tile starting Forge after a restart. The other output formats and USB output are not tested on a console yet."
             echo
-            echo "Each desktop archive (macOS, Windows, Linux) holds the app (PS5 Dump Forge.app, PS5 Dump Forge.exe or PS5 Dump Forge.AppDir with forge.sh), the ps5-dump-forge command-line tool, README.md, LICENSE (GPL-3.0) and THIRD-PARTY-NOTICES.md."
-            echo "The source tarball is the complete corresponding source of this release. SHA256SUMS lists every archive's SHA-256."
+            echo "Each desktop archive (macOS, Windows, Linux) holds the app (PS5 Dump Forge.app, PS5 Dump Forge.exe or PS5 Dump Forge.AppDir with forge.sh) and the ps5-dump-forge command-line tool. README, LICENSE (GPL-3.0), the UnRAR license and THIRD-PARTY-NOTICES.md are in the source archives below, the complete corresponding source of this release. SHA256SUMS lists every archive's SHA-256."
             case "$GITHUB_REF_NAME" in *-*)
               echo
               echo "Test release: not every format has been tested on a console yet. Keep the original dump." ;;

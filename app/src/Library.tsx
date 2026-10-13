@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api, errorText, pick, runtimePlatform, type LibraryEntry, type LibraryScan, type RuntimePlatform } from "./api";
-import { basename, FormatPill, isWithin, notifyDeleted, onDeleted, PathLine } from "./common";
+import { basename, Dots, FormatPill, isWithin, notifyDeleted, onDeleted, PathLine } from "./common";
 import { confirmDelete } from "./delete";
 import { gameTitle, num, useMessages } from "./i18n";
 import { Icon } from "./icons";
@@ -231,7 +231,10 @@ export function Library(props: {
   const body = busy ? (
     <div className="library-busy" role="status" aria-live="polite">
       <span className="spinner" aria-hidden="true" />
-      <span>{target ? t.scanningIn(basename(target)) : t.scanning}</span>
+      <span>
+        {target ? t.scanningIn(basename(target)) : t.scanning}
+        <Dots />
+      </span>
     </div>
   ) : refused ? (
     <div className="empty library-empty" role="alert">

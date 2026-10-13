@@ -3,14 +3,25 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
-import { APP_NAME, pick, prettyBytes, serverAddress, type Format, type Inspection, type Kind, type Lz4Facts } from "./api";
+import {
+  APP_NAME,
+  ARCHIVE_PASSWORD_REQUIRED,
+  pick,
+  prettyBytes,
+  serverAddress,
+  type ArchiveKind,
+  type Format,
+  type Inspection,
+  type Kind,
+  type Lz4Facts,
+} from "./api";
 import { gameTitle, msg, num, useLang, useMessages } from "./i18n";
 import { basename, SEPARATORS, trimSep } from "./paths";
 import { useCoverGlow } from "./glow";
 import { Icon, type IconName } from "./icons";
 
 // Format names stay as they are in every language; only "Folder" is translated (kindLabel).
-const KIND_LABEL: Record<Format, string> = {
+const KIND_LABEL: Record<Format | ArchiveKind, string> = {
   folder: "Folder",
   exfat: "exfat",
   ffpkg: "ffpkg",
@@ -18,24 +29,37 @@ const KIND_LABEL: Record<Format, string> = {
   ffpfsc: "ffpfsc",
   pkg: "fpkg", // the debug FPKG's display name; its file still ends in .pkg
   lz4: "LZ4", // an LZ4 packed folder
+  zip: "zip", // archives: a source only
+  "7z": "7z",
+  rar: "rar",
 };
 
 /** What a source can be, in picker order; also the target picker's formats. The LZ4 packed
  * folder is not among them: the LZ4 tab's Pack picks it. */
 export const KINDS: Kind[] = ["folder", "exfat", "ffpkg", "ffpfs", "ffpfsc", "pkg"];
 
+/** Archives holding one game: sources only, never a target. */
+export const ARCHIVE_KINDS: ArchiveKind[] = ["zip", "7z", "rar"];
+
+/** An inspected source's kind is an archive's. */
+export function isArchive(kind: string | undefined): boolean {
+  return ARCHIVE_KINDS.includes(kind as ArchiveKind);
+}
+
 /** A format's display name, read at call time (a component calling it re-renders on a switch
  * through its own `useMessages`). */
 export function kindLabel(kind: string): string {
   if (kind === "folder") return msg().common.folder;
-  return KIND_LABEL[kind as Format] ?? kind;
+  return KIND_LABEL[kind as Format | ArchiveKind] ?? kind;
 }
 
 /** A format as a small tinted tag (hues: `.fmt-*` in styles.css). */
 export function FormatPill({ kind }: { kind: string }) {
   useLang(); // re-render on a language switch: kindLabel reads the current one
   const known = kind in KIND_LABEL;
-  return <span className={known ? `tag fmt fmt-${kind}` : "tag"}>{kindLabel(kind)}</span>;
+  // The three archives share one hue: what they hold is the same.
+  const hue = isArchive(kind) ? "archive" : kind;
+  return <span className={known ? `tag fmt fmt-${hue}` : "tag"}>{kindLabel(kind)}</span>;
 }
 
 /** The image formats' names (no dot) as words in running text. */
@@ -155,6 +179,8 @@ export function FormatPicker<F extends Format>(props: {
   reason?: (f: F) => string | undefined;
   /** Default: every source kind (the LZ4 packed folder is chosen elsewhere). */
   formats?: F[];
+  /** A format shown as Folder (label and colour): the LZ4 tab's packed folder. */
+  asFolder?: F;
   className?: string;
 }) {
   useLang(); // re-render on a language switch: kindLabel reads the current one
@@ -167,13 +193,14 @@ export function FormatPicker<F extends Format>(props: {
     >
       {formats.map((f) => {
         const disabled = props.disabled?.(f) ?? false;
+        const shown = f === props.asFolder ? "folder" : f;
         const why = disabled ? props.reason?.(f) : undefined;
         return (
           // `on` from state, not `input:checked + …`: WebKit misses that restyle when React
           // sets `checked` by code (a new source switching the format).
           <label
             key={f}
-            className={`seg-choice fmt-${f}${props.value === f ? " on" : ""}`}
+            className={`seg-choice fmt-${shown}${props.value === f ? " on" : ""}`}
             title={why}
           >
             <input
@@ -186,7 +213,7 @@ export function FormatPicker<F extends Format>(props: {
               onChange={() => props.onChange(f)}
             />
             <span className="seg-opt">
-              {kindLabel(f)}
+              {kindLabel(shown)}
               {why &&<span className="visually-hidden">, {why}</span>}
             </span>
           </label>
@@ -197,6 +224,11 @@ export function FormatPicker<F extends Format>(props: {
 }
 
 export const IMAGE_EXTENSIONS = ["exfat", "ffpkg", "ffpfs", "ffpfsc", "pkg"];
+
+/** What the Image/Archive picker offers besides images: an archive, or the first part of a
+ * multi-part one (`.part1.rar` ends in .rar, `.7z.001`/`.zip.001`, a split zip's `.zip`; `.z01`
+ * too, so core can name the part to choose instead). */
+export const ARCHIVE_EXTENSIONS = ["zip", "7z", "rar", "001", "z01"];
 
 export { basename, dirname, joinPath, SEPARATORS } from "./paths";
 
@@ -340,7 +372,8 @@ export function isWithin(path: string, dir: string): boolean {
   return p === d || (p.startsWith(d) && SEPARATORS.test(p[d.length] ?? ""));
 }
 
-/** The picker for a game folder or an image file; `onPick` unless cancelled. */
+/** The picker for a game folder, or an image or archive file; `onPick` unless cancelled
+ * (`isImage`: a file, so not a plain folder). */
 export async function pickSource(
   what: "folder" | "image",
   onPick: (path: string, isImage: boolean) => void,
@@ -353,12 +386,12 @@ export async function pickSource(
           directory: false,
           title: t.pickImage,
           filterName: t.pickImageFilter,
-          extensions: IMAGE_EXTENSIONS,
+          extensions: [...IMAGE_EXTENSIONS, ...ARCHIVE_EXTENSIONS],
         });
   if (p !== null) onPick(p, what === "image");
 }
 
-/** "Choose folder…" / "Choose image…": a game folder or an image file. */
+/** "Folder" / "Image/Archive": a game folder, or an image or archive file. */
 function PickButtons(props: { onPick: (path: string, isImage: boolean) => void; big?: boolean }) {
   const t = useMessages().common;
   const pickFolder = () => pickSource("folder", props.onPick);
@@ -367,14 +400,19 @@ function PickButtons(props: { onPick: (path: string, isImage: boolean) => void; 
     <>
       <button className={props.big ? "primary" : "small"} onClick={pickFolder}>
         <Icon name="folder" />
-        {t.chooseFolder}
+        {t.pickFolderButton}
       </button>
       <button className={props.big ? undefined : "small"} onClick={pickImage}>
-        <Icon name="disc" />
-        {t.chooseImage}
+        <Icon name="archive" />
+        {t.pickImageButton}
       </button>
     </>
   );
+}
+
+/** Core's "needs a password" error, as the UI says it. */
+export function isPasswordRequired(error: string | null): boolean {
+  return error !== null && error.includes(ARCHIVE_PASSWORD_REQUIRED);
 }
 
 /**
@@ -394,6 +432,8 @@ export function SourceCard(props: {
   empty?: ReactNode;
   /** More buttons in the title row once a source is chosen (Inspect's Delete). */
   actions?: ReactNode;
+  /** An archive that needs a password was left locked (Cancel): ask again. */
+  onUnlock?: () => void;
 }) {
   const t = useMessages().common;
   const { path, ins } = props;
@@ -431,7 +471,7 @@ export function SourceCard(props: {
           <p className="empty-title">{t.emptyTitle}</p>
           <p className="muted">{t.emptyText}</p>
           <div className="kinds" aria-label={t.accepted}>
-            {KINDS.map((k) => (
+            {[...KINDS, ...ARCHIVE_KINDS].map((k) => (
               <FormatPill key={k} kind={k} />
             ))}
           </div>
@@ -442,11 +482,34 @@ export function SourceCard(props: {
       ) : (
         <>
           <GameHead path={path} ins={ins} busy={props.busy} full={props.full} />
-          {props.error && <p className="bad">{props.error}</p>}
+          {isPasswordRequired(props.error) ? (
+            <div className="row locked">
+              <p className="bad">{t.needsPassword}</p>
+              {props.onUnlock && (
+                <button className="small" onClick={props.onUnlock}>
+                  <Icon name="lock" />
+                  {t.enterPassword}
+                </button>
+              )}
+            </div>
+          ) : (
+            props.error && <p className="bad">{props.error}</p>
+          )}
           {ins && <InspectSummary ins={ins} full={props.full} />}
         </>
       )}
     </section>
+  );
+}
+
+/** "." "..", "..." in turn after a waiting text (static "..." with reduced motion). */
+export function Dots() {
+  return (
+    <span className="dots" aria-hidden="true">
+      <span>.</span>
+      <span>.</span>
+      <span>.</span>
+    </span>
   );
 }
 
@@ -457,7 +520,7 @@ function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; 
   const title = ins
     ? (gameTitle(ins.title_names, ins.title_name) ?? ins.title_id ?? t.unknownTitle)
     : props.busy
-      ? t.reading
+      ? <>{t.reading}<Dots /></>
       : t.unreadable;
   return (
     <div className={props.full ? "game full" : "game"}>
@@ -524,9 +587,13 @@ function Facts({ ins, full }: { ins: Inspection; full: boolean }) {
         <dd>
           <span className="value">{prettyBytes(ins.total_bytes)}</span>
           <span className="tag">{t.files(ins.files.length)}</span>
+          {ins.archive && (
+            <span className="tag">{t.inArchive(`.${ins.archive.format}`, prettyBytes(ins.archive.archive_bytes))}</span>
+          )}
         </dd>
       </div>
-      {ins.lz4 && <Lz4Tile facts={ins.lz4} />}
+      {full && ins.archive && <ArchiveTile facts={ins.archive} />}
+      {ins.lz4 && lz4Shown(ins.lz4) && <Lz4Tile facts={ins.lz4} />}
       {full && (
         <div className="tile wide">
           <dt>{t.contentId}</dt>
@@ -540,6 +607,24 @@ function Facts({ ins, full }: { ins: Inspection; full: boolean }) {
         </div>
       )}
     </dl>
+  );
+}
+
+/** An archive source, in Inspect: its parts and how it is packed, and where the game sits. */
+function ArchiveTile({ facts }: { facts: NonNullable<Inspection["archive"]> }) {
+  const t = useMessages().common;
+  const notes = [facts.root ? t.archiveRoot(facts.root) : t.archiveAtRoot];
+  if (facts.solid) notes.push(t.solid);
+  if (facts.encrypted) notes.push(t.encrypted);
+  return (
+    <div className="tile wide">
+      <dt>{t.archive}</dt>
+      <dd>
+        <span className="value">{t.parts(facts.volumes.length)}</span>
+        <span className="note">{notes.join(" · ")}</span>
+        {facts.volumes.length > 1 && <span className="note path">{facts.volumes.join(", ")}</span>}
+      </dd>
+    </div>
   );
 }
 
@@ -575,6 +660,12 @@ function Lz4Tile({ facts }: { facts: Lz4Facts }) {
 }
 
 /** "Packed" / "Damaged packs" / "Traced" / "Plain", and what backs it (read at call time). */
+/** The LZ4 (AMPR) tile shows for a game with its own ampr_emu or any LZ4 artifact (packs, a
+ * damaged manifest, traces); one that only imports Sony's libSceAmpr has nothing for LZ4. */
+function lz4Shown(f: Lz4Facts): boolean {
+  return f.runtime !== "none" || !!f.packed || f.manifest_error !== null || f.journal_bytes !== null;
+}
+
 export function lz4State(f: Lz4Facts): { state: string; detail: string } {
   const t = msg().common;
   if (f.packed) {
@@ -598,16 +689,10 @@ export function emulatorNames(ins: Inspection): string[] {
   return [...new Set(ins.emulators.map((e) => e.name))];
 }
 
-/** Preflight findings, each with a status icon; one green line when there are none. */
+/** Preflight findings, each with a status icon; nothing at all when there are none. */
 export function Findings({ lines }: { lines: string[] }) {
   const t = useMessages().common;
-  if (lines.length === 0)
-    return (
-      <p className="status-line good">
-        <Icon name="checkCircle" />
-        {t.noFindings}
-      </p>
-    );
+  if (lines.length === 0) return null;
   return (
     <ul className="findings" aria-label={t.findings}>
       {lines.map((l, i) => {

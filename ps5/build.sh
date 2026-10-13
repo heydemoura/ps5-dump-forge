@@ -43,6 +43,9 @@ export CC_x86_64_ps5_freebsd="$cc" AR_x86_64_ps5_freebsd="$PS5_PAYLOAD_SDK/bin/p
 # cc-rs (blake3's SIMD assembly) passes --target=x86_64-unknown-freebsd-ps5, which clang refuses;
 # a later --target wins, so put the SDK's own target back (as ps5-ai-cli's check-codex.sh does).
 export CFLAGS_x86_64_ps5_freebsd='--target=x86_64-sie-ps5 -mno-red-zone -femulated-tls'
+# unrar_sys builds UnRAR's C++ the same way; linker.sh links the SDK's libc++ for it.
+export CXX_x86_64_ps5_freebsd="$PS5_PAYLOAD_SDK/bin/prospero-clang++"
+export CXXFLAGS_x86_64_ps5_freebsd="$CFLAGS_x86_64_ps5_freebsd"
 # Cargo doesn't see the C objects or linker.sh; dropping the CLI's linked output makes it relink
 # (about 8 s) so a shim or entry change always lands in the ELF.
 build() {

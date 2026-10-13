@@ -9,11 +9,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ps5_dump_forge_core::{ConvertRequest, Event, Format, Jobs, KrakenLevel, Lz4Mode, VerifyMode};
+use ps5_dump_forge_core::{
+    ArchivePassword, ConvertRequest, Event, Format, Jobs, KrakenLevel, Lz4Mode, VerifyMode,
+};
 
 const USAGE: &str = "\
-usage: ps5-dump-forge inspect <path> [--json]
+usage: ps5-dump-forge inspect <path> [--json] [--password-stdin]
        ps5-dump-forge convert <source> --to folder|exfat|ffpkg|ffpfs|ffpfsc|pkg|lz4
+                         [--password-stdin]
                          [--inner exfat|ffpkg|ffpfs] [-o <output>] [--threads N]
                          [--remove-backport] [--full-verify] [--kraken fast|balanced|smallest]
                          [--level 0..9] [--lz4-profile <toml> | --lz4-traces <zip|dir|journal>]
@@ -24,11 +27,16 @@ usage: ps5-dump-forge inspect <path> [--json]
        ps5-dump-forge lz4-patch <folder>
        ps5-dump-forge lz4-unpatch <folder>
        ps5-dump-forge lz4-profile <source> [--lz4-traces <zip|dir|journal> | --lz4-profile <toml>]
-                         [-o <out.toml>]
+                         [-o <out.toml>] [--password-stdin]
        ps5-dump-forge serve [--port N] --root <dir> [--root <dir>]...
 
-  inspect   describe a game folder or image (.exfat, .ffpkg, .ffpfs, .ffpfsc, .pkg)
-  convert   convert a source; progress is printed as JSON lines on stdout
+  inspect   describe a game folder, image (.exfat, .ffpkg, .ffpfs, .ffpfsc, .pkg) or archive
+            holding one game folder (.zip, .7z, .rar; the first part of a multi-part set)
+  convert   convert a source; progress is printed as JSON lines on stdout. An archive is
+            read in place, with nothing unpacked to disk
+  --password-stdin
+            an archive's password: one line read from stdin (default: the
+            FORGE_ARCHIVE_PASSWORD environment variable; never an argument)
   --to      folder, exfat, ffpkg (what ShadowMountPlus recommends), ffpfs (PFS image),
             ffpfsc (compressed PFS container, mounted read-only), or pkg = debug FPKG
             (shown as .fpkg in the app; the file still ends in .pkg), or lz4 = an LZ4 packed
@@ -104,8 +112,12 @@ enum Cli {
     Inspect {
         path: PathBuf,
         json: bool,
+        password_stdin: bool,
     },
-    Convert(ConvertRequest),
+    Convert {
+        request: ConvertRequest,
+        password_stdin: bool,
+    },
     Lz4Patch {
         path: PathBuf,
         unpatch: bool,
@@ -113,6 +125,7 @@ enum Cli {
     Lz4Profile {
         request: Box<ConvertRequest>,
         out: Option<PathBuf>,
+        password_stdin: bool,
     },
     Serve {
         port: u16,
@@ -163,12 +176,14 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
         (None, false, false, None);
     let mut lz4_traces = None;
     let (mut lz4_unpatch, mut lz4_in_place, mut lz4_pack) = (false, false, false);
+    let mut password_stdin = false;
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
         let text = |v: OsString| v.into_string().map_err(|_| "option values must be text");
         match arg.to_str().unwrap_or("") {
             "-h" | "--help" => return Ok(Cli::Help),
             "--json" => json = true,
+            "--password-stdin" => password_stdin = true,
             "--remove-backport" => remove_backport = true,
             "--full-verify" => full_verify = true,
             "--to" => to = Some(parse_format(&text(value("--to")?)?)?),
@@ -223,7 +238,11 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
     let [path] = <[PathBuf; 1]>::try_from(positional)
         .map_err(|p| format!("expected one path, got {}", p.len()))?;
     match command.as_str() {
-        "inspect" => Ok(Cli::Inspect { path, json }),
+        "inspect" => Ok(Cli::Inspect {
+            path,
+            json,
+            password_stdin,
+        }),
         "convert" => {
             if lz4_in_place {
                 if to.is_some() || output.is_some() {
@@ -313,37 +332,40 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
             if lz4_space.is_some() && !lz4_trace {
                 return Err("--lz4-trace-space only goes with --lz4-trace".into());
             }
-            let output = match output {
-                Some(o) => o,
-                None => default_output(&path, format)?,
-            };
-            Ok(Cli::Convert(ConvertRequest {
-                source: path,
-                format,
-                output,
-                compression_threads: threads,
-                inner,
-                remove_backport,
-                full_verify,
-                kraken_level: kraken_level.unwrap_or_default(),
-                ffpfsc_level: ffpfsc_level.unwrap_or(ps5_dump_forge_core::DEFAULT_FFPFSC_LEVEL),
-                lz4: if lz4_trace {
-                    Some(Lz4Mode::Trace)
-                } else if lz4_unpack {
-                    Some(Lz4Mode::Unpack)
-                } else if lz4_unpatch {
-                    Some(Lz4Mode::Unpatch)
-                } else if lz4_pack {
-                    Some(Lz4Mode::Pack)
-                } else {
-                    None
+            // No -o: named in `main` once the archive password is known (an encrypted archive's
+            // title is inside it).
+            let output = output.unwrap_or_default();
+            Ok(Cli::Convert {
+                request: ConvertRequest {
+                    source: path,
+                    format,
+                    output,
+                    compression_threads: threads,
+                    inner,
+                    remove_backport,
+                    full_verify,
+                    kraken_level: kraken_level.unwrap_or_default(),
+                    ffpfsc_level: ffpfsc_level.unwrap_or(ps5_dump_forge_core::DEFAULT_FFPFSC_LEVEL),
+                    lz4: if lz4_trace {
+                        Some(Lz4Mode::Trace)
+                    } else if lz4_unpack {
+                        Some(Lz4Mode::Unpack)
+                    } else if lz4_unpatch {
+                        Some(Lz4Mode::Unpatch)
+                    } else if lz4_pack {
+                        Some(Lz4Mode::Pack)
+                    } else {
+                        None
+                    },
+                    lz4_profile,
+                    lz4_traces,
+                    lz4_trace_space_mib: lz4_space
+                        .unwrap_or(ps5_dump_forge_core::DEFAULT_LZ4_TRACE_SPACE_MIB),
+                    lz4_in_place,
+                    archive_password: None,
                 },
-                lz4_profile,
-                lz4_traces,
-                lz4_trace_space_mib: lz4_space
-                    .unwrap_or(ps5_dump_forge_core::DEFAULT_LZ4_TRACE_SPACE_MIB),
-                lz4_in_place,
-            }))
+                password_stdin,
+            })
         }
         other => Err(format!("unknown command {other:?}")),
     }
@@ -351,10 +373,12 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
 
 fn parse_lz4_profile(mut args: impl Iterator<Item = OsString>) -> Result<Cli, String> {
     let (mut paths, mut out, mut traces, mut profile) = (Vec::new(), None, None, None);
+    let mut password_stdin = false;
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
         match arg.to_str().unwrap_or("") {
             "-h" | "--help" => return Ok(Cli::Help),
+            "--password-stdin" => password_stdin = true,
             "-o" | "--output" => out = Some(PathBuf::from(value("-o")?)),
             "--lz4-traces" => traces = Some(PathBuf::from(value("--lz4-traces")?)),
             "--lz4-profile" => profile = Some(PathBuf::from(value("--lz4-profile")?)),
@@ -385,8 +409,10 @@ fn parse_lz4_profile(mut args: impl Iterator<Item = OsString>) -> Result<Cli, St
             lz4_traces: traces,
             lz4_trace_space_mib: ps5_dump_forge_core::DEFAULT_LZ4_TRACE_SPACE_MIB,
             lz4_in_place: false,
+            archive_password: None,
         }),
         out,
+        password_stdin,
     })
 }
 
@@ -424,8 +450,13 @@ fn parse_format(s: &str) -> Result<Format, String> {
 }
 
 /// Next to the source (core's empty `dir`), named from its title id.
-fn default_output(source: &Path, format: Format) -> Result<PathBuf, String> {
-    ps5_dump_forge_core::default_output(source, format, Path::new("")).map_err(|e| format!("{e:#}"))
+fn default_output(
+    source: &Path,
+    format: Format,
+    password: Option<&str>,
+) -> Result<PathBuf, String> {
+    ps5_dump_forge_core::default_output_with(source, format, Path::new(""), password)
+        .map_err(|e| format!("{e:#}"))
 }
 
 // scripts/release-ps5.sh looks for the server's marker in the PS5 ELF to check that it is this
@@ -508,12 +539,72 @@ fn main() -> ExitCode {
     };
     match cli {
         Cli::Help => print_out(&format!("{USAGE}\n")),
-        Cli::Inspect { path, json } => inspect(&path, json),
-        Cli::Convert(request) => convert(request),
+        Cli::Inspect {
+            path,
+            json,
+            password_stdin,
+        } => match archive_password(password_stdin) {
+            Ok(password) => inspect(&path, password.as_ref(), json),
+            Err(e) => usage_error(&e),
+        },
+        Cli::Convert {
+            mut request,
+            password_stdin,
+        } => match archive_password(password_stdin) {
+            Ok(password) => {
+                request.archive_password = password;
+                if request.output.as_os_str().is_empty() {
+                    let password = request.archive_password.as_ref().map(|p| p.as_str());
+                    match default_output(&request.source, request.format, password) {
+                        Ok(o) => request.output = o,
+                        Err(e) => return usage_error(&e),
+                    }
+                }
+                convert(request)
+            }
+            Err(e) => usage_error(&e),
+        },
         Cli::Lz4Patch { path, unpatch } => lz4_patch(&path, unpatch),
-        Cli::Lz4Profile { request, out } => lz4_profile(&request, out),
+        Cli::Lz4Profile {
+            mut request,
+            out,
+            password_stdin,
+        } => match archive_password(password_stdin) {
+            Ok(password) => {
+                request.archive_password = password;
+                lz4_profile(&request, out)
+            }
+            Err(e) => usage_error(&e),
+        },
         Cli::Serve { port, roots } => serve(port, roots),
     }
+}
+
+fn usage_error(e: &str) -> ExitCode {
+    eprintln!("ps5-dump-forge: {e}");
+    ExitCode::from(2)
+}
+
+/// An archive's password: one line of stdin with `--password-stdin`, else
+/// `FORGE_ARCHIVE_PASSWORD`. Never an argument (argv is visible to other users). Empty = none.
+fn archive_password(from_stdin: bool) -> Result<Option<ArchivePassword>, String> {
+    let password = if from_stdin {
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| format!("--password-stdin: {e}"))?;
+        let line = line.strip_suffix('\n').unwrap_or(&line);
+        line.strip_suffix('\r').unwrap_or(line).to_string()
+    } else {
+        match std::env::var("FORGE_ARCHIVE_PASSWORD") {
+            Ok(p) => p,
+            Err(std::env::VarError::NotPresent) => String::new(),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err("FORGE_ARCHIVE_PASSWORD must be text".into());
+            }
+        }
+    };
+    Ok((!password.is_empty()).then(|| ArchivePassword::new(password)))
 }
 
 fn serve(port: u16, roots: Vec<PathBuf>) -> ExitCode {
@@ -553,8 +644,8 @@ fn notify(line: &str) {
     eprintln!("{line}");
 }
 
-fn inspect(path: &Path, json: bool) -> ExitCode {
-    let found = match ps5_dump_forge_core::inspect(path) {
+fn inspect(path: &Path, password: Option<&ArchivePassword>, json: bool) -> ExitCode {
+    let found = match ps5_dump_forge_core::inspect_with(path, password.map(|p| p.as_str())) {
         Ok(found) => found,
         Err(e) => {
             eprintln!("ps5-dump-forge: {e:#}");
@@ -767,10 +858,11 @@ fn lz4_profile(request: &ConvertRequest, out: Option<PathBuf>) -> ExitCode {
     let path = match out {
         Some(p) => p,
         // The folder holding the source, as core names outputs there.
-        None => match ps5_dump_forge_core::default_output(
+        None => match ps5_dump_forge_core::default_output_with(
             &request.source,
             Format::Folder,
             Path::new(""),
+            request.archive_password.as_ref().map(|p| p.as_str()),
         ) {
             Ok(p) => p.with_file_name(&saved.file_name),
             Err(e) => return fail(e),
@@ -877,7 +969,7 @@ mod tests {
 
     #[test]
     fn parses_convert() {
-        let Ok(Cli::Convert(r)) =
+        let Ok(Cli::Convert { request: r, .. }) =
             parse_args(args("convert /g --to exfat -o /o/x.exfat --threads 2"))
         else {
             panic!("not a convert");
@@ -885,35 +977,43 @@ mod tests {
         assert_eq!(r.format, Format::Exfat);
         assert_eq!(r.output, PathBuf::from("/o/x.exfat"));
         assert_eq!(r.compression_threads, Some(2));
-        let Ok(Cli::Convert(r)) = parse_args(args("convert /g --to PKG -o /o/x.pkg")) else {
+        let Ok(Cli::Convert { request: r, .. }) =
+            parse_args(args("convert /g --to PKG -o /o/x.pkg"))
+        else {
             panic!("not a convert");
         };
         assert_eq!(r.format, Format::Pkg);
         assert_eq!(r.inner, None);
-        let Ok(Cli::Convert(r)) = parse_args(args("convert /g --to ffpfsc --inner ffpkg -o /o/x"))
+        let Ok(Cli::Convert { request: r, .. }) =
+            parse_args(args("convert /g --to ffpfsc --inner ffpkg -o /o/x"))
         else {
             panic!("not a convert");
         };
         assert_eq!((r.format, r.inner), (Format::Ffpfsc, Some(Format::Ffpkg)));
         assert!(!r.remove_backport);
         assert!(!r.full_verify, "fast by default");
-        let Ok(Cli::Convert(r)) = parse_args(args("convert /g --to folder --remove-backport -o x"))
+        let Ok(Cli::Convert { request: r, .. }) =
+            parse_args(args("convert /g --to folder --remove-backport -o x"))
         else {
             panic!("not a convert");
         };
         assert!(r.remove_backport);
-        let Ok(Cli::Convert(r)) = parse_args(args("convert /g --to ffpkg --full-verify -o x"))
+        let Ok(Cli::Convert { request: r, .. }) =
+            parse_args(args("convert /g --to ffpkg --full-verify -o x"))
         else {
             panic!("not a convert");
         };
         assert!(r.full_verify);
         assert_eq!(r.kraken_level, KrakenLevel::Fast, "fast by default");
-        let Ok(Cli::Convert(r)) = parse_args(args("convert /g --to pkg --kraken smallest -o x"))
+        let Ok(Cli::Convert { request: r, .. }) =
+            parse_args(args("convert /g --to pkg --kraken smallest -o x"))
         else {
             panic!("not a convert");
         };
         assert_eq!(r.kraken_level, KrakenLevel::Smallest);
-        let Ok(Cli::Convert(r)) = parse_args(args("convert /g --to ffpfsc --level 0 -o x")) else {
+        let Ok(Cli::Convert { request: r, .. }) =
+            parse_args(args("convert /g --to ffpfsc --level 0 -o x"))
+        else {
             panic!("not a convert");
         };
         assert_eq!(r.ffpfsc_level, 0);
@@ -938,14 +1038,14 @@ mod tests {
         assert!(parse_args(args("convert /g --to exfat --level 5 -o x")).is_err());
         assert!(matches!(
             parse_args(args("inspect /g --json")),
-            Ok(Cli::Inspect { path, json: true }) if path == Path::new("/g")
+            Ok(Cli::Inspect { path, json: true, password_stdin: false }) if path == Path::new("/g")
         ));
         assert!(matches!(parse_args(args("help")), Ok(Cli::Help)));
     }
 
     fn convert(s: &str) -> Result<ConvertRequest, String> {
         match parse_args(args(s)) {
-            Ok(Cli::Convert(r)) => Ok(r),
+            Ok(Cli::Convert { request: r, .. }) => Ok(r),
             Ok(_) => panic!("not a convert"),
             Err(e) => Err(e),
         }

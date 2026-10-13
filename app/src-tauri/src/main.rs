@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ps5_dump_forge_core::{
-    ConvertRequest, Event, Format, Inspection, JobId, Jobs, LibraryScan, Lz4Patch, Lz4PlanProfile,
+    ArchivePassword, ConvertRequest, Event, Format, Inspection, JobId, Jobs, LibraryScan, Lz4Patch,
+    Lz4PlanProfile,
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -103,10 +104,16 @@ fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
+/// `password`: for an archive that needs one (else core's `ARCHIVE_PASSWORD_REQUIRED`).
 #[tauri::command]
-async fn inspect(app: AppHandle, path: PathBuf) -> Result<Inspection, String> {
+async fn inspect(
+    app: AppHandle,
+    path: PathBuf,
+    password: Option<ArchivePassword>,
+) -> Result<Inspection, String> {
     blocking(app, move |_, _| {
-        ps5_dump_forge_core::inspect(&path).map_err(err)
+        ps5_dump_forge_core::inspect_with(&path, password.as_ref().map(ArchivePassword::as_str))
+            .map_err(err)
     })
     .await
 }
@@ -130,19 +137,23 @@ async fn library_cover(app: AppHandle, path: PathBuf) -> Result<Option<String>, 
     .await
 }
 
+/// `password`: an archive's, as `inspect` takes it.
 #[tauri::command]
 async fn default_output(
     app: AppHandle,
     source: PathBuf,
     format: Format,
     dir: PathBuf,
+    password: Option<ArchivePassword>,
 ) -> Result<PathBuf, String> {
     blocking(app, move |_, _| {
-        ps5_dump_forge_core::default_output(&source, format, &dir).map_err(err)
+        let password = password.as_ref().map(ArchivePassword::as_str);
+        ps5_dump_forge_core::default_output_with(&source, format, &dir, password).map_err(err)
     })
     .await
 }
 
+/// `password`: an archive's, as `inspect` takes it.
 #[tauri::command]
 async fn generated_output(
     app: AppHandle,
@@ -150,9 +161,12 @@ async fn generated_output(
     format: Format,
     dir: PathBuf,
     taken: Vec<PathBuf>,
+    password: Option<ArchivePassword>,
 ) -> Result<PathBuf, String> {
     blocking(app, move |_, _| {
-        ps5_dump_forge_core::generated_output(&source, format, &dir, &taken).map_err(err)
+        let password = password.as_ref().map(ArchivePassword::as_str);
+        ps5_dump_forge_core::generated_output_with(&source, format, &dir, &taken, password)
+            .map_err(err)
     })
     .await
 }
@@ -263,7 +277,8 @@ async fn cancel_job(app: AppHandle, id: JobId) -> Result<(), String> {
     .await
 }
 
-/// Leftover `.part` files in `dirs` (missing ones skip), each folder listed once.
+/// Leftover `.part` files and archive staging folders in `dirs` (missing ones skip), each
+/// folder listed once.
 #[tauri::command]
 async fn stale_parts(app: AppHandle, dirs: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
     blocking(app, move |_, _| {

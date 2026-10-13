@@ -50,15 +50,8 @@ const zh: Messages = {
     unreadable: "无法构建：无法读取此源（见“源”）。",
     blocked: (first, more) =>
       `无法构建：${first}${more > 0 ? `（另有 ${num(more)} 项，见“源”）` : ""}。`,
-    runtime: (install, version) => `${install ? "安装" : "替换"} AMPR 运行时（ampr_emu ${version}）`,
-    runtimeNone:
-      "此游戏使用 AMPR，但没有 fakelib/libSceAmpr.sprx：输出中将放入内置的运行时。",
-    runtimeOther:
-      "fakelib/libSceAmpr.sprx 不是 Forge 附带的运行时（可能更新或更旧）：输出中将改用内置的运行时。",
-    runtimeRest:
-      "不复制追踪记录和日志，并写入新的 ampr_emu.index。只改变输出，绝不改动源。关闭时按原样复制。",
-    runtimeWarn: (version) =>
-      `ampr_emu ${version} 是上游的测试版本；已知问题：部分游戏在存档时崩溃。`,
+    runtime: "更新 AMPR",
+    runtimeHint: "此游戏的 ampr_emu 不是最新版本。",
     removeBackport: "移除向下移植",
     removeHint: (libs, emulators, other) =>
       `从 fakelib/ 中排除 ${num(libs)} 个向下移植库` +
@@ -127,6 +120,8 @@ const zh: Messages = {
       `上游数据：来自 ampr_emu 和 Lazy_AMPR 作者的报告，并非 ${app} 实测；具体因游戏而异。ampr_emu 0.4.2.1 是上游的测试版本；已知问题：部分游戏在存档时崩溃。`,
     bundled: "LZ4 打包后的游戏使用 drakmor 的 ampr_emu 0.4.2.1（GPL-3.0）运行；该运行时原样内置，未作修改。源代码：",
     lazy: "“先追踪、后打包”的流程沿用 Nazky 的 Lazy_AMPR：",
+    unrar:
+      ".rar 压缩包由内置的 UnRAR 库（作者 Alexander Roshal）读取（仅解压，遵循 UnRAR 许可）。",
     language: "语言",
     system: "跟随系统",
   },
@@ -143,13 +138,14 @@ const zh: Messages = {
     firstOf: (max, n) => `前 ${num(max)} 个，共 ${num(n)} 个`,
     fileCount: (n) => `${num(n)} 个文件`,
     noMatch: (f) => `没有与“${f}”匹配的文件。`,
+    noListing: "不支持显示压缩包的文件列表。",
     emptyDirs: (n) => `空文件夹（${num(n)}）`,
     noParam: "没有 sce_sys/param.json。",
     reader: "读取器",
-    leftovers: "残留的 .part 文件",
+    leftovers: "残留的文件和文件夹",
     found: (n) => `找到 ${num(n)} 个`,
     leftoversNote: (app) =>
-      `未完成的输出，通常来自被中断的任务。只删除您认得的文件，并且只在没有任务运行时删除；${app} 本身从不删除它们。`,
+      `未完成的输出和解压出的压缩包，通常来自被中断的任务。只删除您认得的项目，并且只在没有任务运行时删除；${app} 本身从不删除它们。`,
     checked: (n) => `已检查的文件夹（${num(n)}）`,
   },
   // JobList.tsx
@@ -213,8 +209,8 @@ const zh: Messages = {
   // Library.tsx
   library: {
     pickTitle: "选择游戏库文件夹",
-    scanningIn: (name) => `正在扫描 ${name}…`,
-    scanning: "正在扫描…",
+    scanningIn: (name) => `正在扫描 ${name}`,
+    scanning: "正在扫描",
     cantScanFolder: "无法扫描此文件夹",
     chooseAnother: "选择其他文件夹…",
     pickPrompt: "选择存放游戏的文件夹进行扫描",
@@ -253,23 +249,25 @@ const zh: Messages = {
     scenarios: { trace: "追踪", pack: "打包/解包" },
     actions: { patch: "打补丁", unpatch: "移除补丁", pack: "打包", unpack: "解包" },
     scenarioInfo: (s, packed) => s === "trace"
-      ? "让此游戏在您游玩时记录它读取了哪些资源（ampr_commands.bin），供打包使用。“移除补丁”会恢复正式版运行时。"
+      ? "记录游戏在您游玩时读取的资源，供打包使用。"
       : packed
-        ? "解包：将游戏的 LZ4 包还原为普通文件，写入文件夹或普通镜像。"
-        : "打包：将游戏的资源打包为 LZ4 卷，由内置的 AMPR 模拟器（ampr_emu）在游戏运行时读取，输出为文件夹或普通镜像。已打包的源则会被解包。",
+        ? "将游戏的 LZ4 包还原为普通文件。"
+        : "将游戏的资源打包为 LZ4 卷，由 ampr_emu 在游戏运行时读取。",
     traceInfo: (a, image) => a === "patch"
       ? image
-        ? "用追踪运行时重新构建此镜像，并预留写入追踪数据的空间，然后替换原镜像。"
-        : "直接在此文件夹中安装追踪运行时，不写入副本。"
+        ? "用追踪运行时重新构建此镜像，然后替换原镜像。"
+        : "在此文件夹中安装追踪运行时。"
       : image
-        ? "用 Forge 的正式版运行时（0.4.2.1）重新构建此镜像，不含已记录的追踪数据，然后替换原镜像。"
-        : "直接在此文件夹中恢复 Forge 的正式版运行时（0.4.2.1），不写入副本。",
+        ? "用正式版运行时重新构建此镜像，然后替换原镜像。"
+        : "在此文件夹中恢复正式版运行时。",
     noAmpr: "该游戏未使用 AMPR",
+    noRuntime: "该游戏没有 ampr_emu",
+    noRuntimeWarn: "该游戏没有 ampr_emu，因此无法用 LZ4 转换。",
     packedFirst: "源已用 LZ4 打包：请先解包",
     damaged: "其 LZ4 包已损坏",
+    archive: "压缩包无法追踪：请先转换",
     chooseFirst: "请先选择源",
     notRead: "尚未读取源",
-    anyFormat: "需要 ffpfsc 或 fpkg？请先在此处输出文件夹，再到“转换”选项卡将其转换为任意格式。",
     pickProfile: "LZ4 配置文件",
     profileFilter: "LZ4 配置文件（TOML）",
     pickTracesFolder: "LZ4 追踪数据（包含 ampr_commands.bin 和 ampr_emu.index 的文件夹）",
@@ -277,96 +275,103 @@ const zh: Messages = {
     pickTracesZip: "LZ4 追踪数据（zip）",
     unreadable: "无法开始：无法读取此源（见“源”）。",
     pending: (a) => a === "patch"
-      ? "有任务正在运行或排队时无法打补丁：请等它们完成后再打补丁。"
-      : "有任务正在运行或排队时无法移除补丁：请等它们完成后再移除补丁。",
+      ? "有任务正在运行或排队时无法打补丁。"
+      : "有任务正在运行或排队时无法移除补丁。",
     replacing: "已有任务正在重新构建此镜像：请等待其完成。",
     blocked: (a, first, more) =>
       `无法${a === "patch" ? "打补丁" : a === "unpatch" ? "移除补丁" : a === "pack" ? "打包" : "解包"}：${first}${more > 0 ? `（另有 ${num(more)} 项，见“源”）` : ""}。`,
     chooseGame: "请先选择游戏文件夹或镜像。",
-    nothing: "此处无可执行的操作：该游戏未使用 AMPR（其 eboot.bin 未导入 libSceAmpr），也未用 LZ4 打包。",
+    nothing: "无可执行的操作：该游戏未使用 AMPR，也未用 LZ4 打包。",
     unavailable: (items) => `不适用于此源：${items.join("；")}。`,
     readOnly: (kind) => <>
-      无法对 <b>{kind}</b> 打补丁或移除补丁：它在主机上是只读的，游戏无法在其中写入追踪数据。请先在“转换”选项卡中将其转换为 <b>ffpkg</b>（或 <b>exfat</b>），再对结果打补丁。
+      <b>{kind}</b> 在主机上是只读的，因此无法追踪。请先将其转换为 <b>ffpkg</b> 或 <b>exfat</b>。
     </>,
     action: "操作",
     traceAction: "追踪操作",
     changes: (a, image) => a === "patch"
-      ? `将修改此${image ? "镜像" : "文件夹"}：追踪运行时替换 fakelib/libSceAmpr.sprx（不保留备份），并写入列出其文件的新 ampr_emu.index。`
-      : `将修改此${image ? "镜像" : "文件夹"}：Forge 的正式版运行时（0.4.2.1）替换 fakelib/libSceAmpr.sprx（不保留备份），删除 ampr_commands.bin 和追踪日志，并写入列出其文件的新 ampr_emu.index。`,
-    replay: (web) => `游玩后再次选择此源：“打包/解包”会使用记录下的追踪数据${web ? "，“追踪”可将其打包为 zip 供电脑下载" : ""}。每次启动都会覆盖上一次会话的追踪数据。`,
+      ? `将修改此${image ? "镜像" : "文件夹"}：追踪运行时替换 fakelib/libSceAmpr.sprx，不保留备份。`
+      : `将修改此${image ? "镜像" : "文件夹"}：恢复正式版运行时并删除追踪数据，不保留备份。`,
+    replay: (web) => `游玩后再次选择此源，即可使用其追踪数据。${web ? "“追踪”还可将其打包为 zip 提供下载。" : ""}`,
     room: "追踪数据空间",
-    roomHint: "向镜像中添加的可用空间，供游戏写入追踪数据。必须用 ShadowMountPlus 的 image_rw= 以可写方式挂载镜像，否则不会记录任何内容：仅预留空间并不能让镜像可写。",
-    alreadyRelease: "此源已带有正式版运行时：只会重新写入索引。",
-    spaceHint: "镜像旁需要与镜像大小相当的可用空间；副本校验通过后才会替换镜像。",
+    roomHint: "供游戏写入追踪数据的可用空间。请用 image_rw= 挂载镜像，否则不会记录任何内容。",
+    alreadyRelease: "已是正式版运行时：只会重新写入索引。",
+    spaceHint: "需要与镜像大小相当的可用空间；副本校验通过后才会替换镜像。",
     deletesTraces: (a, bytes, web) =>
-      `${a === "patch" ? "打补丁" : "移除补丁"}会删除此源已记录的追踪数据（ampr_commands.bin，${bytes}）：${web ? "请先在上方下载，或先用它们打包。" : "请先用它们打包，或先复制一份。"}`,
+      `${a === "patch" ? "打补丁" : "移除补丁"}会删除此源的追踪数据（${bytes}）：${web ? "请先下载。" : "请先复制一份。"}`,
     useProfile: "改用规则配置文件",
     profile: "配置文件",
     choose: "选择…",
-    profileHint: "包含打包规则的 TOML 文件。它会取代追踪数据：选择其中一个会清除另一个。",
+    profileHint: "包含打包规则的 TOML 文件，用于代替追踪数据。",
     target: "目标",
     packInto: "打包到",
-    direct: "直接打包到镜像中：无需临时文件夹；被打包的文件会读取两次。",
+    direct: "直接打包到镜像中；游戏文件会读取两次。",
     targetFormat: "目标格式",
-    unpackFolder: "新的游戏文件夹，其中的 LZ4 包已还原为普通文件。",
+    unpackFolder: "新的游戏文件夹，其中的包已还原为普通文件。",
     unpackHint: (n) =>
-      `${n === null ? "将已打包的文件还原为普通文件" : `将 ${num(n)} 个已打包的文件还原为普通文件`}；保留 AMPR 运行时及其索引。`,
+      n === null ? "将已打包的文件还原为普通文件。" : `将 ${num(n)} 个已打包的文件还原为普通文件。`,
     waitJobs: "请等待正在运行的任务完成",
-    saveHint: "将要打包的文件列表保存为可编辑的规则配置文件",
+    saveHint: "将“打包”的文件列表保存为可编辑的规则配置文件",
     saving: "正在保存…",
     saveProfile: "另存为配置文件",
-    saved: (name, packed, loose) =>
-      `已保存 ${name}：${num(packed)} 个文件打包，${num(loose)} 个文件不打包。可编辑后通过“改用规则配置文件”加载。`,
+    saved: (name, packed, loose) => `已保存 ${name}：${num(packed)} 个文件打包，${num(loose)} 个不打包。`,
     likelyFail: (fmt) => <>
       输出为 <b>{fmt}</b> 很可能失败：该格式不接受“源”中列出的文件名。
     </>,
     collides: (a, folder) =>
-      `已有任务正在写入此${folder ? "文件夹" : "文件"}：再次${a === "pack" ? "打包" : "解包"}会失败。请换一个名称。`,
+      `已有任务正在写入此${folder ? "文件夹" : "文件"}：${a === "pack" ? "打包" : "解包"}需要换一个名称。`,
     already: (a, fmt) => <>
       已有任务正在将此游戏输出为 <b>{fmt}</b>；再次{a === "pack" ? "打包" : "解包"}会生成第二份副本。
     </>,
-    profileRules: "按配置文件的规则打包，但引擎直接打开的文件（容器索引、配置、媒体）除外，这些文件保持不打包。",
-    chosenRules: "打包所选追踪数据中游戏读取过的文件，但引擎直接打开的文件（容器索引、配置、媒体）除外，这些文件保持不打包。",
-    ownRules: "打包游戏在上一次追踪会话中读取过的文件（此源的追踪数据），但引擎直接打开的文件（容器索引、配置、媒体）除外，这些文件保持不打包。",
-    guessRules: "此源中没有追踪数据：将按内置的推测打包，可靠性较低。请先记录追踪数据（“追踪”→“打补丁”），或选择从主机复制的追踪数据或配置文件。",
+    profileRules: "按配置文件的规则打包；引擎直接打开的文件保持不打包。",
+    chosenRules: "打包游戏在这些追踪数据中读取过的文件；引擎直接打开的文件保持不打包。",
+    ownRules: "打包游戏在上一次追踪会话中读取过的文件；引擎直接打开的文件保持不打包。",
+    guessRules: "没有追踪数据：将按可靠性较低的内置推测打包。请先追踪，或选择追踪数据或配置文件。",
     recorded: "已记录的追踪数据",
-    recordedHint: (bytes) => `ampr_commands.bin（${bytes}）：“打包/解包”会自动加载这些追踪数据。`,
-    downloadHint: "请先关闭游戏并等待约一分钟：镜像挂载期间，磁盘上的文件可能落后于游戏写入的内容。在电脑浏览器中打开此主机的 Forge 地址进行下载，然后在电脑上的“LZ4”→“打包/解包”→“追踪数据”中选择该 zip。如果下载期间游戏或同步改动了源，下载会失败：请关闭游戏后重新下载。",
+    recordedHint: (bytes) => `ampr_commands.bin（${bytes}）：“打包”会使用这些追踪数据。`,
+    downloadHint: "关闭游戏并等待约一分钟，然后在电脑浏览器中下载。再在电脑上的“打包/解包”→“追踪数据”中选择该 zip。",
     download: (bytes, zip) => `下载追踪数据（${bytes}），保存为 ${zip}`,
-    missingIndex: "此源中没有 ampr_emu.index：打包需要它与 ampr_commands.bin 放在一起，以便将文件 ID 对应到文件。",
-    truncatedJournal: "末尾被截断的记录仍可用于打包：打包会处理到最后一条完整记录为止。",
+    missingIndex: "此源中没有 ampr_emu.index：打包需要它与 ampr_commands.bin 放在一起。",
+    truncatedJournal: "末尾被截断的记录仍可打包，处理到最后一条完整记录为止。",
     fakelibWarning: (recorded) => recorded
-      ? "追踪数据很少或没有？追踪期间请关闭所有 fakelib 更新程序：它们会覆盖 fakelib/libSceAmpr.sprx，导致什么都记录不到。请关闭它们，重新打补丁后再玩一次。"
-      : "追踪期间请关闭所有 fakelib 更新程序：它们会覆盖 fakelib/libSceAmpr.sprx，导致什么都记录不到。",
+      ? "追踪数据很少或没有？请关闭 fakelib 更新程序，重新打补丁后再玩一次。"
+      : "追踪期间请关闭 fakelib 更新程序，否则不会记录任何内容。",
     emptyTitle: "请选择使用 AMPR 的游戏",
-    experimental: "实验性：为 ampr_emu 生成追踪数据和 LZ4 包。不保证游戏之后仍能运行；请保留原始游戏的副本。",
-    chooseSource: "选择源…",
+    experimental: "实验性：请保留原始游戏的副本。",
+    chooseSource: "选择源",
     source: "源",
-    gameFolder: "游戏文件夹…",
-    image: "镜像…",
     traces: "追踪数据",
     optionalTraces: "追踪数据（可选）",
     unlock: "解锁以选择其他追踪数据",
     loaded: "已从此源加载追踪数据",
-    lockedHint: (bytes) => `源自带的 ampr_commands.bin（${bytes}）和 ampr_emu.index。点击锁形图标可改选其他追踪数据。`,
+    lockedHint: (bytes) => `此源自带的追踪数据（${bytes}）。点击锁形图标可改选其他追踪数据。`,
     clear: "清除",
     zip: "Zip…",
     folder: "文件夹…",
-    tracesHint: "选择通过“追踪”→“下载追踪数据”得到的 [游戏名称]-[游戏 ID]-amprtrace.zip，或包含 ampr_commands.bin 和 ampr_emu.index 的文件夹。",
+    tracesHint: "选择通过“下载追踪数据”得到的 amprtrace zip，或包含两个追踪文件的文件夹。",
     useOwn: "使用源自带的追踪数据",
     patchResult: (a, n) =>
-      `${a === "patch" ? "已打补丁：追踪运行时" : "已移除补丁：Forge 的正式版运行时（0.4.2.1）"}已位于 fakelib/libSceAmpr.sprx，ampr_emu.index 列出了 ${num(n)} 个文件。`,
+      `${a === "patch" ? "已打补丁：追踪运行时已安装" : "已移除补丁：正式版运行时已恢复"}；索引列出了 ${num(n)} 个文件。`,
     removed: (files) => `已删除旧的追踪文件：${files.join("、")}。`,
   },
   // Lz4Help.tsx
   lz4Help: {
     title: "LZ4 使用说明",
     close: "关闭",
-    warning:
-      "实验性，仅适用于 AMPR 游戏。ampr_emu 0.4.2.1 是测试版本：部分游戏在存档时崩溃。请保留原始游戏的副本。",
+    warning: "实验性，仅适用于 AMPR 游戏。请保留原始游戏的副本。",
     body: () => (
       <>
-        <h3>1. 追踪</h3>
+        <h3>1. 打包/解包</h3>
+        <ol>
+          <li>
+            选择原始游戏、<b>打包/解包</b>，以及追踪数据（或配置文件）。
+          </li>
+          <li>输出已打包的文件夹或普通镜像；文件夹可在 <b>转换</b> 中转换为任意格式。</li>
+          <li>
+            对于已打包的源，这里显示的是 <b>解包</b>：文件会还原为普通文件。
+          </li>
+        </ol>
+
+        <h3>2. 追踪</h3>
         <ol>
           <li>
             选择游戏的 <b>ffpkg</b> 或 <b>exfat</b>，然后依次选择 <b>追踪</b> → <b>打补丁</b>。
@@ -379,17 +384,6 @@ const zh: Messages = {
             在 PS5 页面上点击 <b>下载追踪数据</b>，或复制 ampr_commands.bin 和 ampr_emu.index。
           </li>
         </ol>
-
-        <h3>2. 打包/解包</h3>
-        <ol>
-          <li>
-            选择原始游戏、<b>打包/解包</b>，以及追踪数据（或配置文件）。
-          </li>
-          <li>输出已打包的文件夹或普通镜像；文件夹可在 <b>转换</b> 中转换为任意格式。</li>
-          <li>
-            对于已打包的源，这里显示的是 <b>解包</b>：文件会还原为普通文件。
-          </li>
-        </ol>
       </>
     ),
   },
@@ -400,10 +394,10 @@ const zh: Messages = {
     parent: "上级文件夹",
     allDrives: "所有驱动器",
     truncated: (n) => `仅显示前 ${num(n)} 项。`,
-    loading: "正在加载…",
+    loading: "正在加载",
     noDrives: "未找到驱动器。",
     noFolders: "此处没有文件夹。",
-    noImages: "此处没有文件夹或 PS5 镜像。",
+    noImages: "此处没有文件夹、PS5 镜像或压缩包。",
     noFiles: (ext) => `此处没有文件夹或 ${dotted(ext, " 或 ")} 文件。`,
     cancel: "取消",
     chooseFolder: "选择此文件夹",
@@ -412,16 +406,16 @@ const zh: Messages = {
   common: {
     folder: "文件夹",
     pickFolder: "游戏文件夹",
-    pickImage: "游戏镜像",
-    pickImageFilter: "PS5 镜像或安装包",
-    chooseFolder: "选择文件夹…",
-    chooseImage: "选择镜像…",
+    pickImage: "游戏镜像或压缩包",
+    pickImageFilter: "镜像和压缩包",
+    pickFolderButton: "文件夹",
+    pickImageButton: "镜像/压缩包",
     source: "源",
-    emptyTitle: "请选择游戏文件夹或镜像",
-    emptyText: "PS5 游戏文件夹（根目录下有 sce_sys/param.json 和 eboot.bin），或其镜像、安装包。",
+    emptyTitle: "请选择游戏文件夹、镜像或压缩包",
+    emptyText: "PS5 游戏文件夹，或其镜像、安装包或压缩包。",
     accepted: "支持的源",
     unknownTitle: "未知游戏",
-    reading: "正在读取源…",
+    reading: "正在读取源",
     unreadable: "无法读取的源",
     backport: "向下移植",
     emulators: "模拟器",
@@ -457,7 +451,6 @@ const zh: Messages = {
     runtimeIs: (label) => `运行时：${label}`,
     backportLibs: (exclusive, n) =>
       `${exclusive ? "fakelib2/，单独挂载" : "fakelib/"}，${num(n)} 个向下移植库`,
-    noFindings: "预检未发现问题",
     findings: "预检发现的问题",
     dlcTitle: (n) => `内置 DLC（${num(n)}）`,
     dlcLabel: "内置 DLC",
@@ -469,6 +462,15 @@ const zh: Messages = {
     backportFiles: "向下移植文件",
     emulatorsIn: "fakelib 中的模拟器",
     qr: (url) => `QR 码：${url}`,
+    needsPassword: "此压缩包需要密码。",
+    enterPassword: "输入密码",
+    inArchive: (ext, size) => `位于 ${ext} 压缩包中 · ${size}`,
+    archive: "压缩包",
+    parts: (n) => `${num(n)} 个分卷`,
+    archiveRoot: (root) => `游戏位于 ${root}`,
+    archiveAtRoot: "游戏位于压缩包根目录",
+    solid: "固实",
+    encrypted: "有密码保护",
   },
   // delete.tsx
   delete: {
@@ -477,6 +479,19 @@ const zh: Messages = {
       `${folder ? "该文件夹及其中所有内容" : "该镜像文件"}将被永久删除：不进废纸篓，无法撤销。如果删除中途停止，部分内容可能已被删除。`,
     no: "否",
     yes: "是，删除",
+    archiveTitle: "删除此压缩包？",
+    archiveText:
+      "该压缩包文件将被永久删除：不进废纸篓，无法撤销。分卷压缩包的其他分卷保持不变。",
+  },
+  // password.tsx
+  password: {
+    title: "此压缩包需要密码",
+    text: "请输入密码以打开它。",
+    wrong: "密码不正确。",
+    label: "密码",
+    cancel: "取消",
+    unlock: "解锁",
+    checking: "正在检查…",
   },
   // main-http.tsx
   launch: {

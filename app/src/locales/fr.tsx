@@ -56,18 +56,8 @@ const fr: Messages = {
     unreadable: "Création impossible : cette source n’a pas pu être lue (voir « Source »).",
     blocked: (first, more) =>
       `Création impossible : ${first}${more > 0 ? ` (et ${num(more)} de plus, voir « Source »)` : ""}.`,
-    runtime: (install, version) =>
-      install
-        ? `Installer le runtime AMPR (ampr_emu ${version})`
-        : `Remplacer le runtime AMPR (ampr_emu ${version})`,
-    runtimeNone:
-      "Ce jeu utilise AMPR mais n’a pas de fakelib/libSceAmpr.sprx : la sortie reçoit celui fourni avec Forge.",
-    runtimeOther:
-      "fakelib/libSceAmpr.sprx n’est pas un runtime fourni par Forge (il peut être plus récent ou plus ancien) : la sortie reçoit celui fourni avec Forge à la place.",
-    runtimeRest:
-      "Le journal de traçage et les logs sont exclus et un nouvel ampr_emu.index est écrit. Seule la sortie change, jamais la source. Désactivé : copié tel quel.",
-    runtimeWarn: (version) =>
-      `ampr_emu ${version} est une version de test de l’auteur ; problème connu : certains jeux plantent lors de la sauvegarde.`,
+    runtime: "Mettre à jour AMPR",
+    runtimeHint: "L’ampr_emu de ce jeu n’est pas la dernière version.",
     removeBackport: "Retirer le backport",
     removeHint: (libs, emulators, other) =>
       `Exclut de fakelib/ ${num(libs)} ${plural(libs, { one: "bibliothèque", many: "de bibliothèques", other: "bibliothèques" })} du backport` +
@@ -138,6 +128,8 @@ const fr: Messages = {
       `Chiffres des auteurs : ce qu’annoncent les auteurs d’ampr_emu et de Lazy_AMPR, non mesuré par ${app} ; ils varient selon le jeu. ampr_emu 0.4.2.1 est une version de test de l’auteur ; problème connu : certains jeux plantent lors de la sauvegarde.`,
     bundled: "Les dossiers empaquetés en LZ4 fonctionnent avec ampr_emu 0.4.2.1 de drakmor (GPL-3.0), fourni sans modification. Source :",
     lazy: "La méthode « tracer, puis empaqueter » reprend Lazy_AMPR de Nazky :",
+    unrar:
+      "Les archives .rar sont lues avec la bibliothèque UnRAR fournie, d’Alexander Roshal (extraction seule, sous la licence UnRAR).",
     language: "Langue",
     system: "Système",
   },
@@ -154,13 +146,14 @@ const fr: Messages = {
     firstOf: (max, n) => `${num(max)} premiers sur ${num(n)}`,
     fileCount: (n) => `${num(n)} ${plural(n, FILES)}`,
     noMatch: (f) => `Aucun fichier ne correspond à « ${f} ».`,
+    noListing: "La liste des fichiers d’une archive n’est pas prise en charge.",
     emptyDirs: (n) => `Dossiers vides (${num(n)})`,
     noParam: "Pas de sce_sys/param.json.",
     reader: "Lecteur",
-    leftovers: "Fichiers .part restants",
+    leftovers: "Fichiers et dossiers restants",
     found: (n) => `${num(n)} ${plural(n, { one: "trouvé", many: "trouvés", other: "trouvés" })}`,
     leftoversNote: (app) =>
-      `Des sorties inachevées, généralement laissées par des tâches interrompues. Ne supprimez que celles que vous reconnaissez, et seulement quand aucune tâche n’est en cours ; ${app} ne les supprime jamais lui-même.`,
+      `Des sorties inachevées et des archives décompressées, généralement laissées par des tâches interrompues. Ne supprimez que celles que vous reconnaissez, et seulement quand aucune tâche n’est en cours ; ${app} ne les supprime jamais lui-même.`,
     checked: (n) => `Dossiers vérifiés (${num(n)})`,
   },
   // JobList.tsx
@@ -225,8 +218,8 @@ const fr: Messages = {
   // Library.tsx
   library: {
     pickTitle: "Choisir un dossier pour la bibliothèque",
-    scanningIn: (name) => `Analyse de ${name}…`,
-    scanning: "Analyse…",
+    scanningIn: (name) => `Analyse de ${name}`,
+    scanning: "Analyse",
     cantScanFolder: "Impossible d’analyser ce dossier",
     chooseAnother: "Choisir un autre dossier…",
     pickPrompt: "Choisissez le dossier de votre bibliothèque à analyser",
@@ -265,23 +258,25 @@ const fr: Messages = {
     scenarios: { trace: "Traçage", pack: "Empaquetage/Dépaquetage" },
     actions: { patch: "Patcher", unpatch: "Retirer le patch", pack: "Empaqueter", unpack: "Dépaqueter" },
     scenarioInfo: (s, packed) => s === "trace"
-      ? "Le jeu enregistre les ressources qu’il lit pendant que vous jouez (ampr_commands.bin), pour l’empaquetage. « Retirer le patch » remet le runtime de production."
+      ? "Enregistre les ressources que le jeu lit pendant que vous jouez, pour l’empaquetage."
       : packed
-        ? "Dépaquetage : réécrit les paquets LZ4 du jeu sous forme de fichiers ordinaires, dans un dossier ou une image simple."
-        : "Empaquetage : regroupe les ressources du jeu dans des volumes LZ4 que l’émulateur AMPR fourni (ampr_emu) lit pendant le jeu, dans un dossier ou une image simple. Une source déjà empaquetée est dépaquetée à la place.",
+        ? "Réécrit les paquets LZ4 du jeu sous forme de fichiers ordinaires."
+        : "Regroupe les ressources du jeu dans des volumes LZ4 qu’ampr_emu lit pendant le jeu.",
     traceInfo: (a, image) => a === "patch"
       ? image
-        ? "Recrée cette image avec le runtime de traçage et de la place pour les traces, puis la remplace."
-        : "Installe le runtime de traçage directement dans ce dossier : aucune copie n’est écrite."
+        ? "Recrée cette image avec le runtime de traçage, puis la remplace."
+        : "Installe le runtime de traçage dans ce dossier."
       : image
-        ? "Recrée cette image avec le runtime de production de Forge (0.4.2.1), sans les traces enregistrées, puis la remplace."
-        : "Remet le runtime de production de Forge (0.4.2.1) directement dans ce dossier : aucune copie n’est écrite.",
+        ? "Recrée cette image avec le runtime de production, puis la remplace."
+        : "Remet le runtime de production dans ce dossier.",
     noAmpr: "le jeu n’utilise pas AMPR",
+    noRuntime: "le jeu n’a pas d’ampr_emu",
+    noRuntimeWarn: "Ce jeu n’a pas d’ampr_emu : LZ4 ne peut pas le convertir.",
     packedFirst: "la source est empaquetée en LZ4 : dépaquetez-la d’abord",
     damaged: "ses paquets LZ4 sont endommagés",
+    archive: "une archive ne peut pas être tracée : convertissez-la d’abord",
     chooseFirst: "choisissez d’abord une source",
     notRead: "la source n’est pas encore lue",
-    anyFormat: "Besoin de ffpfsc ou de fpkg ? Créez ici un dossier, puis convertissez-le dans n’importe quel format dans l’onglet « Convertir ».",
     pickProfile: "Profil LZ4",
     profileFilter: "Profil LZ4 (TOML)",
     pickTracesFolder: "Traces LZ4 (un dossier avec ampr_commands.bin et ampr_emu.index)",
@@ -289,99 +284,108 @@ const fr: Messages = {
     pickTracesZip: "Traces LZ4 (zip)",
     unreadable: "Démarrage impossible : cette source n’a pas pu être lue (voir « Source »).",
     pending: (a) => a === "patch"
-      ? "Impossible de patcher pendant qu’une tâche est en cours ou en attente : patchez une fois les tâches terminées."
-      : "Impossible de retirer le patch pendant qu’une tâche est en cours ou en attente : retirez-le une fois les tâches terminées.",
+      ? "Impossible de patcher pendant qu’une tâche est en cours ou en attente."
+      : "Impossible de retirer le patch pendant qu’une tâche est en cours ou en attente.",
     replacing: "Une tâche recrée déjà cette image : attendez qu’elle se termine.",
     blocked: (a, first, more) =>
       `${a === "patch" ? "Impossible de patcher" : a === "unpatch" ? "Impossible de retirer le patch" : a === "pack" ? "Impossible d’empaqueter" : "Impossible de dépaqueter"} : ${first}${more > 0 ? ` (et ${num(more)} de plus, voir « Source »)` : ""}.`,
     chooseGame: "Choisissez d’abord un dossier de jeu ou une image.",
-    nothing: "Rien à faire ici : ce jeu n’utilise pas AMPR (son eboot.bin n’importe pas libSceAmpr) et il n’est pas empaqueté en LZ4.",
+    nothing: "Rien à faire : ce jeu n’utilise pas AMPR et n’est pas empaqueté en LZ4.",
     unavailable: (items) => `Indisponible pour cette source : ${items.join(" ; ")}.`,
     readOnly: (kind) => <>
-      Impossible de patcher <b>{kind}</b> ou d’en retirer le patch : ce format est en lecture seule sur la console, le jeu ne peut donc pas y écrire ses traces. Convertissez-le en <b>ffpkg</b> (ou <b>exfat</b>) dans l’onglet « Convertir », puis patchez le résultat.
+      <b>{kind}</b> est en lecture seule sur la console, il ne peut donc pas être tracé. Convertissez-le d’abord en <b>ffpkg</b> ou <b>exfat</b>.
     </>,
     action: "Action",
     traceAction: "Action de traçage",
     changes: (a, image) => a === "patch"
-      ? `Modifie ${image ? "cette image" : "ce dossier"} : le runtime de traçage remplace fakelib/libSceAmpr.sprx (sans copie de sauvegarde) et un nouvel ampr_emu.index liste ses fichiers.`
-      : `Modifie ${image ? "cette image" : "ce dossier"} : le runtime de production de Forge (0.4.2.1) remplace fakelib/libSceAmpr.sprx (sans copie de sauvegarde), ampr_commands.bin et les logs de traçage sont supprimés, et un nouvel ampr_emu.index liste ses fichiers.`,
-    replay: (web) =>
-      web
-        ? "Jouez, puis choisissez de nouveau cette source : « Empaquetage/Dépaquetage » utilise les traces enregistrées, et « Traçage » les propose en zip pour un ordinateur. Chaque lancement écrase les traces de la session précédente."
-        : "Jouez, puis choisissez de nouveau cette source : « Empaquetage/Dépaquetage » utilise les traces enregistrées. Chaque lancement écrase les traces de la session précédente.",
+      ? `Modifie ${image ? "cette image" : "ce dossier"} : le runtime de traçage remplace fakelib/libSceAmpr.sprx, sans copie de sauvegarde.`
+      : `Modifie ${image ? "cette image" : "ce dossier"} : le runtime de production revient et les traces sont supprimées, sans copie de sauvegarde.`,
+    replay: (web) => `Jouez, puis choisissez de nouveau cette source pour utiliser ses traces.${web ? " « Traçage » les propose aussi en zip." : ""}`,
     room: "Place pour les traces",
-    roomHint: "Espace libre ajouté à l’image pour que le jeu y écrive ses traces. Montez l’image en écriture avec image_rw= de ShadowMountPlus, sinon rien n’est enregistré : l’espace réservé ne suffit pas à la rendre inscriptible.",
-    alreadyRelease: "Cette source a déjà le runtime de production : seul l’index est réécrit.",
-    spaceHint: "Nécessite à côté un espace libre d’environ la taille de l’image ; l’image n’est remplacée qu’une fois la copie vérifiée.",
+    roomHint: "Espace libre pour les traces du jeu. Montez l’image avec image_rw=, sinon rien n’est enregistré.",
+    alreadyRelease: "Déjà sur le runtime de production : seul l’index est réécrit.",
+    spaceHint: "Nécessite un espace libre d’environ la taille de l’image ; l’image n’est remplacée qu’une fois la copie vérifiée.",
     deletesTraces: (a, bytes, web) =>
-      `${a === "patch" ? "Patcher" : "Retirer le patch"} supprime les traces enregistrées par cette source (ampr_commands.bin, ${bytes}) : ${web ? "téléchargez-les ci-dessus ou utilisez-les d’abord pour empaqueter le jeu." : "utilisez-les d’abord pour empaqueter le jeu ou copiez-les."}`,
+      `${a === "patch" ? "Patcher" : "Retirer le patch"} supprime les traces de cette source (${bytes}) : ${web ? "téléchargez-les d’abord." : "copiez-les d’abord."}`,
     useProfile: "Utiliser plutôt un profil de règles",
     profile: "Profil",
     choose: "Choisir…",
-    profileHint: "Un fichier TOML de règles d’empaquetage. Il remplace les traces : choisir l’un efface l’autre.",
+    profileHint: "Un fichier TOML de règles d’empaquetage, utilisé à la place des traces.",
     target: "Cible",
     packInto: "Empaqueter vers",
-    direct: "Empaquette directement dans l’image, sans dossier temporaire ; les fichiers empaquetés sont lus deux fois.",
+    direct: "Empaquette directement dans l’image ; les fichiers du jeu sont lus deux fois.",
     targetFormat: "Format cible",
-    unpackFolder: "Un nouveau dossier de jeu, avec ses paquets LZ4 réécrits sous forme de fichiers ordinaires.",
+    unpackFolder: "Un nouveau dossier de jeu, avec les paquets réécrits sous forme de fichiers ordinaires.",
     unpackHint: (n) =>
-      `${n === null ? "Réécrit les fichiers empaquetés sous forme de fichiers ordinaires" : `Réécrit ${plural(n, { one: `${num(n)} fichier empaqueté sous forme de fichier ordinaire`, many: `${num(n)} de fichiers empaquetés sous forme de fichiers ordinaires`, other: `${num(n)} fichiers empaquetés sous forme de fichiers ordinaires` })}`} ; conserve le runtime AMPR et son index.`,
+      n === null
+        ? "Réécrit les fichiers empaquetés sous forme de fichiers ordinaires."
+        : `Réécrit ${plural(n, { one: `${num(n)} fichier empaqueté sous forme de fichier ordinaire`, many: `${num(n)} de fichiers empaquetés sous forme de fichiers ordinaires`, other: `${num(n)} fichiers empaquetés sous forme de fichiers ordinaires` })}.`,
     waitJobs: "Attendez la fin des tâches en cours",
-    saveHint: "Enregistrer les fichiers que l’empaquetage regrouperait sous forme de profil de règles modifiable",
+    saveHint: "Enregistrer la liste de fichiers de l’empaquetage comme profil de règles modifiable",
     saving: "Enregistrement…",
     saveProfile: "Enregistrer comme profil",
     saved: (name, packed, loose) =>
-      `${name} enregistré : ${num(packed)} ${plural(packed, { one: "fichier empaqueté", many: "de fichiers empaquetés", other: "fichiers empaquetés" })}, ${num(loose)} ${plural(loose, { one: "laissé tel quel", many: "laissés tels quels", other: "laissés tels quels" })}. Modifiez-le et chargez-le avec « Utiliser plutôt un profil de règles ».`,
+      `${name} enregistré : ${num(packed)} ${plural(packed, { one: "fichier empaqueté", many: "de fichiers empaquetés", other: "fichiers empaquetés" })}, ${num(loose)} ${plural(loose, { one: "laissé tel quel", many: "laissés tels quels", other: "laissés tels quels" })}.`,
     likelyFail: (fmt) => <>
       Risque d’échec en <b>{fmt}</b> : ce format refuse des noms de fichiers listés dans « Source ».
     </>,
     collides: (a, folder) =>
-      `Une tâche écrit déjà ${folder ? "ce dossier" : "ce fichier"} : relancer « ${a === "pack" ? "Empaqueter" : "Dépaqueter"} » échouerait. Choisissez un autre nom.`,
+      `Une tâche écrit déjà ${folder ? "ce dossier" : "ce fichier"} : « ${a === "pack" ? "Empaqueter" : "Dépaqueter"} » a besoin d’un autre nom.`,
     already: (a, fmt) => <>
       Ce jeu est déjà en cours d’écriture en <b>{fmt}</b> ; relancer « {a === "pack" ? "Empaqueter" : "Dépaqueter"} » en fait une seconde copie.
     </>,
-    profileRules: "Empaquette ce que disent les règles du profil, sauf les fichiers que le moteur ouvre directement (index de conteneurs, configurations, médias) : ceux-là restent tels quels.",
-    chosenRules: "Empaquette les fichiers dont la lecture par le jeu est enregistrée dans les traces choisies, sauf ceux que le moteur ouvre directement (index de conteneurs, configurations, médias) : ceux-là restent tels quels.",
-    ownRules: "Empaquette les fichiers que le jeu a lus lors de sa dernière session tracée (les traces de cette source), sauf ceux que le moteur ouvre directement (index de conteneurs, configurations, médias) : ceux-là restent tels quels.",
-    guessRules: "Aucune trace dans cette source : l’empaquetage suit une estimation intégrée, moins fiable. Enregistrez d’abord des traces (« Traçage » → « Patcher »), ou choisissez des traces copiées depuis la console, ou un profil.",
+    profileRules: "Empaquette ce que disent les règles du profil ; les fichiers que le moteur ouvre directement restent tels quels.",
+    chosenRules: "Empaquette les fichiers que le jeu a lus dans ces traces ; les fichiers que le moteur ouvre directement restent tels quels.",
+    ownRules: "Empaquette les fichiers que le jeu a lus lors de sa dernière session tracée ; les fichiers que le moteur ouvre directement restent tels quels.",
+    guessRules: "Aucune trace : l’empaquetage suit une estimation intégrée, moins fiable. Tracez d’abord, ou choisissez des traces ou un profil.",
     recorded: "Traces enregistrées",
-    recordedHint: (bytes) => `ampr_commands.bin (${bytes}) : « Empaquetage/Dépaquetage » charge ces traces de lui-même.`,
-    downloadHint: "Fermez d’abord le jeu et attendez environ une minute : tant que l’image est montée, son fichier sur le disque peut être en retard sur ce que le jeu a écrit. Ouvrez l’adresse Forge de cette console dans le navigateur d’un ordinateur, puis choisissez le zip dans « LZ4 » → « Empaquetage/Dépaquetage » → « Traces » sur votre ordinateur. Le téléchargement échoue si le jeu ou une synchronisation modifie la source entre-temps : fermez le jeu et téléchargez de nouveau.",
+    recordedHint: (bytes) => `ampr_commands.bin (${bytes}) : l’empaquetage utilise ces traces.`,
+    downloadHint: "Fermez le jeu et attendez une minute, puis téléchargez depuis le navigateur d’un ordinateur. Choisissez-y le zip dans « Empaquetage/Dépaquetage » → « Traces ».",
     download: (bytes, zip) => `Télécharger les traces (${bytes}) sous le nom ${zip}`,
-    missingIndex: "Pas d’ampr_emu.index dans cette source : l’empaquetage en a besoin à côté d’ampr_commands.bin pour associer les identifiants de fichiers du journal à leurs noms.",
-    truncatedJournal: "Un journal coupé à la fin reste utilisable : l’empaquetage s’arrête à son dernier enregistrement complet.",
+    missingIndex: "Pas d’ampr_emu.index dans cette source : l’empaquetage en a besoin à côté d’ampr_commands.bin.",
+    truncatedJournal: "Un journal coupé à la fin s’empaquette quand même, jusqu’à son dernier enregistrement complet.",
     fakelibWarning: (recorded) => recorded
-      ? "Peu ou pas de traces ? Désactivez tout outil de mise à jour de fakelib pendant le traçage : il écrase fakelib/libSceAmpr.sprx, et plus rien n’est enregistré. Désactivez-le, cliquez de nouveau sur « Patcher » et rejouez."
-      : "Désactivez tout outil de mise à jour de fakelib pendant le traçage : il écrase fakelib/libSceAmpr.sprx, et plus rien n’est enregistré.",
+      ? "Peu ou pas de traces ? Désactivez l’outil de mise à jour de fakelib, patchez de nouveau et rejouez."
+      : "Désactivez l’outil de mise à jour de fakelib pendant le traçage, sinon rien n’est enregistré.",
     emptyTitle: "Choisissez un jeu qui utilise AMPR",
-    experimental: "Expérimental : traces et paquets LZ4 pour ampr_emu. Rien ne garantit que le jeu fonctionne ensuite ; gardez une copie du jeu d’origine.",
-    chooseSource: "Choisir la source…",
+    experimental: "Expérimental : gardez une copie du jeu d’origine.",
+    chooseSource: "Choisir la source",
     source: "Source",
-    gameFolder: "Dossier du jeu…",
-    image: "Image…",
     traces: "Traces",
     optionalTraces: "Traces (facultatif)",
     unlock: "Déverrouiller pour choisir d’autres traces",
     loaded: "Les traces sont déjà chargées depuis cette source",
-    lockedHint: (bytes) => `Son propre ampr_commands.bin (${bytes}) et son ampr_emu.index. Cliquez sur le cadenas pour choisir d’autres traces.`,
+    lockedHint: (bytes) => `Les traces propres à cette source (${bytes}). Cliquez sur le cadenas pour en choisir d’autres.`,
     clear: "Effacer",
     zip: "Zip…",
     folder: "Dossier…",
-    tracesHint: "Choisissez le fichier [nom du jeu]-[ID du titre]-amprtrace.zip obtenu via « Traçage » → « Télécharger les traces », ou un dossier contenant ampr_commands.bin et ampr_emu.index.",
+    tracesHint: "Choisissez le zip amprtrace obtenu via « Télécharger les traces », ou un dossier contenant les deux fichiers de traces.",
     useOwn: "Utiliser les traces de la source",
     patchResult: (a, n) =>
-      `${a === "patch" ? "Patché : le runtime de traçage" : "Patch retiré : le runtime de production de Forge (0.4.2.1)"} est dans fakelib/libSceAmpr.sprx et ampr_emu.index liste ${num(n)} ${plural(n, FILES)}.`,
+      `${a === "patch" ? "Patché : le runtime de traçage est installé" : "Patch retiré : le runtime de production est de retour"} ; l’index liste ${num(n)} ${plural(n, FILES)}.`,
     removed: (files) => `Anciens fichiers de traces supprimés : ${files.join(", ")}.`,
   },
   // Lz4Help.tsx
   lz4Help: {
     title: "Fonctionnement de LZ4",
     close: "Fermer",
-    warning:
-      "Expérimental, uniquement pour les jeux AMPR. ampr_emu 0.4.2.1 est une version de test : certains jeux plantent lors de la sauvegarde. Gardez une copie du jeu d’origine.",
+    warning: "Expérimental, uniquement pour les jeux AMPR. Gardez une copie du jeu d’origine.",
     body: () => (
       <>
-        <h3>1. Traçage</h3>
+        <h3>1. Empaquetage/Dépaquetage</h3>
+        <ol>
+          <li>
+            Choisissez le jeu d’origine, <b>Empaquetage/Dépaquetage</b> et les traces (ou un profil).
+          </li>
+          <li>
+            Écrivez un dossier empaqueté ou une image simple ; un dossier se convertit dans n’importe quel format via <b>Convertir</b>.
+          </li>
+          <li>
+            Pour une source empaquetée, <b>Dépaqueter</b> s’affiche à la place : les fichiers redeviennent ordinaires.
+          </li>
+        </ol>
+
+        <h3>2. Traçage</h3>
         <ol>
           <li>
             Choisissez le <b>ffpkg</b> ou l’<b>exfat</b> du jeu, puis <b>Traçage</b> → <b>Patcher</b>.
@@ -394,19 +398,6 @@ const fr: Messages = {
             Cliquez sur <b>Télécharger les traces</b> sur la page de la PS5, ou copiez ampr_commands.bin et ampr_emu.index.
           </li>
         </ol>
-
-        <h3>2. Empaquetage/Dépaquetage</h3>
-        <ol>
-          <li>
-            Choisissez le jeu d’origine, <b>Empaquetage/Dépaquetage</b> et les traces (ou un profil).
-          </li>
-          <li>
-            Écrivez un dossier empaqueté ou une image simple ; un dossier se convertit dans n’importe quel format via <b>Convertir</b>.
-          </li>
-          <li>
-            Pour une source empaquetée, <b>Dépaqueter</b> s’affiche à la place : les fichiers redeviennent ordinaires.
-          </li>
-        </ol>
       </>
     ),
   },
@@ -417,10 +408,10 @@ const fr: Messages = {
     parent: "Dossier parent",
     allDrives: "Tous les lecteurs",
     truncated: (n) => `Seules les ${num(n)} premières entrées sont affichées.`,
-    loading: "Chargement…",
+    loading: "Chargement",
     noDrives: "Aucun lecteur trouvé.",
     noFolders: "Aucun dossier ici.",
-    noImages: "Aucun dossier ni image PS5 ici.",
+    noImages: "Aucun dossier, image PS5 ni archive ici.",
     noFiles: (ext) => `Aucun dossier ni fichier ${dotted(ext, " ou ")} ici.`,
     cancel: "Annuler",
     chooseFolder: "Choisir ce dossier",
@@ -429,17 +420,16 @@ const fr: Messages = {
   common: {
     folder: "Dossier",
     pickFolder: "Dossier du jeu",
-    pickImage: "Image du jeu",
-    pickImageFilter: "Image ou paquet PS5",
-    chooseFolder: "Choisir un dossier…",
-    chooseImage: "Choisir une image…",
+    pickImage: "Image ou archive du jeu",
+    pickImageFilter: "Images et archives",
+    pickFolderButton: "Dossier",
+    pickImageButton: "Image/Archive",
     source: "Source",
-    emptyTitle: "Choisissez un dossier de jeu ou une image",
-    emptyText:
-      "Un dossier de jeu PS5 (sce_sys/param.json et eboot.bin à la racine), ou une image ou un paquet de ce jeu.",
+    emptyTitle: "Choisissez un dossier de jeu, une image ou une archive",
+    emptyText: "Un dossier de jeu PS5 ou une image, un paquet ou une archive de ce jeu.",
     accepted: "Sources acceptées",
     unknownTitle: "Titre inconnu",
-    reading: "Lecture de la source…",
+    reading: "Lecture de la source",
     unreadable: "Source illisible",
     backport: "Backport",
     emulators: "Émulateurs",
@@ -476,7 +466,6 @@ const fr: Messages = {
     runtimeIs: (label) => `runtime ${label}`,
     backportLibs: (exclusive, n) =>
       `${exclusive ? "fakelib2/, monté seul" : "fakelib/"}, ${num(n)} ${plural(n, { one: "bibliothèque", many: "de bibliothèques", other: "bibliothèques" })} de backport`,
-    noFindings: "Aucun problème détecté au contrôle préalable",
     findings: "Résultats du contrôle préalable",
     dlcTitle: (n) => `DLC intégrés (${num(n)})`,
     dlcLabel: "DLC intégrés",
@@ -488,6 +477,15 @@ const fr: Messages = {
     backportFiles: "Fichiers du backport",
     emulatorsIn: "Émulateurs dans fakelib",
     qr: (url) => `Code QR : ${url}`,
+    needsPassword: "Cette archive demande un mot de passe.",
+    enterPassword: "Saisir le mot de passe",
+    inArchive: (ext, size) => `dans une archive ${ext} · ${size}`,
+    archive: "Archive",
+    parts: (n) => `${num(n)} ${plural(n, { one: "partie", many: "de parties", other: "parties" })}`,
+    archiveRoot: (root) => `jeu dans ${root}`,
+    archiveAtRoot: "jeu à la racine de l’archive",
+    solid: "solide",
+    encrypted: "protégée par mot de passe",
   },
   // delete.tsx
   delete: {
@@ -498,6 +496,19 @@ const fr: Messages = {
         : "Le fichier image sera supprimé définitivement : pas de corbeille, pas d’annulation. Si la suppression s’arrête en cours de route, une partie peut déjà avoir disparu.",
     no: "Non",
     yes: "Oui, supprimer",
+    archiveTitle: "Supprimer cette archive ?",
+    archiveText:
+      "Le fichier d’archive sera supprimé définitivement : pas de corbeille, pas d’annulation. Les autres parties d’une archive en plusieurs parties restent telles quelles.",
+  },
+  // password.tsx
+  password: {
+    title: "Cette archive demande un mot de passe",
+    text: "Saisissez son mot de passe pour l’ouvrir.",
+    wrong: "Le mot de passe est incorrect.",
+    label: "Mot de passe",
+    cancel: "Annuler",
+    unlock: "Déverrouiller",
+    checking: "Vérification…",
   },
   // main-http.tsx
   launch: {

@@ -3,7 +3,7 @@
 #
 #   dist/ps5-dump-forge-<ver>-ps5.elf  the CLI as a PS5 payload (ps5/build.sh), the web UI embedded
 #
-# Just the ELF: no zip, no PS5 README, no notices (the release's source tarball carries those).
+# Just the ELF: no zip, no PS5 README, no notices (the release page's source archives carry those).
 # The checks run on the copy in dist/ (B) and on ps5/build.sh's stage 1 (A, which B embeds and
 # saves on the console): llvm-readelf from the ps5-dump-forge-ps5 Docker image (built here if
 # missing) for the payload's shape (ELF64 little-endian x86-64, a PIE DYN, NEEDED exactly the

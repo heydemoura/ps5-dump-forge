@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use ps5_dump_forge_core::{ConvertRequest, DeleteError, Event, Format, JobId, Jobs};
+use ps5_dump_forge_core::{
+    ArchivePassword, ConvertRequest, DeleteError, Event, Format, JobId, Jobs,
+};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -26,6 +28,16 @@ const MAX_JOBS: i64 = 8;
 /// Inspecting or naming reads a source's metadata (a whole image's, for an inspection); more
 /// at once only slows the console down.
 const MAX_INSPECTIONS: usize = 2;
+/// How long a read waits for one of those slots before its 429: picking a source starts its
+/// inspection and its naming together, and an archive's take a while. At most [`MAX_WAITING`]
+/// wait at once (a 429 at once past that), so waiting reads never hold the handlers that
+/// Cancel and Stop need.
+const MAX_WAITING: usize = 4;
+const SLOT_WAIT: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(100)
+} else {
+    std::time::Duration::from_secs(30)
+};
 const LIST_MAX: usize = 10_000;
 const STALE_MAX: usize = 1_000;
 
@@ -46,6 +58,8 @@ pub(crate) struct Server {
     admission: Mutex<()>,
     stopping: AtomicBool,
     inspecting: AtomicUsize,
+    /// Reads waiting in [`Server::capped`] for a slot.
+    waiting: AtomicUsize,
     cores: usize,
     /// Tests widen the gap between `Jobs::start` returning and the table admitting the job.
     #[cfg(test)]
@@ -116,6 +130,16 @@ struct PathArg {
     path: PathBuf,
 }
 
+/// `/api/inspect`: `password` for an archive that needs one (never logged or echoed).
+#[derive(Deserialize)]
+struct InspectArg {
+    path: PathBuf,
+    #[serde(default)]
+    password: Option<ArchivePassword>,
+}
+
+/// `/api/default_output`, `/api/generated_output`: `password` for an archive that needs one
+/// (never logged or echoed).
 #[derive(Deserialize)]
 struct OutputArg {
     source: PathBuf,
@@ -123,6 +147,8 @@ struct OutputArg {
     dir: PathBuf,
     #[serde(default)]
     taken: Vec<PathBuf>,
+    #[serde(default)]
+    password: Option<ArchivePassword>,
 }
 
 #[derive(Deserialize)]
@@ -182,6 +208,7 @@ impl Server {
             admission: Mutex::new(()),
             stopping: AtomicBool::new(false),
             inspecting: AtomicUsize::new(0),
+            waiting: AtomicUsize::new(0),
             cores,
             opts,
             #[cfg(test)]
@@ -230,20 +257,28 @@ impl Server {
             (true, "default_output") => {
                 let arg: OutputArg = parse(body)?;
                 readable(&arg.source)?;
+                let password = arg.password.as_ref().map(ArchivePassword::as_str);
                 let out = self.capped(|| {
-                    ps5_dump_forge_core::default_output(&arg.source, arg.format, &arg.dir)
+                    ps5_dump_forge_core::default_output_with(
+                        &arg.source,
+                        arg.format,
+                        &arg.dir,
+                        password,
+                    )
                 })?;
                 Ok(Response::json(&out))
             }
             (true, "generated_output") => {
                 let arg: OutputArg = parse(body)?;
                 readable(&arg.source)?;
+                let password = arg.password.as_ref().map(ArchivePassword::as_str);
                 let out = self.capped(|| {
-                    ps5_dump_forge_core::generated_output(
+                    ps5_dump_forge_core::generated_output_with(
                         &arg.source,
                         arg.format,
                         &arg.dir,
                         &arg.taken,
+                        password,
                     )
                 })?;
                 Ok(Response::json(&out))
@@ -344,9 +379,10 @@ impl Server {
     }
 
     fn inspect(&self, body: &[u8]) -> Reply {
-        let arg: PathArg = parse(body)?;
+        let arg: InspectArg = parse(body)?;
         readable(&arg.path)?;
-        let found = self.capped(|| ps5_dump_forge_core::inspect(&arg.path))?;
+        let password = arg.password.as_ref().map(ArchivePassword::as_str);
+        let found = self.capped(|| ps5_dump_forge_core::inspect_with(&arg.path, password))?;
         Ok(Response::json(&found))
     }
 
@@ -386,19 +422,41 @@ impl Server {
     }
 
     /// Runs a core call that reads a source, at most [`MAX_INSPECTIONS`] at once; the rest
-    /// get a 429.
+    /// wait for a slot (at most [`MAX_WAITING`] of them), up to [`SLOT_WAIT`], then get a 429.
+    /// A 409 once stopping, before and after taking the slot.
+    // ponytail: waiters poll, not a queue, so a newcomer can take a freed slot first; FIFO with
+    // a Condvar if waits show up unfair on the console.
     fn capped<T, E: std::fmt::Display>(
         &self,
         call: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, Response> {
-        if self.inspecting.fetch_add(1, Ordering::SeqCst) >= MAX_INSPECTIONS {
-            self.inspecting.fetch_sub(1, Ordering::SeqCst);
-            return Err(Response::limited(
+        let busy = || {
+            Response::limited(
                 "2 inspections are already running; try again in a moment",
                 1,
-            ));
+            )
+        };
+        self.refuse_if_stopping()?;
+        let start = Instant::now();
+        let mut waits = None;
+        while self.inspecting.fetch_add(1, Ordering::SeqCst) >= MAX_INSPECTIONS {
+            self.inspecting.fetch_sub(1, Ordering::SeqCst);
+            if waits.is_none() {
+                if self.waiting.fetch_add(1, Ordering::SeqCst) >= MAX_WAITING {
+                    self.waiting.fetch_sub(1, Ordering::SeqCst);
+                    return Err(busy());
+                }
+                waits = Some(Inspecting(&self.waiting));
+            }
+            self.refuse_if_stopping()?;
+            if start.elapsed() >= SLOT_WAIT {
+                return Err(busy());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
         let _inspecting = Inspecting(&self.inspecting);
+        drop(waits);
+        self.refuse_if_stopping()?;
         call().map_err(core)
     }
 
@@ -430,6 +488,8 @@ impl Server {
             })?;
         #[cfg(test)]
         std::thread::sleep(self.admit_pause);
+        // The job has the password; the table (the page's job list) keeps none.
+        request.archive_password = None;
         lock(&self.table).admit(id, request);
         Ok(Response::json(&id))
     }
@@ -505,9 +565,9 @@ impl Server {
         Ok(Response::download("application/zip", &name, len, body))
     }
 
-    /// Leftover `.part` files in `dirs` (missing ones skip), each folder listed once,
-    /// without the ones unfinished jobs are writing; the first 1,000 by path. Matches as
-    /// core's `stale_parts` does, but keeps only what it returns while listing.
+    /// Leftover `.part` files in `dirs` (missing ones skip), each
+    /// folder listed once, without the ones unfinished jobs are writing; the first 1,000 by
+    /// path. Matches as core's `stale_parts` does, but keeps only what it returns while listing.
     fn stale_parts(&self, body: &[u8]) -> Reply {
         // Room for the `.part`s of every unfinished job, taken out below.
         let keep = STALE_MAX + MAX_JOBS as usize;
@@ -872,6 +932,7 @@ mod tests {
             lz4_traces: None,
             lz4_trace_space_mib: 256,
             lz4_in_place: false,
+            archive_password: None,
         });
         let starter = {
             let (server, out) = (server.clone(), tmp.join("out.exfat"));

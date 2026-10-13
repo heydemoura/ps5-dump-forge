@@ -26,6 +26,7 @@ import {
 } from "./common";
 import { useMessages } from "./i18n";
 import { Icon } from "./icons";
+import { inspectSource } from "./password";
 import { JobsCard } from "./JobList";
 import type { Action, Job } from "./jobs";
 import {
@@ -37,13 +38,16 @@ import {
   Lead,
   OutputField,
   PkgWarning,
-  startFormat,
   useOutput,
   VerifySwitch,
 } from "./target";
 
-/** The target a new source starts with. */
-const DEFAULT_FORMAT: Format = "ffpkg"; // what ShadowMountPlus recommends
+/** The targets, in the picker's order. */
+const TARGETS: Format[] = ["folder", "pkg", "exfat", "ffpfsc", "ffpkg", "ffpfs"];
+/** The target a new source starts with: fpkg (the debug .pkg), or exfat for a .pkg source. */
+const DEFAULT_FORMAT: Format = "pkg";
+const startFormat = (path: string, isImage: boolean): Format =>
+  isImage && path.toLowerCase().endsWith(".pkg") ? "exfat" : DEFAULT_FORMAT;
 
 export function Convert(props: {
   jobs: Job[];
@@ -59,6 +63,8 @@ export function Convert(props: {
   const [ins, setIns] = useState<Inspection | null>(null);
   const [insError, setInsError] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState(false);
+  /** The password that opened an archive source, sent with its jobs; in memory only. */
+  const [password, setPassword] = useState<string | null>(null);
   const [format, setFormat] = useState<Format>(DEFAULT_FORMAT);
   /** The image inside a `.ffpfsc`; kept while other targets are picked. */
   const [inner, setInner] = useState<InnerFormat>("exfat");
@@ -81,23 +87,31 @@ export function Convert(props: {
   // Only the latest pick may land (an older inspect can finish last).
   const sourceSeq = useRef(0);
   const out = useOutput(format, props.jobs, setError);
+  // The target now: one picked while the source was being read is the one to name.
+  const formatNow = useRef(format);
+  formatNow.current = format;
 
   const pickSource = async (path: string, isImage: boolean) => {
-    const fmt = startFormat(DEFAULT_FORMAT, path, isImage);
+    const fmt = startFormat(path, isImage);
     setSource(path);
     setSourceIsImage(isImage);
     setFormat(fmt);
     setRemoveBackport(false);
     setRuntimeOn(true);
     setIns(null);
+    setPassword(null);
     setInsError(null);
     setError(null);
     out.reset(path, fmt);
     setInspecting(true);
     const seq = ++sourceSeq.current;
     try {
-      const found = await api.inspect(path);
-      if (seq === sourceSeq.current) setIns(found);
+      const opened = await inspectSource(path, null, () => seq === sourceSeq.current);
+      if (seq !== sourceSeq.current) return;
+      setIns(opened.ins);
+      setPassword(opened.password);
+      // A locked archive could not be named before its password.
+      if (opened.password !== null) out.opened(path, formatNow.current, opened.password);
     } catch (e) {
       if (seq === sourceSeq.current) setInsError(errorText(e));
     } finally {
@@ -124,6 +138,7 @@ export function Convert(props: {
         sourceSeq.current++;
         setSource(null);
         setIns(null);
+        setPassword(null);
         setInsError(null);
         setInspecting(false);
         setError(null);
@@ -152,9 +167,10 @@ export function Convert(props: {
         ? t.lz4Trace
         : null;
 
-  // An AMPR title, not packed, whose runtime isn't Forge's: offer the bundled one in the output
-  // (core's unpatch), none -> install, other -> replace. Hidden when an older backend doesn't
-  // say which version it ships. Forge's trace runtime is swapped by core anyway.
+  // An AMPR title, not packed, that carries its own ampr_emu naming an older version than the
+  // bundled one: offer the bundled one in the output (core's unpatch). Hidden without a runtime,
+  // with one whose version can't be read, and when an older backend doesn't say which version it
+  // ships. Forge's trace runtime is swapped by core anyway.
   const shipped = lz4?.shipped_runtime_version;
   const runtimeCard =
     !!lz4 &&
@@ -162,7 +178,9 @@ export function Convert(props: {
     lz4.imports_ampr &&
     !lz4.packed &&
     !lz4.manifest_error &&
-    (lz4.runtime === "none" || lz4.runtime === "other");
+    lz4.runtime === "other" &&
+    !!lz4.runtime_version &&
+    !lz4.runtime_current;
   const installRuntime = runtimeCard && runtimeOn;
 
   // Build would certainly fail: say why next to it instead.
@@ -175,7 +193,7 @@ export function Convert(props: {
 
   const { target, named } = out;
   const build = async () => {
-    if (!source || !target || named.error || blockReason || submittingRef.current) return;
+    if (!source || !target || named.error || blockReason || inspecting || submittingRef.current) return;
     setError(null);
     const request: ConvertRequest = {
       source,
@@ -189,6 +207,7 @@ export function Convert(props: {
       ffpfsc_level: ffpfscLevel,
       // LZ4 tracing and unpacking start from the LZ4 tab; here only the runtime card.
       lz4: installRuntime ? "unpatch" : null,
+      ...(password !== null && { archive_password: password }),
     };
     submittingRef.current = true;
     setSubmitting(true);
@@ -227,6 +246,7 @@ export function Convert(props: {
           busy={inspecting}
           error={insError}
           ins={ins}
+          onUnlock={() => source && void pickSource(source, sourceIsImage)}
         />
 
         <section className="card" aria-labelledby="c-target">
@@ -236,6 +256,7 @@ export function Convert(props: {
             label={t.targetFormat}
             value={format}
             onChange={pickFormat}
+            formats={TARGETS}
             disabled={(f) => f === "folder" && source !== null && !sourceIsImage}
             reason={(f) => (f === "folder" ? t.alreadyFolder : undefined)}
           />
@@ -251,31 +272,6 @@ export function Convert(props: {
               level={ffpfscLevel}
               onLevel={setFfpfscLevel}
             />
-          )}
-          {runtimeCard && (
-            <div className="field ampr-runtime">
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  className="visually-hidden"
-                  checked={runtimeOn}
-                  onChange={(e) => setRuntimeOn(e.target.checked)}
-                />
-                <span className="switch-track" aria-hidden="true" />
-                <span>
-                  {t.runtime(lz4.runtime === "none", shipped)}
-                  <span className="muted hint">
-                    {lz4.runtime === "none" ? t.runtimeNone : t.runtimeOther} {t.runtimeRest}
-                  </span>
-                </span>
-              </label>
-              {installRuntime && (
-                <p className="note-line warn">
-                  <Icon name="warn" />
-                  <span>{t.runtimeWarn(shipped)}</span>
-                </p>
-              )}
-            </div>
           )}
           {ins && ins.backport.length > 0 && (
             <div className="field backport">
@@ -306,7 +302,23 @@ export function Convert(props: {
             </div>
           )}
           {format === "pkg" && <KrakenField prefix="c" value={krakenLevel} onChange={setKrakenLevel} />}
-          <VerifySwitch checked={fullVerify} onChange={setFullVerify} />
+          <VerifySwitch checked={fullVerify} onChange={setFullVerify}>
+            {runtimeCard && (
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  className="visually-hidden"
+                  checked={runtimeOn}
+                  onChange={(e) => setRuntimeOn(e.target.checked)}
+                />
+                <span className="switch-track" aria-hidden="true" />
+                <span>
+                  {t.runtime}
+                  <span className="muted hint">{t.runtimeHint}</span>
+                </span>
+              </label>
+            )}
+          </VerifySwitch>
           <button className="link" onClick={props.onCompare}>
             <Icon name="table" />
             {t.compare}
@@ -317,7 +329,7 @@ export function Convert(props: {
             <button
               className="primary"
               onClick={build}
-              disabled={!source || !target || !!named.error || !!blockReason || submitting}
+              disabled={!source || !target || !!named.error || !!blockReason || inspecting || submitting}
             >
               <Icon name="bolt" />
               {t.build}

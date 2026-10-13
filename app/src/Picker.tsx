@@ -10,7 +10,7 @@ import { errorText, prettyBytes } from "./api";
 import { call } from "./http-client";
 import { useMessages } from "./i18n";
 import type { Messages } from "./locales/en";
-import { Icon } from "./icons";
+import { Icon, type IconName } from "./icons";
 import type { PickOptions } from "./transport";
 
 interface Entry {
@@ -70,11 +70,20 @@ function shows(o: PickOptions, e: Entry): boolean {
 }
 
 const IMAGES = ["exfat", "ffpkg", "ffpfs", "ffpfsc", "pkg"];
-function isImage(name: string): boolean {
-  return IMAGES.includes(name.slice(name.lastIndexOf(".") + 1).toLowerCase());
+/** Game archives and the first parts of split ones (common.tsx's ARCHIVE_EXTENSIONS). */
+const ARCHIVES = ["7z", "rar", "001", "z01"];
+const ext = (name: string) => name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+
+/** A file row's icon: a disc for an image, the zipped file for an archive (and a plain .zip
+ * where the picker lists only those: LZ4 traces). */
+function fileIcon(o: PickOptions, name: string): IconName {
+  const e = ext(name);
+  if (IMAGES.includes(e)) return "disc";
+  const sources = (o.extensions ?? []).some((x) => IMAGES.includes(x));
+  return ARCHIVES.includes(e) || (sources && e === "zip") ? "archive" : "file";
 }
 
-/** A file mode's empty listing names what it lists: PS5 images, or ".zip files". */
+/** A file mode's empty listing names what it lists: PS5 images and archives, or ".zip files". */
 function noFiles(t: Messages["picker"], o: PickOptions): string {
   const ext = o.extensions ?? [];
   return ext.some((e) => IMAGES.includes(e)) ? t.noImages : t.noFiles(ext);
@@ -198,7 +207,7 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
       >
         <div className="modal-head">
           <span className="head-icon">
-            <Icon name={o.directory || o.folderToo ? "folder" : "disc"} />
+            <Icon name={o.directory || o.folderToo ? "folder" : "archive"} />
           </span>
           <h2 id="pick-title">{o.title}</h2>
         </div>
@@ -238,7 +247,7 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
                 className="pick-row entry"
                 onClick={() => (e.dir ? go(e.path) : done(e.path))}
               >
-                <Icon name={e.dir ? "folder" : isImage(e.name) ? "disc" : "file"} />
+                <Icon name={e.dir ? "folder" : fileIcon(o, e.name)} />
                 <span className={here === null ? "pick-name mono" : "pick-name"}>
                   {here === null ? e.path : e.name}
                 </span>
@@ -247,7 +256,17 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
             </li>
           ))}
           {listing?.truncated && <li className="muted">{t.truncated(10000)}</li>}
-          {!listing && !error && <li className="muted">{t.loading}</li>}
+          {!listing && !error && (
+            <li className="muted">
+              {t.loading}
+              {/* common's Dots, inline: this file stays free of common's imports. */}
+              <span className="dots" aria-hidden="true">
+                <span>.</span>
+                <span>.</span>
+                <span>.</span>
+              </span>
+            </li>
+          )}
           {listing && entries.length === 0 && (
             <li className="muted">
               {here === null ? t.noDrives : o.directory ? t.noFolders : noFiles(t, o)}

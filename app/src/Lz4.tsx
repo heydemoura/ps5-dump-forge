@@ -26,16 +26,17 @@ import {
   ChooseMenu,
   classify,
   FormatPicker,
+  isArchive,
   isWithin,
   kindLabel,
   onDeleted,
   pickSource as openPicker,
-  Prose,
   SourceCard,
 } from "./common";
 import { openLz4Help } from "./Lz4Help";
 import { Icon } from "./icons";
 import { JobsCard } from "./JobList";
+import { inspectSource as readSource } from "./password";
 import { dirname } from "./paths";
 import type { Action, Job } from "./jobs";
 import {
@@ -67,30 +68,36 @@ const traceLabel = (mib: number) => (mib >= 1024 ? `${num(mib / 1024)} GiB` : `$
 
 export type Lz4Action = TraceAct | "pack" | "unpack";
 
-/** Why a scenario doesn't apply to this source; null when it does. */
-function scenarioWhy(s: Scenario, lz4: Lz4Facts | null): string | null {
+/** Why a scenario doesn't apply to this source; null when it does. `archive`: the source is
+ * an archive, which jobs unpack first: Pack/Unpack only, nothing to trace in place. */
+function scenarioWhy(s: Scenario, lz4: Lz4Facts | null, archive = false): string | null {
   const t = msg().lz4;
-  if (s === "pack") return lz4?.imports_ampr || lz4?.packed ? null : t.noAmpr;
+  // Without its own ampr_emu (fakelib/libSceAmpr.sprx) an AMPR game gets no LZ4 action, by user
+  // decision: neither a pack nor a trace runtime is put into it.
+  const noRuntime = !!lz4 && lz4.imports_ampr && !lz4.packed && lz4.runtime === "none";
+  if (s === "pack") return noRuntime ? t.noRuntime : lz4?.imports_ampr || lz4?.packed ? null : t.noAmpr;
+  if (archive) return t.archive;
   if (!lz4?.imports_ampr) return t.noAmpr;
+  if (noRuntime) return t.noRuntime;
   if (lz4.packed) return t.packedFirst;
   if (lz4.manifest_error !== null) return t.damaged;
   return null;
 }
 
 /** The scenario a new source starts on: Pack/Unpack whenever it is usable, else Trace. */
-function defaultScenario(lz4: Lz4Facts | null): Scenario | null {
-  return SCENARIOS.find((s) => scenarioWhy(s, lz4) === null) ?? null;
+function defaultScenario(lz4: Lz4Facts | null, archive = false): Scenario | null {
+  return SCENARIOS.find((s) => scenarioWhy(s, lz4, archive) === null) ?? null;
 }
 
 /** Pack's targets, in picker order: the LZ4 packed folder, then the plain images it packs
  * straight into. Unpack's: a folder or the same images. The tab offers no .ffpfsc or .fpkg
  * (core and the CLI still do): Convert turns the folder into any format. */
-const PACK_FORMATS: Format[] = ["lz4", "ffpkg", "exfat", "ffpfs"];
-const UNPACK_FORMATS: Format[] = ["folder", "ffpkg", "exfat", "ffpfs"];
+const PACK_FORMATS: Format[] = ["lz4", "exfat", "ffpkg", "ffpfs"];
+const UNPACK_FORMATS: Format[] = ["folder", "exfat", "ffpkg", "ffpfs"];
 
-/** Pack's or Unpack's target: Unpack starts on a folder, Pack on its chosen target. */
+/** Pack's or Unpack's target: Unpack starts on exfat, Pack on its chosen target. */
 function packTarget(lz4: Lz4Facts | null, packFormat: Format): Format {
-  return lz4?.packed ? "folder" : packFormat;
+  return lz4?.packed ? "exfat" : packFormat;
 }
 
 /** The source's own traces load by themselves (journal + index, recorded by Forge's trace
@@ -106,13 +113,15 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const [ins, setIns] = useState<Inspection | null>(null);
   const [insError, setInsError] = useState<string | null>(null);
   const [inspecting, setInspecting] = useState(false);
+  /** The password that opened an archive source, sent with its jobs; in memory only. */
+  const [password, setPassword] = useState<string | null>(null);
   /** The scenario and Trace's action picked for this source; null: the default for it. */
   const [chosen, setChosen] = useState<Scenario | null>(null);
   const [act, setAct] = useState<TraceAct | null>(null);
   /** Unpack's target. */
-  const [format, setFormat] = useState<Format>("folder");
-  /** Pack's target: an image (default .ffpkg) or the LZ4 packed folder. */
-  const [packFormat, setPackFormat] = useState<Format>("ffpkg");
+  const [format, setFormat] = useState<Format>("exfat");
+  /** Pack's target: an image (default .exfat) or the LZ4 packed folder. */
+  const [packFormat, setPackFormat] = useState<Format>("exfat");
   const [fullVerify, setFullVerify] = useState(false);
   /** The free space a traced image gets, 64 MiB to 1 GiB; kept across sources. */
   const [traceMib, setTraceMib] = useState(DEFAULT_TRACE_MIB);
@@ -138,11 +147,12 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
 
   const lz4 = ins?.lz4 ?? null;
   const kind = ins?.kind ?? (sourceIsImage ? "" : "folder");
+  const archive = isArchive(kind);
   const why = (s: Scenario) =>
-    !source ? t.chooseFirst : !ins ? t.notRead : scenarioWhy(s, lz4);
+    !source ? t.chooseFirst : !ins ? t.notRead : scenarioWhy(s, lz4, archive);
   const usable = SCENARIOS.filter((s) => why(s) === null);
   const scenario: Scenario | null =
-    chosen && usable.includes(chosen) ? chosen : ins ? defaultScenario(lz4) : null;
+    chosen && usable.includes(chosen) ? chosen : ins ? defaultScenario(lz4, archive) : null;
   const packed = !!lz4?.packed;
   const traceAct: TraceAct = act ?? (lz4?.runtime === "forge_trace" ? "unpatch" : "patch");
   const writableImage = sourceIsImage && WRITABLE_IMAGES.includes(kind as Format);
@@ -158,19 +168,22 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const out = useOutput(fmt, props.jobs, setError);
 
   // Read the source (again after a patch: its LZ4 facts changed); `name`: name the output
-  // for the scenario the source starts on.
-  const inspectSource = async (path: string, name: boolean) => {
+  // for the scenario the source starts on. `pw`: the password that opened it before (an
+  // archive asks for one when it needs it).
+  const inspectSource = async (path: string, name: boolean, pw: string | null) => {
     setInspecting(true);
     const seq = ++sourceSeq.current;
     try {
-      const found = await api.inspect(path);
+      const current = () => seq === sourceSeq.current;
+      const { ins: found, password: opened } = await readSource(path, pw, current);
       if (seq !== sourceSeq.current) return;
       setIns(found);
+      setPassword(opened);
       if (!name) return;
       const facts = found.lz4 ?? null;
       const target = packTarget(facts, packFormat);
       if (facts?.packed) setFormat(target);
-      if (defaultScenario(facts) === "pack") out.reset(path, target);
+      out.opened(path, defaultScenario(facts, isArchive(found.kind)) === "pack" ? target : null, opened);
     } catch (e) {
       if (seq === sourceSeq.current) setInsError(errorText(e));
     } finally {
@@ -191,7 +204,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       if (!live.current.delete(j.id)) continue;
       if (source !== null && (j.request?.source === source || j.request?.output === source)) again = true;
     }
-    if (again && source !== null) void inspectSource(source, false);
+    if (again && source !== null) void inspectSource(source, false, password);
   }, [props.jobs, source]);
 
   // Inspect or the Library deleted this source (or the folder holding it): forget it, and any late answer.
@@ -202,6 +215,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
         sourceSeq.current++;
         setSource(null);
         setIns(null);
+        setPassword(null);
         setInsError(null);
         setInspecting(false);
         setPatched(null);
@@ -223,10 +237,11 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     setPatched(null);
     setSaved(null);
     setIns(null);
+    setPassword(null);
     setInsError(null);
     setError(null);
     out.reset(path, null);
-    await inspectSource(path, true);
+    await inspectSource(path, true, null);
   };
 
   const chooseScenario = (s: Scenario) => {
@@ -310,7 +325,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       const result = a === "patch" ? await api.lz4Patch(src) : await api.lz4Unpatch(src);
       if (seq !== sourceSeq.current) return;
       setPatched({ source: src, act: a, result });
-      void inspectSource(src, false);
+      void inspectSource(src, false, null);
     } catch (e) {
       if (seq === sourceSeq.current) setError(errorText(e));
     } finally {
@@ -346,6 +361,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     ...(imageTrace && traceAct === "patch" && { lz4_trace_space_mib: traceMib }),
     ...(packing && profile !== null && { lz4_profile: profile }),
     ...(packing && !locked && traces !== null && { lz4_traces: traces }),
+    ...(password !== null && { archive_password: password }),
   });
   const start = async () => {
     if (!source || !job || blockReason || submittingRef.current) return;
@@ -412,6 +428,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           ins={ins}
           prefix="l"
           empty={<Lz4Empty onPick={pickSource} />}
+          onUnlock={() => source && void pickSource(source, sourceIsImage)}
         />
 
         <section className="card" aria-labelledby="l-lz4">
@@ -440,7 +457,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           ) : ins && usable.length === 0 ? (
             <p className="note-line warn lz4-why">
               <Icon name="warn" />
-              <span>{t.nothing}</span>
+              <span>{lz4?.imports_ampr && lz4.runtime === "none" ? t.noRuntimeWarn : t.nothing}</span>
             </p>
           ) : (
             ins &&
@@ -552,6 +569,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                 value={fmt}
                 onChange={pickPackFormat}
                 formats={PACK_FORMATS}
+                asFolder="lz4"
               />
               <p className="muted desc">
                 <Lead note={formatInfo(fmt)} />
@@ -559,9 +577,6 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
               {fmt !== "lz4" && (
                 <p className="muted hint">{t.direct}</p>
               )}
-              <p className="muted hint">
-                <Prose text={t.anyFormat} />
-              </p>
             </>
           )}
           {scenario === "pack" && lz4?.packed && (
@@ -576,9 +591,6 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
               />
               <p className="muted desc">
                 <Lead note={fmt !== "folder" ? formatInfo(fmt) : { text: t.unpackFolder }} />
-              </p>
-              <p className="muted hint">
-                <Prose text={t.anyFormat} />
               </p>
               <div className="field lz4">
                 <p className="muted hint">{t.unpackHint(lz4.packed.packed_files)}</p>
@@ -775,10 +787,11 @@ function FakelibWarning({ recorded = false }: { recorded?: boolean }) {
   );
 }
 
-/** The LZ4 tab's empty Source: one yellow Choose source… (a game folder or an image, asked
+/** The LZ4 tab's empty Source: one yellow Choose source… (a game folder, or an image or archive, asked
  * first: the native dialogs pick one kind) and what to expect. */
 function Lz4Empty({ onPick }: { onPick: (path: string, isImage: boolean) => void }) {
   const t = useMessages().lz4;
+  const c = useMessages().common;
   return (
     <div className="empty lz4">
       <span className="empty-icon">
@@ -800,8 +813,8 @@ function Lz4Empty({ onPick }: { onPick: (path: string, isImage: boolean) => void
           }
           menuLabel={t.source}
           items={[
-            { id: "folder", icon: "folder", label: t.gameFolder },
-            { id: "image", icon: "disc", label: t.image },
+            { id: "folder", icon: "folder", label: c.pickFolderButton },
+            { id: "image", icon: "archive", label: c.pickImageButton },
           ]}
           onChoose={(what) => void openPicker(what, onPick)}
         />

@@ -58,17 +58,8 @@ const pt: Messages = {
     unreadable: "Não é possível criar: esta origem não pôde ser lida (veja “Origem”).",
     blocked: (first, more) =>
       `Não é possível criar: ${first}${more > 0 ? ` (e mais ${num(more)}, veja “Origem”)` : ""}.`,
-    runtime: (install, version) =>
-      install
-        ? `Instalar o runtime AMPR (ampr_emu ${version})`
-        : `Substituir o runtime AMPR (ampr_emu ${version})`,
-    runtimeNone: "Este jogo usa AMPR, mas não tem fakelib/libSceAmpr.sprx: a saída recebe o runtime incluído.",
-    runtimeOther:
-      "fakelib/libSceAmpr.sprx não é um runtime que acompanha o Forge (pode ser mais novo ou mais antigo): a saída recebe o runtime incluído no lugar dele.",
-    runtimeRest:
-      "O diário de rastreamento e os logs ficam de fora e um novo ampr_emu.index é gravado. Só a saída muda, nunca a origem. Desativado: copiado como está.",
-    runtimeWarn: (version) =>
-      `O ampr_emu ${version} é uma versão de teste dos autores; problema conhecido: alguns jogos travam ao salvar.`,
+    runtime: "Atualizar AMPR",
+    runtimeHint: "O ampr_emu deste jogo não é a versão mais recente.",
     removeBackport: "Remover backport",
     removeHint: (libs, emulators, other) =>
       `Omite de fakelib/ ${num(libs)} ${plural(libs, { one: "biblioteca", many: "bibliotecas", other: "bibliotecas" })} de backport` +
@@ -139,6 +130,8 @@ const pt: Messages = {
       `Números dos autores: o que os autores do ampr_emu e do Lazy_AMPR relatam, sem medição do ${app}; variam de jogo para jogo. O ampr_emu 0.4.2.1 é uma versão de teste dos autores; problema conhecido: alguns jogos travam ao salvar.`,
     bundled: "Pastas empacotadas com LZ4 rodam no ampr_emu 0.4.2.1 de drakmor (GPL-3.0), incluído sem modificações. Código-fonte:",
     lazy: "O fluxo “rastrear e depois empacotar” segue o Lazy_AMPR de Nazky:",
+    unrar:
+      "Arquivos .rar são lidos com a biblioteca UnRAR incluída, de Alexander Roshal (só extração, sob a licença do UnRAR).",
     language: "Idioma",
     system: "Sistema",
   },
@@ -155,13 +148,14 @@ const pt: Messages = {
     firstOf: (max, n) => `exibindo ${num(max)} de ${num(n)}, a partir do início`,
     fileCount: (n) => `${num(n)} ${plural(n, FILES)}`,
     noMatch: (f) => `Nenhum arquivo corresponde a “${f}”.`,
+    noListing: "A lista de arquivos do arquivo compactado não é suportada.",
     emptyDirs: (n) => `Pastas vazias (${num(n)})`,
     noParam: "Sem sce_sys/param.json.",
     reader: "Leitor",
-    leftovers: "Arquivos .part restantes",
+    leftovers: "Arquivos e pastas restantes",
     found: (n) => `${num(n)} ${plural(n, { one: "encontrado", many: "encontrados", other: "encontrados" })}`,
     leftoversNote: (app) =>
-      `Saídas incompletas, geralmente de tarefas interrompidas. Remova só as que você reconhecer, e só quando nenhuma tarefa estiver em execução; o ${app} nunca as exclui sozinho.`,
+      `Saídas incompletas e arquivos compactados extraídos, geralmente de tarefas interrompidas. Remova só as que você reconhecer, e só quando nenhuma tarefa estiver em execução; o ${app} nunca as exclui sozinho.`,
     checked: (n) => `Pastas verificadas (${num(n)})`,
   },
   // JobList.tsx
@@ -227,8 +221,8 @@ const pt: Messages = {
   // Library.tsx
   library: {
     pickTitle: "Escolha uma pasta para a Biblioteca",
-    scanningIn: (name) => `Escaneando ${name}…`,
-    scanning: "Escaneando…",
+    scanningIn: (name) => `Escaneando ${name}`,
+    scanning: "Escaneando",
     cantScanFolder: "Não é possível escanear esta pasta",
     chooseAnother: "Escolher outra pasta…",
     pickPrompt: "Escolha uma pasta com a sua biblioteca para escanear",
@@ -267,23 +261,25 @@ const pt: Messages = {
     scenarios: { trace: "Rastrear", pack: "Empacotar/Desempacotar" },
     actions: { patch: "Aplicar patch", unpatch: "Remover patch", pack: "Empacotar", unpack: "Desempacotar" },
     scenarioInfo: (s, packed) => s === "trace"
-      ? "Faz este jogo registrar quais assets ele lê enquanto você joga (ampr_commands.bin), para uso em “Empacotar”. “Remover patch” devolve o runtime de release."
+      ? "Registra quais assets o jogo lê enquanto você joga, para uso em “Empacotar”."
       : packed
-        ? "Desempacotar: grava os pacotes LZ4 do jogo de volta como arquivos comuns, em uma pasta ou em uma imagem comum."
-        : "Empacotar: empacota os assets do jogo em volumes LZ4 que o emulador AMPR incluído (ampr_emu) lê enquanto o jogo roda, em uma pasta ou em uma imagem comum. Uma origem empacotada é desempacotada.",
+        ? "Grava os pacotes LZ4 do jogo de volta como arquivos comuns."
+        : "Empacota os assets do jogo em volumes LZ4 que o ampr_emu lê enquanto o jogo roda.",
     traceInfo: (a, image) => a === "patch"
       ? image
-        ? "Recria esta imagem com o runtime de rastreamento e espaço para o rastreamento e depois a substitui."
-        : "Instala o runtime de rastreamento nesta pasta, onde ela está: nenhuma cópia é gravada."
+        ? "Recria esta imagem com o runtime de rastreamento e depois a substitui."
+        : "Instala o runtime de rastreamento nesta pasta."
       : image
-        ? "Recria esta imagem com o runtime de release do Forge (0.4.2.1), sem os rastreamentos gravados, e depois a substitui."
-        : "Devolve o runtime de release do Forge (0.4.2.1) a esta pasta, onde ela está: nenhuma cópia é gravada.",
+        ? "Recria esta imagem com o runtime de release e depois a substitui."
+        : "Devolve o runtime de release a esta pasta.",
     noAmpr: "o jogo não usa AMPR",
+    noRuntime: "o jogo não tem ampr_emu",
+    noRuntimeWarn: "Este jogo não tem ampr_emu, então o LZ4 não pode convertê-lo.",
     packedFirst: "a origem está empacotada com LZ4: desempacote-a primeiro",
     damaged: "os pacotes LZ4 dela estão danificados",
+    archive: "não é possível rastrear um arquivo compactado: converta-o primeiro",
     chooseFirst: "escolha uma origem primeiro",
     notRead: "a origem ainda não foi lida",
-    anyFormat: "Precisa de ffpfsc ou fpkg? Grave uma pasta aqui e depois converta-a para qualquer formato na aba “Converter”.",
     pickProfile: "Perfil LZ4",
     profileFilter: "Perfil LZ4 (TOML)",
     pickTracesFolder: "Rastreamentos LZ4 (uma pasta com ampr_commands.bin e ampr_emu.index)",
@@ -291,112 +287,97 @@ const pt: Messages = {
     pickTracesZip: "Rastreamentos LZ4 (zip)",
     unreadable: "Não é possível iniciar: esta origem não pôde ser lida (veja “Origem”).",
     pending: (a) => a === "patch"
-      ? "Não é possível aplicar o patch enquanto há tarefas em execução ou na fila: aplique quando elas terminarem."
-      : "Não é possível remover o patch enquanto há tarefas em execução ou na fila: remova quando elas terminarem.",
+      ? "Não é possível aplicar o patch com tarefas em execução ou na fila."
+      : "Não é possível remover o patch com tarefas em execução ou na fila.",
     replacing: "Uma tarefa já está recriando esta imagem: aguarde até ela terminar.",
     blocked: (a, first, more) =>
       `Não é possível ${a === "patch" ? "aplicar o patch" : a === "unpatch" ? "remover o patch" : a === "pack" ? "empacotar" : "desempacotar"}: ${first}${more > 0 ? ` (e mais ${num(more)}, veja “Origem”)` : ""}.`,
     chooseGame: "Escolha primeiro uma pasta de jogo ou uma imagem.",
-    nothing: "Nada a fazer aqui: este jogo não usa AMPR (o eboot.bin dele não importa libSceAmpr) e não está empacotado com LZ4.",
+    nothing: "Nada a fazer: este jogo não usa AMPR e não está empacotado com LZ4.",
     unavailable: (items) => `Indisponível para esta origem: ${items.join("; ")}.`,
     readOnly: (kind) => <>
-      Não é possível aplicar nem remover o patch em <b>{kind}</b>: esse formato é somente leitura no console, então o jogo não consegue gravar o rastreamento nele. Converta-o para <b>ffpkg</b> (ou <b>exfat</b>) na aba “Converter” e aplique o patch no resultado.
+      <b>{kind}</b> é somente leitura no console, então não pode ser rastreado. Converta-o primeiro para <b>ffpkg</b> ou <b>exfat</b>.
     </>,
     action: "Ação",
     traceAction: "Ação de rastreamento",
     changes: (a, image) => a === "patch"
-      ? `Altera ${image ? "esta imagem" : "esta pasta"}: o runtime de rastreamento substitui fakelib/libSceAmpr.sprx (sem backup) e um novo ampr_emu.index lista os arquivos.`
-      : `Altera ${image ? "esta imagem" : "esta pasta"}: o runtime de release do Forge (0.4.2.1) substitui fakelib/libSceAmpr.sprx (sem backup), ampr_commands.bin e os logs de rastreamento são excluídos, e um novo ampr_emu.index lista os arquivos.`,
-    replay: (web) => `Jogue e depois escolha esta origem de novo: “Empacotar/Desempacotar” usa os rastreamentos gravados${web ? ", e “Rastrear” os oferece como zip para um computador" : ""}. Cada inicialização sobrescreve o rastreamento da sessão anterior.`,
+      ? `Altera ${image ? "esta imagem" : "esta pasta"}: o runtime de rastreamento substitui fakelib/libSceAmpr.sprx, sem backup.`
+      : `Altera ${image ? "esta imagem" : "esta pasta"}: o runtime de release volta e os rastreamentos são excluídos, sem backup.`,
+    replay: (web) => `Jogue e depois escolha esta origem de novo para usar os rastreamentos dela.${web ? " “Rastrear” também os oferece como zip." : ""}`,
     room: "Espaço para o rastreamento",
-    roomHint: "Espaço livre adicionado à imagem para o jogo gravar o rastreamento. Monte a imagem com gravação usando image_rw= do ShadowMountPlus, ou nada será gravado: só reservar espaço não a torna gravável.",
-    alreadyRelease: "Esta origem já tem o runtime de release: só o índice é gravado de novo.",
-    spaceHint: "Precisa de espaço livre ao lado da imagem, mais ou menos do tamanho dela; a imagem só é substituída depois que a cópia é verificada.",
+    roomHint: "Espaço livre para o rastreamento do jogo. Monte a imagem com image_rw=, ou nada será gravado.",
+    alreadyRelease: "Já está no runtime de release: só o índice é gravado de novo.",
+    spaceHint: "Precisa de espaço livre do tamanho da imagem; ela só é substituída depois que a cópia é verificada.",
     deletesTraces: (a, bytes, web) =>
-      `${a === "patch" ? "“Aplicar patch”" : "“Remover patch”"} exclui os rastreamentos que esta origem gravou (ampr_commands.bin, ${bytes}): ${web ? "baixe-os acima ou empacote com eles antes." : "empacote com eles ou copie-os antes."}`,
+      `${a === "patch" ? "“Aplicar patch”" : "“Remover patch”"} exclui os rastreamentos desta origem (${bytes}): ${web ? "baixe-os antes." : "copie-os antes."}`,
     useProfile: "Usar um perfil de regras em vez disso",
     profile: "Perfil",
     choose: "Escolher…",
-    profileHint: "Um arquivo TOML com regras de empacotamento. Ele substitui os rastreamentos: escolher um limpa o outro.",
+    profileHint: "Um arquivo TOML com regras de empacotamento, usado no lugar dos rastreamentos.",
     target: "Destino",
     packInto: "Empacotar em",
-    direct: "Empacota direto na imagem: sem pasta temporária; os arquivos empacotados são lidos duas vezes.",
+    direct: "Empacota direto na imagem; os arquivos do jogo são lidos duas vezes.",
     targetFormat: "Formato de destino",
-    unpackFolder: "Uma nova pasta do jogo com os pacotes LZ4 gravados de volta como arquivos comuns.",
+    unpackFolder: "Uma nova pasta do jogo com os pacotes gravados de volta como arquivos comuns.",
     unpackHint: (n) =>
-      `${n === null ? "Grava os arquivos empacotados de volta como arquivos comuns" : `Grava de volta ${num(n)} ${plural(n, { one: "arquivo empacotado como arquivo comum", many: "arquivos empacotados como arquivos comuns", other: "arquivos empacotados como arquivos comuns" })}`}; mantém o runtime AMPR e o índice dele.`,
+      n === null
+        ? "Grava os arquivos empacotados de volta como arquivos comuns."
+        : `Grava de volta ${num(n)} ${plural(n, { one: "arquivo empacotado como arquivo comum", many: "arquivos empacotados como arquivos comuns", other: "arquivos empacotados como arquivos comuns" })}.`,
     waitJobs: "Aguarde as tarefas em execução terminarem",
-    saveHint: "Salvar os arquivos que “Empacotar” empacotaria como um perfil de regras editável",
+    saveHint: "Salvar a lista de arquivos de “Empacotar” como um perfil de regras editável",
     saving: "Salvando…",
     saveProfile: "Salvar como perfil",
     saved: (name, packed, loose) =>
-      `${name} salvo: ${num(packed)} ${plural(packed, { one: "arquivo empacotado", many: "arquivos empacotados", other: "arquivos empacotados" })}, ${num(loose)} ${plural(loose, { one: "solto", many: "soltos", other: "soltos" })}. Edite-o e carregue-o com “Usar um perfil de regras em vez disso”.`,
+      `${name} salvo: ${num(packed)} ${plural(packed, { one: "arquivo empacotado", many: "arquivos empacotados", other: "arquivos empacotados" })}, ${num(loose)} ${plural(loose, { one: "solto", many: "soltos", other: "soltos" })}.`,
     likelyFail: (fmt) => <>
       Provavelmente vai falhar como <b>{fmt}</b>: esse formato recusa os nomes de arquivo listados em “Origem”.
     </>,
     collides: (a, folder) =>
-      `Uma tarefa já está gravando ${folder ? "esta pasta" : "este arquivo"}: clicar em ${a === "pack" ? "“Empacotar”" : "“Desempacotar”"} de novo vai falhar. Escolha outro nome.`,
+      `Uma tarefa já está gravando ${folder ? "esta pasta" : "este arquivo"}: ${a === "pack" ? "“Empacotar”" : "“Desempacotar”"} precisa de outro nome.`,
     already: (a, fmt) => <>
       Este jogo já está sendo gravado como <b>{fmt}</b>; clicar em {a === "pack" ? "“Empacotar”" : "“Desempacotar”"} de novo gera uma segunda cópia.
     </>,
-    profileRules: "Empacota o que as regras do perfil indicam, exceto os arquivos que a engine abre diretamente (índices de contêineres, configurações, mídia) — esses ficam soltos.",
-    chosenRules: "Empacota os arquivos que o jogo leu nos rastreamentos escolhidos, exceto os que a engine abre diretamente (índices de contêineres, configurações, mídia) — esses ficam soltos.",
-    ownRules: "Empacota os arquivos que o jogo leu na última sessão rastreada (os rastreamentos desta origem), exceto os que a engine abre diretamente (índices de contêineres, configurações, mídia) — esses ficam soltos.",
-    guessRules: "Não há rastreamentos nesta origem: empacota por uma estimativa embutida, que é menos confiável. Grave rastreamentos primeiro (“Rastrear” → “Aplicar patch”) ou escolha rastreamentos copiados do console ou um perfil.",
+    profileRules: "Empacota o que as regras do perfil indicam; os arquivos que a engine abre diretamente ficam soltos.",
+    chosenRules: "Empacota os arquivos que o jogo leu nestes rastreamentos; os arquivos que a engine abre diretamente ficam soltos.",
+    ownRules: "Empacota os arquivos que o jogo leu na última sessão rastreada; os arquivos que a engine abre diretamente ficam soltos.",
+    guessRules: "Sem rastreamentos: empacota por uma estimativa embutida, menos confiável. Rastreie primeiro ou escolha rastreamentos ou um perfil.",
     recorded: "Rastreamentos gravados",
-    recordedHint: (bytes) => `ampr_commands.bin (${bytes}): “Empacotar/Desempacotar” carrega esses rastreamentos sozinho.`,
-    downloadHint: "Antes, feche o jogo e espere cerca de um minuto: enquanto a imagem está montada, o arquivo dela no disco pode estar atrasado em relação ao que o jogo gravou. Use o navegador de um computador aberto no endereço do Forge deste console e depois escolha o zip em “LZ4” → “Empacotar/Desempacotar” → “Rastreamentos” no computador. O download falha se o jogo ou uma sincronização alterar a origem nesse meio-tempo: feche o jogo e baixe de novo.",
+    recordedHint: (bytes) => `ampr_commands.bin (${bytes}): “Empacotar” usa esses rastreamentos.`,
+    downloadHint: "Feche o jogo, espere um minuto e baixe pelo navegador de um computador. Lá, escolha o zip em “Empacotar/Desempacotar” → “Rastreamentos”.",
     download: (bytes, zip) => `Baixar rastreamentos (${bytes}) como ${zip}`,
-    missingIndex: "Não há ampr_emu.index nesta origem: “Empacotar” precisa dele ao lado de ampr_commands.bin para identificar os arquivos a que os IDs do rastreamento se referem.",
-    truncatedJournal: "Um diário cortado no final ainda serve para empacotar: “Empacotar” usa tudo até o último registro completo.",
+    missingIndex: "Não há ampr_emu.index nesta origem: “Empacotar” precisa dele ao lado de ampr_commands.bin.",
+    truncatedJournal: "Um diário cortado no final ainda pode ser empacotado, até o último registro completo.",
     fakelibWarning: (recorded) => recorded
-      ? "Poucos rastreamentos ou nenhum? Desative qualquer atualizador da fakelib durante o rastreamento: ele sobrescreve fakelib/libSceAmpr.sprx e aí nada é gravado. Desative-o, use “Aplicar patch” de novo e jogue outra vez."
-      : "Desative qualquer atualizador da fakelib durante o rastreamento: ele sobrescreve fakelib/libSceAmpr.sprx e aí nada é gravado.",
+      ? "Poucos rastreamentos ou nenhum? Desative o atualizador da fakelib, aplique o patch de novo e jogue outra vez."
+      : "Desative o atualizador da fakelib durante o rastreamento, ou nada será gravado.",
     emptyTitle: "Escolha um jogo que use AMPR",
-    experimental: "Experimental: rastreamentos e pacotes LZ4 para o ampr_emu. Não há garantia de que o jogo rode depois; guarde uma cópia do jogo original.",
-    chooseSource: "Escolher origem…",
+    experimental: "Experimental: guarde uma cópia do jogo original.",
+    chooseSource: "Escolher origem",
     source: "Origem",
-    gameFolder: "Pasta do jogo…",
-    image: "Imagem…",
     traces: "Rastreamentos",
     optionalTraces: "Rastreamentos (opcional)",
     unlock: "Desbloquear para escolher outros rastreamentos",
     loaded: "Os rastreamentos já foram carregados desta origem",
-    lockedHint: (bytes) => `O ampr_commands.bin (${bytes}) e o ampr_emu.index da própria origem. Clique no cadeado para escolher outros rastreamentos.`,
+    lockedHint: (bytes) => `Os rastreamentos desta origem (${bytes}). Clique no cadeado para escolher outros.`,
     clear: "Limpar",
     zip: "Zip…",
     folder: "Pasta…",
-    tracesHint: "Escolha o [nome do jogo]-[ID do título]-amprtrace.zip de “Rastrear” → “Baixar rastreamentos” ou uma pasta com ampr_commands.bin e ampr_emu.index.",
+    tracesHint: "Escolha o zip amprtrace de “Baixar rastreamentos” ou uma pasta com os dois arquivos de rastreamento.",
     useOwn: "Usar os rastreamentos da origem",
     patchResult: (a, n) =>
       a === "patch"
-        ? `Patch aplicado: o runtime de rastreamento está em fakelib/libSceAmpr.sprx e ampr_emu.index lista ${num(n)} ${plural(n, FILES)}.`
-        : `Patch removido: o runtime de release do Forge (0.4.2.1) está em fakelib/libSceAmpr.sprx e ampr_emu.index lista ${num(n)} ${plural(n, FILES)}.`,
+        ? `Patch aplicado: o runtime de rastreamento está instalado; o índice lista ${num(n)} ${plural(n, FILES)}.`
+        : `Patch removido: o runtime de release voltou; o índice lista ${num(n)} ${plural(n, FILES)}.`,
     removed: (files) => `Arquivos de rastreamento antigos removidos: ${files.join(", ")}.`,
   },
   // Lz4Help.tsx
   lz4Help: {
     title: "Como o LZ4 funciona",
     close: "Fechar",
-    warning:
-      "Experimental, só para jogos AMPR. O ampr_emu 0.4.2.1 é uma versão de teste: alguns jogos travam ao salvar. Guarde uma cópia do jogo original.",
+    warning: "Experimental, só para jogos AMPR. Guarde uma cópia do jogo original.",
     body: () => (
       <>
-        <h3>1. Rastrear</h3>
-        <ol>
-          <li>
-            Escolha o <b>ffpkg</b> ou o <b>exfat</b> do jogo e depois <b>Rastrear</b> → <b>Aplicar patch</b>.
-          </li>
-          <li>Desative o atualizador da fakelib: ele sobrescreve o runtime de rastreamento.</li>
-          <li>
-            Monte com <span className="path">image_rw=</span>, jogue uma sessão e feche o jogo.
-          </li>
-          <li>
-            Use <b>Baixar rastreamentos</b> na página do PS5 ou copie ampr_commands.bin e ampr_emu.index.
-          </li>
-        </ol>
-
-        <h3>2. Empacotar/Desempacotar</h3>
+        <h3>1. Empacotar/Desempacotar</h3>
         <ol>
           <li>
             Escolha o jogo original, <b>Empacotar/Desempacotar</b> e os rastreamentos (ou um perfil).
@@ -409,6 +390,20 @@ const pt: Messages = {
             Uma origem empacotada mostra <b>Desempacotar</b> no lugar: os arquivos soltos voltam.
           </li>
         </ol>
+
+        <h3>2. Rastrear</h3>
+        <ol>
+          <li>
+            Escolha o <b>ffpkg</b> ou o <b>exfat</b> do jogo e depois <b>Rastrear</b> → <b>Aplicar patch</b>.
+          </li>
+          <li>Desative o atualizador da fakelib: ele sobrescreve o runtime de rastreamento.</li>
+          <li>
+            Monte com <span className="path">image_rw=</span>, jogue uma sessão e feche o jogo.
+          </li>
+          <li>
+            Use <b>Baixar rastreamentos</b> na página do PS5 ou copie ampr_commands.bin e ampr_emu.index.
+          </li>
+        </ol>
       </>
     ),
   },
@@ -419,10 +414,10 @@ const pt: Messages = {
     parent: "Pasta acima",
     allDrives: "Todas as unidades",
     truncated: (n) => `Exibição limitada a ${num(n)} ${plural(n, { one: "entrada", many: "entradas", other: "entradas" })} do início da lista.`,
-    loading: "Carregando…",
+    loading: "Carregando",
     noDrives: "Nenhuma unidade encontrada.",
     noFolders: "Nenhuma pasta aqui.",
-    noImages: "Nenhuma pasta ou imagem de PS5 aqui.",
+    noImages: "Nenhuma pasta, imagem de PS5 ou arquivo compactado aqui.",
     noFiles: (ext) => `Nenhuma pasta ou arquivo ${dotted(ext, " ou ")} aqui.`,
     cancel: "Cancelar",
     chooseFolder: "Escolher esta pasta",
@@ -431,17 +426,16 @@ const pt: Messages = {
   common: {
     folder: "Pasta",
     pickFolder: "Pasta do jogo",
-    pickImage: "Imagem do jogo",
-    pickImageFilter: "Imagem ou pacote de PS5",
-    chooseFolder: "Escolher pasta…",
-    chooseImage: "Escolher imagem…",
+    pickImage: "Imagem ou arquivo compactado do jogo",
+    pickImageFilter: "Imagens e arquivos compactados",
+    pickFolderButton: "Pasta",
+    pickImageButton: "Imagem/Arquivo compactado",
     source: "Origem",
-    emptyTitle: "Escolha uma pasta ou imagem de jogo",
-    emptyText:
-      "Uma pasta de jogo de PS5 (com sce_sys/param.json e eboot.bin na raiz) ou uma imagem ou pacote dela.",
+    emptyTitle: "Escolha uma pasta, imagem ou arquivo compactado de jogo",
+    emptyText: "Uma pasta de jogo de PS5 ou uma imagem, pacote ou arquivo compactado dela.",
     accepted: "Origens aceitas",
     unknownTitle: "Título desconhecido",
-    reading: "Lendo a origem…",
+    reading: "Lendo a origem",
     unreadable: "Origem ilegível",
     backport: "Backport",
     emulators: "Emuladores",
@@ -478,7 +472,6 @@ const pt: Messages = {
     runtimeIs: (label) => `runtime ${label}`,
     backportLibs: (exclusive, n) =>
       `${exclusive ? "fakelib2/, montado sozinho" : "fakelib/"}, ${num(n)} ${plural(n, { one: "biblioteca", many: "bibliotecas", other: "bibliotecas" })} de backport`,
-    noFindings: "Nenhum aviso na pré-verificação",
     findings: "Avisos da pré-verificação",
     dlcTitle: (n) => `DLCs embutidos (${num(n)})`,
     dlcLabel: "DLCs embutidos",
@@ -490,6 +483,15 @@ const pt: Messages = {
     backportFiles: "Arquivos do backport",
     emulatorsIn: "Emuladores na fakelib",
     qr: (url) => `QR code: ${url}`,
+    needsPassword: "Este arquivo compactado precisa de uma senha.",
+    enterPassword: "Digitar senha",
+    inArchive: (ext, size) => `em um arquivo ${ext} · ${size}`,
+    archive: "Arquivo compactado",
+    parts: (n) => `${num(n)} ${plural(n, { one: "parte", many: "partes", other: "partes" })}`,
+    archiveRoot: (root) => `jogo em ${root}`,
+    archiveAtRoot: "jogo na raiz do arquivo",
+    solid: "sólido",
+    encrypted: "protegido por senha",
   },
   // delete.tsx
   delete: {
@@ -500,6 +502,19 @@ const pt: Messages = {
         : "O arquivo de imagem será excluído para sempre: sem Lixeira, sem desfazer. Se a exclusão parar no meio, parte dele pode já ter sido apagada.",
     no: "Não",
     yes: "Sim, excluir",
+    archiveTitle: "Excluir este arquivo compactado?",
+    archiveText:
+      "O arquivo compactado será excluído para sempre: sem Lixeira, sem desfazer. As outras partes de um arquivo em várias partes ficam como estão.",
+  },
+  // password.tsx
+  password: {
+    title: "Este arquivo compactado precisa de uma senha",
+    text: "Digite a senha para abri-lo.",
+    wrong: "A senha não está correta.",
+    label: "Senha",
+    cancel: "Cancelar",
+    unlock: "Desbloquear",
+    checking: "Verificando…",
   },
   // main-http.tsx
   launch: {

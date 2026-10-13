@@ -64,7 +64,7 @@ pub(crate) fn highest_sdk(tree: &mut dyn SourceTree) -> Option<u32> {
     sdks.into_iter().max()
 }
 
-fn is_executable(path: &str) -> bool {
+pub(crate) fn is_executable(path: &str) -> bool {
     path.rsplit_once('.')
         .is_some_and(|(_, ext)| EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e)))
 }

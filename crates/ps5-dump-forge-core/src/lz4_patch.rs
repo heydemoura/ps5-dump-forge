@@ -46,6 +46,14 @@ pub(crate) fn patch(folder: &Path, runtime: Runtime) -> anyhow::Result<Lz4Patch>
         Runtime::Release => (RELEASE, "unpatch"),
     };
     let kind = Kind::of(folder)?;
+    if let Kind::Archive(_) = kind {
+        bail!(
+            "{} is a .{} archive: only a game folder is {verb}ed here; convert the archive to a \
+             folder, .exfat or .ffpkg first",
+            folder.display(),
+            kind.name()
+        );
+    }
     if kind != Kind::Folder {
         bail!(
             "{} is a .{} image: only a game folder is {verb}ed here (an .exfat or .ffpkg image \

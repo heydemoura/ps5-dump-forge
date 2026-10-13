@@ -95,7 +95,7 @@ pub(crate) fn start(inner: &Arc<Inner>, request: ConvertRequest) -> JobId {
     let worker = inner.clone();
     let spawned = std::thread::Builder::new()
         .name(format!("forge-job-{job}"))
-        .spawn(move || worker.run(job, &request, &cancel));
+        .spawn(move || worker.run(job, &request, cancel));
     match spawned {
         Ok(handle) => state.threads.push(handle),
         Err(e) => {
@@ -113,8 +113,8 @@ pub(crate) fn start(inner: &Arc<Inner>, request: ConvertRequest) -> JobId {
 }
 
 /// The paths a job reads or writes: source, output (the source, in place), its `.part`s
-/// (`finalize::part_path`, and `Part::replace`'s `.orig.part`), profile and traces (with a
-/// lone journal's index).
+/// (`finalize::part_path`, and `Part::replace`'s `.orig.part`), an archive's later parts,
+/// profile and traces (with a lone journal's index).
 fn used_paths(job: JobId, req: &ConvertRequest) -> Vec<PathBuf> {
     let out = if req.lz4_in_place {
         &req.source
@@ -124,6 +124,16 @@ fn used_paths(job: JobId, req: &ConvertRequest) -> Vec<PathBuf> {
     let part = crate::finalize::part_path(out, job);
     let orig = part.with_extension("orig.part");
     let mut paths = vec![req.source.clone(), out.clone(), part, orig];
+    // An archive's later parts, found by name beside it (the source is the first part).
+    if crate::archive::is_archive(&req.source) {
+        let folder = req.source.parent().filter(|p| !p.as_os_str().is_empty());
+        if let Ok(items) = std::fs::read_dir(folder.unwrap_or(Path::new("."))) {
+            paths.extend(
+                (items.flatten().map(|i| i.path()))
+                    .filter(|p| ps5_dump_forge_archive::later_part_of(p, &req.source)),
+            );
+        }
+    }
     paths.extend(req.lz4_profile.iter().chain(&req.lz4_traces).cloned());
     // A journal named on its own is read with the index beside it.
     if let Some(traces) = &req.lz4_traces
@@ -137,14 +147,16 @@ fn used_paths(job: JobId, req: &ConvertRequest) -> Vec<PathBuf> {
 }
 
 impl Inner {
-    fn run(&self, job: JobId, request: &ConvertRequest, cancel: &AtomicBool) {
+    fn run(&self, job: JobId, request: &ConvertRequest, shared: Arc<AtomicBool>) {
+        let cancel: &AtomicBool = &shared;
         // Dropped last: Done goes out before the next job is woken, so no event of the next
         // job can arrive before this job's Done. A panicking `emit` still dequeues.
         let _leave = Leave(self, job);
         let result = self.wait_turn(job, cancel).and_then(|()| {
             #[cfg(target_env = "ps5")]
             let _awake = PowerTick::start();
-            let ctx = Ctx::new(job, &self.emit, cancel);
+            let mut ctx = Ctx::new(job, &self.emit, cancel);
+            ctx.shared_cancel = Some(shared.clone());
             match catch_unwind(AssertUnwindSafe(|| crate::convert::run(request, &ctx))) {
                 Ok(result) => result,
                 Err(panic) => {
@@ -251,6 +263,8 @@ pub(crate) struct Ctx<'a> {
     pub job: JobId,
     emit: &'a dyn Fn(Event),
     pub cancel: &'a AtomicBool,
+    /// The same flag, shared, for a reader thread that outlives a borrow (an archive's).
+    pub(crate) shared_cancel: Option<Arc<AtomicBool>>,
     last: Cell<Option<Instant>>,
     stage: RefCell<String>,
     /// What every byte pass of the job adds up to, set by [`Ctx::expect`]; 0 until known.
@@ -272,6 +286,7 @@ impl<'a> Ctx<'a> {
             job,
             emit: emit.as_ref(),
             cancel,
+            shared_cancel: None,
             last: Cell::new(None),
             stage: RefCell::new(String::new()),
             expected: Cell::new(0),

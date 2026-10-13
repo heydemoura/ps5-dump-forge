@@ -13,6 +13,10 @@ inspection), taken from ps5upload with a small local patch series on top.
 
 The trees here are upstream plus every patch in `patches/`, in order. Nothing else differs.
 
+`LICENSE-UnRAR.txt` and `LICENSE-UnRAR-exception.md` are not vendored code: UnRAR's license and the
+GPLv3 §7 permission for the UnRAR source that `unrar_sys` (crates.io) builds into every target. The
+release scripts copy both into each package.
+
 ## Patches
 
 Paths in each patch are relative to this folder (`a/ps5upload-fpkg/...`). Each patch carries its

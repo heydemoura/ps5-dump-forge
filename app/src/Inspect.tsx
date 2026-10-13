@@ -7,6 +7,7 @@ import { api, APP_NAME, errorText, prettyBytes, type Inspection } from "./api";
 import {
   CardHead,
   dirname,
+  isArchive,
   isWithin,
   notifyDeleted,
   onDeleted,
@@ -19,6 +20,7 @@ import {
 import { confirmDelete } from "./delete";
 import { num, useMessages } from "./i18n";
 import { Icon } from "./icons";
+import { inspectSource } from "./password";
 
 // ponytail: a cap instead of a virtualized list; the filter narrows big games.
 const MAX_ROWS = 2000;
@@ -50,7 +52,8 @@ export function Inspect(props: {
     setDeleted(null);
     setBusy(true);
     try {
-      const found = await api.inspect(path);
+      // An archive that needs a password asks for it; Inspect starts no jobs, so it keeps none.
+      const { ins: found } = await inspectSource(path, null, () => mine === seq.current);
       if (mine === seq.current) setIns(found);
     } catch (e) {
       if (mine === seq.current) setError(errorText(e));
@@ -108,7 +111,7 @@ export function Inspect(props: {
     const mine = seq.current;
     deletingRef.current = true;
     try {
-      if (!(await confirmDelete(path, ins.kind === "folder"))) return;
+      if (!(await confirmDelete(path, ins.kind === "folder", isArchive(ins.kind)))) return;
       if (mine !== seq.current) return; // another source meanwhile
       setDeleting(true);
       setError(null);
@@ -147,6 +150,7 @@ export function Inspect(props: {
             error={error}
             ins={ins}
             full
+            onUnlock={() => source && void pick(source)}
             actions={
               ins && (
                 <button
@@ -208,8 +212,10 @@ export function Inspect(props: {
                     ))}
                   </tbody>
                 </table>
-                {files.length === 0 && (
-                  <p className="muted empty-note">{t.noMatch(filter.trim())}</p>
+                {ins.files.length === 0 && ins.archive ? (
+                  <p className="muted empty-note">{t.noListing}</p>
+                ) : (
+                  files.length === 0 && <p className="muted empty-note">{t.noMatch(filter.trim())}</p>
                 )}
                 {ins.empty_dirs.length > 0 && (
                   <>
@@ -266,8 +272,8 @@ function panel(id: View, view: View) {
 }
 
 /**
- * Leftover `.part` files where outputs land (the source's folder, this session's output
- * folders). Listed only, never deleted. Re-checked whenever the tab shows (jobs may have
+ * Leftover `.part`s where outputs land (the source's folder,
+ * this session's output folders). Listed only, never deleted. Re-checked whenever the tab shows (jobs may have
  * ended meanwhile). The card shows only when some were found: nothing while checking, when
  * there are none or nothing to check, or when the check fails.
  */

@@ -1,27 +1,29 @@
 <p align="center"><img src="app/src-tauri/icons/128x128@2x.png" width="128" alt="PS5 Dump Forge"></p>
 
-Runs on everything (including your PS5) and converts everything: **folder**, **exfat**, **ffpfs**, **ffpfsc**, **pkg** and can utilize **LZ4 compression**.
-The interface is in 11 languages: English, Russian, Simplified Chinese, German, Spanish, French, Japanese,
-Brazilian Portuguese, Italian, Korean and Arabic.
+Runs on everything (including your PS5) and converts everything: **folder**, **exfat**, **ffpfs**, **ffpfsc**, **pkg**.
+
+Can utilize LZ4 compression and unpack archives (**zip**/**7zip**/**rar**).
+
+The interface is in **11 languages**.
 
 | Platform | Runs on | You get |
 |---|---|---|
-| **PS5** | Jailbroken, with an ELF loader | The payload (`.elf`); the UI opens in any browser |
+| **PS5** | With an ELF loader | The payload (`.elf`); the UI opens in any browser |
 | **macOS** | 11 or later, Apple Silicon and Intel (one universal zip) | App + CLI |
 | **Windows** | 10 or 11 on x86-64, 11 on arm64 | App + CLI |
 | **Linux** | x86-64 or arm64, glibc 2.35+ (e.g. Ubuntu 22.04+) | App (no install, no FUSE) + CLI |
 
 ## Features
 
-- **Any source to any target**, streamed straight through: no temporary copy, not even the image inside a `.ffpfsc`.
+- **Any source to any target**, streamed straight through: no temporary copy, not even the image inside a `.ffpfsc` or a game in an archive.
+- **Archives as sources**: a `.zip`, `.7z` or `.rar` holding one game is inspected, converted or packed like a folder.
 - **LZ4 compression**, new experimental way to pack ampr_emu enabled games.
 - **Library**, to convert and edit dumps.
 - **Never touches your dump** unless you ask (LZ4 Patch/Unpatch, Inspect's Delete): junk (`.DS_Store`, `._*`, ...) is skipped, not deleted; bad file names are reported up front, never renamed.
 - **Inspect** a dump or image: cover, title, required firmware, backport firmware (`fakelib/`), embedded DLC, `param.json`, leftover `.part` files.
-- **Delete** the inspected dump or image can be easily deleted.
 - **Runs on the PS5 itself**: converts on the console's own storage, driven from its browser or any browser on the network.
 - **Writes onto USB sticks and SD cards** formatted exFAT or FAT32.
-- **Fast**: maybe fastest it can get.
+- **Fast**: (and furious).
 
 ## Formats
 
@@ -31,7 +33,7 @@ installed. Every format can be created and read back (an image or `.fpkg` can be
 | Format | Console speed | Size on disk | Notes |
 |---|---|---|---|
 | `.fpkg` (debug FPKG, saved as `.pkg`) | Native, full speed | 30–60% less, depending on the game | Installs on firmware 11.60 or lower with kstuff + fpkg-enable + ppr-patch. Kraken level (`--kraken`): **Fast** (default), **Balanced** / **Smallest** ≈ 2.6% smaller at ~6× / ~9× the compression time. Reads packages from this builder and compatible debug builders. |
-| `.ffpkg` (UFS2) | Full image speed | Equal to the game size | The default, ShadowMountPlus's recommendation. |
+| `.ffpkg` (UFS2) | Full image speed | Equal to the game size | ShadowMountPlus's recommendation. |
 | `.exfat` (512 B sectors, 64 KiB clusters) | Full image speed | Equal to the game size | For games that only run like external-drive content. |
 | `.ffpfs` (PFS, uncompressed) | Full image speed | Equal to the game size | Experimental in ShadowMountPlus. ASCII file names only. |
 | `.ffpfsc` (compressed PFS container) | may stutter | Depends on the compression level, usually 30–60% less | Experimental, always mounted read-only. exFAT (default), UFS2 or PFS inside. zlib level 0–9 (`--level`), default 6. |
@@ -57,8 +59,7 @@ caveats: [docs/LZ4.md](docs/LZ4.md).
 
 ## Download and run
 
-Every release archive on the Releases page holds the app, the `ps5-dump-forge` command-line tool,
-README.md, LICENSE and THIRD-PARTY-NOTICES.md. Nothing to install; the app writes nothing beyond its own
+Every release archive on the Releases page holds the app and the `ps5-dump-forge` command-line tool. Nothing to install; the app writes nothing beyond its own
 WebView data, so keep it in any folder you can write to.
 
 ### PS5 (jailbroken, with an ELF loader)
@@ -114,6 +115,7 @@ Every desktop archive also has `ps5-dump-forge` (`ps5-dump-forge.exe` on Windows
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to ffpfsc --level 6        # zlib level 0 (store) .. 9 (smallest), default 6
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to pkg --kraken fast       # fast (default) | balanced | smallest
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to exfat --full-verify     # check every byte, not a sample
+./ps5-dump-forge convert Game.part1.rar --to ffpkg --password-stdin     # archive source; password from stdin
 ```
 
 ## Build
