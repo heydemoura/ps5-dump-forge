@@ -21,6 +21,8 @@ pub(crate) struct Table {
 #[derive(Default)]
 struct Entry {
     request: Option<ConvertRequest>,
+    /// `Event::Stages`' list; empty until it comes.
+    stages: Vec<String>,
     progress: Option<Value>,
     done: Option<Value>,
     log: VecDeque<String>,
@@ -29,10 +31,13 @@ struct Entry {
 
 impl Table {
     pub fn record(&mut self, event: &Event) {
-        let (Event::Progress { job, .. } | Event::Log { job, .. } | Event::Done { job, .. }) =
-            event;
+        let (Event::Stages { job, .. }
+        | Event::Progress { job, .. }
+        | Event::Log { job, .. }
+        | Event::Done { job, .. }) = event;
         let entry = self.jobs.entry(*job).or_default();
         match event {
+            Event::Stages { stages, .. } => entry.stages = stages.clone(),
             Event::Progress { .. } => entry.progress = serde_json::to_value(event).ok(),
             Event::Log { line, .. } => {
                 if entry.log.len() == LOG_LINES {
@@ -87,6 +92,7 @@ impl Table {
                 Some(json!({
                     "id": id,
                     "request": e.request.as_ref()?,
+                    "stages": e.stages,
                     "progress": e.progress,
                     "done": e.done,
                     "log": e.log,
@@ -155,6 +161,15 @@ mod tests {
         assert_eq!(snap["log_total"], 250);
         assert_eq!(snap["log"].as_array().unwrap().len(), 200);
         assert_eq!(snap["log"][0], "l50");
+        assert_eq!(snap["stages"], serde_json::json!([])); // until `Stages` comes
+        t.record(&Event::Stages {
+            job: 1,
+            stages: vec!["scan".into(), "write".into()],
+        });
+        assert_eq!(
+            t.snapshot()[0]["stages"],
+            serde_json::json!(["scan", "write"])
+        );
         assert_eq!(t.unfinished(), [(1, PathBuf::from("/o/a.exfat"))]);
         // In place, the `.part` goes beside the source.
         t.admit(

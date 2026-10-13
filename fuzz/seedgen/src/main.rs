@@ -353,8 +353,7 @@ fn lz4_seeds(out: &Path) -> Res<()> {
             ("eboot.bin".to_string(), 100),
         ],
         1_700_000_000,
-    )
-    .ok_or("index")?;
+    )?;
     seed(out, "lz4_index", "three", &index)?;
 
     // Journal: a ReadFile of id 2 (len 100 at 0), then of id 3; the file count leads.

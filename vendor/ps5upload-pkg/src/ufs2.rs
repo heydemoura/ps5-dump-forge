@@ -313,15 +313,6 @@ impl Inode {
     pub fn is_symlink(&self) -> bool {
         self.mode & IFMT == IFLNK
     }
-    /// File-type one-letter tag for UI ("d" / "f" / "l" / "?").
-    pub fn type_tag(&self) -> &'static str {
-        match self.mode & IFMT {
-            IFDIR => "d",
-            IFREG => "f",
-            IFLNK => "l",
-            _ => "?",
-        }
-    }
 }
 
 /// One directory entry (inode + name).

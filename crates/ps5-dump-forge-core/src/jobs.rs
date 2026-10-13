@@ -329,6 +329,14 @@ impl<'a> Ctx<'a> {
         });
     }
 
+    /// Announces the job's stages ([`Event::Stages`]).
+    pub(crate) fn stages(&self, stages: &[&str]) {
+        (self.emit)(Event::Stages {
+            job: self.job,
+            stages: stages.iter().map(|s| s.to_string()).collect(),
+        });
+    }
+
     /// Starts a pass: it and every pass after it move `bytes` in total. Renewed as each
     /// pass learns its size, so progress is one bar for the whole job that ends at 100%.
     /// Plus what [`Ctx::reserve`] holds back, so no pass fills the bar while one is left.

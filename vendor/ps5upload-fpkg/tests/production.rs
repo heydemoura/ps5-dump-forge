@@ -86,5 +86,19 @@ fn a_production_request_ignores_every_environment_override() {
     // 4 MiB of one byte: compressed, not stored, the package is far smaller than the source.
     assert!(report.size < 2 << 20, "{} bytes", report.size);
 
+    // `Level::Stored` stores every block raw with or without the environment's say.
+    let stored_out = root.join("stored");
+    std::fs::create_dir_all(&stored_out).unwrap();
+    let stored = build::build(
+        &BuildRequest {
+            level: Level::Stored,
+            ..BuildRequest::production(&src, &stored_out)
+        },
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(stored.verify.ok(), "{}", stored.verify);
+    assert!(stored.size > 4 << 20, "{} bytes", stored.size);
+
     std::fs::remove_dir_all(&root).ok();
 }

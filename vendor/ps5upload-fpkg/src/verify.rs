@@ -389,8 +389,6 @@ pub fn verify_streaming_controlled(
     verify_file_controlled(PkgFile::open(path)?, passcode, progress, cancel)
 }
 
-/// [`verify_streaming_controlled`] over a package already open, e.g. through the handle it was
-/// just written with, so the bytes checked are that file's whatever its path now names.
 /// Outer blocks the sweep reads per batch (8 MiB).
 const SWEEP_BATCH: u64 = 128;
 
@@ -439,6 +437,8 @@ fn failing_blocks(
     })
 }
 
+/// [`verify_streaming_controlled`] over a package already open, e.g. through the handle it was
+/// just written with, so the bytes checked are that file's whatever its path now names.
 pub fn verify_file_controlled(
     file: PkgFile,
     passcode: &str,

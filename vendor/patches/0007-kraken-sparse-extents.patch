@@ -1,8 +1,8 @@
 diff --git a/ps5upload-fpkg/src/kraken_image.rs b/ps5upload-fpkg/src/kraken_image.rs
-index fe1ed27..c76ecce 100644
+index 300e33b..7c39bbd 100644
 --- a/ps5upload-fpkg/src/kraken_image.rs
 +++ b/ps5upload-fpkg/src/kraken_image.rs
-@@ -429,6 +429,30 @@ fn anchor_record(position: u64) -> u128 {
+@@ -428,6 +428,30 @@ fn anchor_record(position: u64) -> u128 {
  /// The descriptor for `image`, with `fidx` its boundary table: each file's logical start in
  /// afid order, then the data end, the metadata base and the mount size.
  pub fn layout(image: &KrakenImage, file_starts: &[u64]) -> Result<Vec<u8>> {
@@ -33,7 +33,7 @@ index fe1ed27..c76ecce 100644
      // Bit 66 of a record says the next record is an anchor. It is how a reader tells the two
      // apart — nothing in an anchor itself does — so it is set before every anchor, and two
      // anchors never follow each other.
-@@ -546,29 +570,11 @@ pub fn layout(image: &KrakenImage, file_starts: &[u64]) -> Result<Vec<u8>> {
+@@ -545,29 +569,11 @@ pub fn layout(image: &KrakenImage, file_starts: &[u64]) -> Result<Vec<u8>> {
          blob.extend_from_slice(&r.to_le_bytes()[..9]);
      }
      blob.resize(blob.len().next_multiple_of(8), 0);
@@ -65,7 +65,7 @@ index fe1ed27..c76ecce 100644
  #[derive(Debug, Clone, PartialEq, Eq)]
  pub struct DescribedBlock {
      pub logical: u64,
-@@ -586,8 +592,10 @@ pub struct DescribedBlock {
+@@ -585,8 +591,10 @@ pub struct DescribedBlock {
  }
  
  /// Walk a descriptor the way the console does: records in order, anchors moving the stored
@@ -78,7 +78,7 @@ index fe1ed27..c76ecce 100644
  ///
  /// The descriptor is untrusted input (a package being read back, or someone else's): every
  /// count and offset is checked against the blob before it sizes or slices anything, so a
-@@ -611,15 +619,62 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
+@@ -610,15 +618,62 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
      if blob.len() < rec_at + records * 9 {
          return format_err("descriptor shorter than its records");
      }
@@ -144,7 +144,7 @@ index fe1ed27..c76ecce 100644
      let mut out = Vec::new();
      let (mut cursor, mut logical) = (0u64, 0u64);
      let mut next_is_anchor = true; // index 0 is the start anchor
-@@ -645,6 +700,7 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
+@@ -644,6 +699,7 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
              }
              continue;
          }
@@ -152,7 +152,7 @@ index fe1ed27..c76ecce 100644
          if i > 0 && nibble != logical & 0xF {
              return format_err(format!(
                  "record {i}: the exact start's low nibble disagrees (the console would read the \
-@@ -656,8 +712,7 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
+@@ -655,8 +711,7 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
                  "record {i}: a block starts at {logical:#x}, at or past the mount's end {mount:#x}"
              ));
          }
@@ -162,7 +162,7 @@ index fe1ed27..c76ecce 100644
          if (logical % WINDOW) >> 4 != f(0, 14) {
              return format_err(format!("record {i}: logical offset disagrees"));
          }
-@@ -675,6 +730,10 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
+@@ -674,6 +729,10 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
          if end == cursor && even_raw && odd_raw && len > kraken::HALF as u64 {
              end += WINDOW;
          }
@@ -173,7 +173,7 @@ index fe1ed27..c76ecce 100644
          out.push(DescribedBlock {
              logical,
              len,
-@@ -688,6 +747,7 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
+@@ -687,6 +746,7 @@ pub fn describe(blob: &[u8]) -> Result<Vec<DescribedBlock>> {
          cursor = end;
          logical += len;
      }
@@ -181,7 +181,7 @@ index fe1ed27..c76ecce 100644
      if logical != mount {
          return format_err(format!(
              "blocks tile to {logical:#x}, the mount is {mount:#x}"
-@@ -706,6 +766,15 @@ pub fn decode_described(image: &[u8], b: &DescribedBlock) -> Result<Vec<u8>> {
+@@ -705,6 +765,15 @@ pub fn decode_described(image: &[u8], b: &DescribedBlock) -> Result<Vec<u8>> {
              b.len
          ));
      }
@@ -197,7 +197,7 @@ index fe1ed27..c76ecce 100644
      // `describe` never gives a stored span over two windows; a longer one would be copied
      // before the decoder could refuse it.
      if b.stored_len > 2 * WINDOW || b.even_len > b.stored_len {
-@@ -1015,4 +1084,187 @@ mod tests {
+@@ -1014,4 +1083,187 @@ mod tests {
              vec![0u8; 0x100]
          );
      }

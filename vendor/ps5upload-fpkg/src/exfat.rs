@@ -55,7 +55,18 @@ pub struct ExFat {
     fat_offset: u64,
     heap_offset: u64,
     root_cluster: u32,
+    /// The FAT, read whole on the first chained read it is small enough for (see
+    /// [`MAX_CACHED_FAT_BYTES`]); `None` before that, or when it is too big to hold.
+    fat: Option<Vec<u32>>,
+    /// Where the last read of a chained stream stopped: its first cluster, the cluster index
+    /// it reached and that cluster. A read that continues the stream starts there rather than
+    /// walking the chain from the start again, which made reading a big file quadratic.
+    cursor: Option<(u32, u64, u32)>,
 }
+
+/// A FAT bigger than this is read one slot at a time: 512 MiB holds 128 Mi clusters, 8 TiB of
+/// 64 KiB clusters.
+const MAX_CACHED_FAT_BYTES: u64 = 512 << 20;
 
 impl ExFat {
     pub fn open(path: &Path) -> Result<Self> {
@@ -115,6 +126,8 @@ impl ExFat {
             fat_offset,
             heap_offset,
             root_cluster,
+            fat: None,
+            cursor: None,
         };
         this.check_cluster(root_cluster)?;
         Ok(this)
@@ -246,7 +259,9 @@ impl ExFat {
         Ok(next)
     }
 
-    /// `len` bytes at `offset` of a stream, contiguous or FAT-chained.
+    /// `len` bytes at `offset` of a stream, contiguous or FAT-chained. Consecutive clusters
+    /// are read in one call, so a file laid out contiguously (every one our writer makes,
+    /// chained or not) comes back in reads as large as the caller asks for.
     fn read_stream(
         &mut self,
         first: u32,
@@ -258,61 +273,89 @@ impl ExFat {
         let cluster_size = self.geom.cluster_size;
         let skip_clusters = offset / cluster_size;
         let mut skip = (offset % cluster_size) as usize;
-        let mut cluster = first;
+        let mut cluster = self.cluster_at(first, no_fat_chain, path, skip_clusters)?;
+        let mut index = skip_clusters;
+        let mut out = Vec::with_capacity(len);
+        while out.len() < len {
+            // How many clusters from here on are consecutive, up to what is still wanted.
+            let want = len - out.len();
+            let max_run = (want as u64 + skip as u64).div_ceil(cluster_size).max(1);
+            let run = if no_fat_chain {
+                let last = u64::from(cluster) + max_run - 1;
+                let last = u32::try_from(last.min(u64::from(u32::MAX)))
+                    .map_err(|_| crate::Error::Format(format!("{path} runs off the volume")))?;
+                self.check_cluster(last)?;
+                max_run
+            } else {
+                self.chain_run(cluster, max_run)?
+            };
+            let at = self.cluster_offset(cluster)? + skip as u64;
+            let avail = run * cluster_size - skip as u64;
+            let take = (want as u64).min(avail) as usize;
+            out.extend_from_slice(&self.file.read_at(at, take)?);
+            skip = 0;
+            let last = cluster + (run as u32 - 1);
+            index += run;
+            if out.len() < len {
+                cluster = if no_fat_chain {
+                    let next = last + 1;
+                    self.check_cluster(next)?;
+                    next
+                } else {
+                    self.next_cluster(last)?.ok_or_else(|| early_end(path))?
+                };
+            } else if !no_fat_chain {
+                // The next read of this stream most likely continues at `index`.
+                if take as u64 == avail {
+                    match self.next_cluster(last)? {
+                        Some(next) => self.cursor = Some((first, index, next)),
+                        None => self.cursor = None,
+                    }
+                } else {
+                    self.cursor = Some((first, index - 1, last));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The cluster holding cluster index `n` of a stream.
+    fn cluster_at(&mut self, first: u32, no_fat_chain: bool, path: &str, n: u64) -> Result<u32> {
         if no_fat_chain {
-            let index = u32::try_from(skip_clusters)
+            let index = u32::try_from(n)
                 .map_err(|_| crate::Error::Format(format!("{path} is too large")))?;
-            cluster = first
+            let cluster = first
                 .checked_add(index)
                 .ok_or_else(|| crate::Error::Format(format!("{path} runs off the volume")))?;
             self.check_cluster(cluster)?;
-        } else {
-            for _ in 0..skip_clusters {
-                cluster = self.next_cluster(cluster)?.ok_or_else(|| early_end(path))?;
-            }
+            return Ok(cluster);
         }
-        let mut out = Vec::with_capacity(len);
-        loop {
-            let at = self.cluster_offset(cluster)? + skip as u64;
-            // Clusters that follow each other on disk are read as one run (a contiguous
-            // stream always does); each is still checked before it is read.
-            let mut span = cluster_size as usize - skip;
-            let mut last = cluster;
-            let mut jump = None;
-            while out.len() + span < len {
-                let next = self.following(last, no_fat_chain, path)?;
-                if Some(next) != last.checked_add(1) {
-                    jump = Some(next);
-                    break;
-                }
-                last = next;
-                span += cluster_size as usize;
-            }
-            let want = (len - out.len()).min(span);
-            out.extend_from_slice(&self.file.read_at(at, want)?);
-            skip = 0;
-            if out.len() >= len {
-                return Ok(out);
-            }
-            cluster = match jump {
-                Some(next) => next,
-                None => self.following(last, no_fat_chain, path)?,
-            };
+        let (mut index, mut cluster) = match self.cursor {
+            Some((f, i, c)) if f == first && i <= n => (i, c),
+            _ => (0, first),
+        };
+        while index < n {
+            cluster = self.next_cluster(cluster)?.ok_or_else(|| early_end(path))?;
+            index += 1;
         }
+        Ok(cluster)
     }
 
-    /// The cluster after `cluster` in a file: the next number in a contiguous stream; only a
-    /// chained one consults the FAT, which on these images is not maintained.
-    fn following(&mut self, cluster: u32, no_fat_chain: bool, path: &str) -> Result<u32> {
-        if no_fat_chain {
-            let next = cluster
-                .checked_add(1)
-                .ok_or_else(|| crate::Error::Format(format!("{path} runs off the volume")))?;
-            self.check_cluster(next)?;
-            Ok(next)
-        } else {
-            self.next_cluster(cluster)?.ok_or_else(|| early_end(path))
+    /// How many clusters starting at `cluster` the chain keeps consecutive, at most `max`
+    /// (at least 1: `cluster` itself).
+    fn chain_run(&mut self, cluster: u32, max: u64) -> Result<u64> {
+        let mut run = 1u64;
+        let mut at = cluster;
+        while run < max {
+            match self.fat_link(at)? {
+                FatLink::Next(next) if next == at + 1 => {
+                    run += 1;
+                    at = next;
+                }
+                _ => break,
+            }
         }
+        Ok(run)
     }
 
     fn check_cluster(&self, cluster: u32) -> Result<()> {
@@ -339,15 +382,40 @@ impl ExFat {
     /// terminator, `Unmaintained` a slot the image never filled in (zero, or a pointer
     /// outside the heap). Only the caller's context can tell whether the last two differ.
     fn fat_link(&mut self, cluster: u32) -> Result<FatLink> {
-        let at = self.fat_offset + 4 * u64::from(cluster);
-        let raw = self.file.read_at(at, 4)?;
-        let next = u32::from_le_bytes(raw.try_into().unwrap());
+        let next = match self.fat_slots()? {
+            Some(fat) => fat.get(cluster as usize).copied().unwrap_or(0),
+            None => {
+                let at = self.fat_offset + 4 * u64::from(cluster);
+                let raw = self.file.read_at(at, 4)?;
+                u32::from_le_bytes(raw.try_into().unwrap())
+            }
+        };
         Ok(match next {
             n if (2..self.geom.cluster_count + 2).contains(&n) && n < FAT_EOC => FatLink::Next(n),
             0 | 1 => FatLink::Unmaintained,
             n if n >= FAT_EOC => FatLink::End,
             _ => FatLink::Unmaintained,
         })
+    }
+
+    /// The whole FAT, read on first use; `None` when it is too big to hold.
+    fn fat_slots(&mut self) -> Result<Option<&[u32]>> {
+        if self.fat.is_none() {
+            let slots = u64::from(self.geom.cluster_count) + 2;
+            let bytes = slots * 4;
+            if bytes > MAX_CACHED_FAT_BYTES || self.fat_offset + bytes > self.file.len() {
+                return Ok(None);
+            }
+            let raw = self.file.read_at(self.fat_offset, bytes as usize)?;
+            self.fat = Some(
+                raw.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| u32::from_le_bytes(*c))
+                    .collect(),
+            );
+        }
+        Ok(self.fat.as_deref())
     }
 
     /// The next cluster of a chained stream, or `None` at its end. A slot the image never
@@ -827,6 +895,23 @@ mod tests {
         assert_eq!(data.len(), 8192);
         assert!(data[..4096].iter().all(|b| *b == 0x55));
         assert!(data[4096..].iter().all(|b| *b == 0x77));
+
+        // Any sequence of ranged reads gives the same bytes, forward (the cursor continues
+        // the chain), backwards (the cursor is dropped), and across the seam where the
+        // chain is not contiguous.
+        for piece in [1usize, 7, 100, 4090, 4096, 5000, 8192] {
+            for f in [&big, &chain] {
+                let whole = volume.read_file(f, 0, usize::MAX).unwrap();
+                let mut got = Vec::new();
+                while got.len() < whole.len() {
+                    got.extend(volume.read_file(f, got.len() as u64, piece).unwrap());
+                }
+                assert_eq!(got, whole, "{} in pieces of {piece}", f.path);
+                assert_eq!(volume.read_file(f, 3, 10).unwrap(), &whole[3..13]);
+                assert_eq!(volume.read_file(f, 4094, 4).unwrap(), &whole[4094..4098]);
+            }
+        }
+        assert!(volume.read_file(&chain, 8192, 1).unwrap().is_empty());
 
         std::fs::remove_file(&path).ok();
     }

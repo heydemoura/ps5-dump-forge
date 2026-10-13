@@ -46,6 +46,7 @@ impl AppState {
             let outputs = self.outputs.clone();
             Jobs::new(move |event| {
                 let name = match &event {
+                    Event::Stages { .. } => "job://stages",
                     Event::Progress { .. } => "job://progress",
                     Event::Log { .. } => "job://log",
                     Event::Done { job, result } => {

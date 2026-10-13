@@ -17,7 +17,8 @@ gradient notice bar) and the app icon (near-black navy with a blue edge and an o
 - **Contrast.** Text is at least 4.5:1 on its ground, the hero glow and the alert bar included. The
   CSS comments give the measured ratio wherever a pair is tight.
 - **Fits the window.** Default 1200×820, minimum 900×620 (`main.rs`); the web build down to 360px
-  wide. No horizontal page scroll; long lists scroll inside their own box.
+  wide. No horizontal page scroll; long lists scroll inside their own box, except the job list,
+  which grows with the page.
 - **Offline and CSP-safe.** System fonts, inline SVG icons, the logo bundled by Vite; no remote assets,
   no injected `<style>`. The only inline styles are CSS variables set through React's `style` (CSSOM).
 
@@ -98,8 +99,8 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   - Format picker: the selected segment fills with its format tint and ring, bold; unselected segments
     are plain muted text. Segments are sized by their labels, then share the spare width.
   - Smaller pickers of the same kind (`.seg.formats.inner`): the image inside an ffpfsc (shown only for
-    that target) and the fpkg Compression picker (Fast / Balanced / Smallest, 15px bolt, scale and
-    compress icons, the fpkg tint), each with one line under it on what the choice costs.
+    that target) and the fpkg Compression picker (Fast / Balanced / Smallest / Stored, 15px bolt, scale,
+    compress and file icons, the fpkg tint), each with one line under it on what the choice costs.
   - The ffpfsc Compression level is a native range (`.range`, `accent-color`, 0–9, default 6) with its
     value in the label row (`.range-value`, tabular).
 - **Card** (`.card`, no border: `--card` on `--page` plus a shadow; `.card-head` = 18px icon, 18px
@@ -190,9 +191,18 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
 - **Folds** (`details.fold`): DLC, backport files, emulators in fakelib, job logs, verified checks,
   folders checked. Collapsed by default; a list inside that can grow is a scrollable, focusable box.
 - **Job list** (`JobList.tsx`, `.card.jobs`): one card under the other cards on Convert and LZ4, newest
-  first; it fills the rest of the window and scrolls inside itself. A row (`.job`): format tag, name,
-  `from` path, progress bar (`progress`, blue gradient; it never goes back and stays under 100% until
-  the job succeeds), status tag, meta line (% · speed · time left). An LZ4 tab job (`.job.lz4`) has a
+  first; it fills the rest of the window when short and grows with its rows (the page scrolls, never
+  a box inside it). A row (`.job`): format tag, name,
+  `from` path, progress bar (`progress` in a `.bar` wrapper, blue gradient; it never goes back and stays
+  under 100% until the job succeeds; a sheen while the job runs, see Motion), status tag (no dots),
+  meta line (% · speed · time left, the last two only in a pass that streams the game's bytes: compress, write, measure, pack, verify; then "0:42 in this step" once a stage has run 10 s; m:ss, h:mm:ss
+  past an hour; the timer alone for a stage without a total), and the step row (`ol.steps`, under the
+  bar; under the status line while the job waits without one): every stage core said the job will run,
+  in order, short labels (`jobs.steps`), neighbours with one label merged (preflight and check are one
+  Checking), "›" between them (mirrored in RTL), wrapping, 12.5px. Done steps: a small green check and
+  `--fg-2`; the current one: `--accent-ink`, 600, `aria-current="step"`; later ones `--muted`. Screen
+  readers hear "done" / "not started yet" (visually hidden). No row until the stages are known, none once
+  the job has ended; no motion of its own. An LZ4 tab job (`.job.lz4`) has a
   yellow left edge and a `.tag.lz4` (LZ4 pack, unpack, trace, unpatch); Convert's runtime job a plain
   `.tag` "AMPR runtime". Finished: Show in Finder (Explorer on Windows, folder on Linux), the error box,
   or "Fast (Full) verification passed: N checks".
@@ -303,8 +313,13 @@ spots). Add a path there rather than importing an icon set.
 ## Motion
 
 Only short fades and transforms: the hero glow (0.5s), the switch and fold chevrons (0.15s), the
-spinners, and the dots after a waiting text (`Dots`, `.dots`: ".", "..", "..." in turn over 1.2s; a job row's
-status while its stage has not moved the bar, "Reading the source", "Scanning", the picker's "Loading"). `prefers-reduced-motion: reduce` turns all of them off. Straps are static.
+spinners, the dots after a waiting text (`Dots`, `.dots`: ".", "..", "..." in turn over 1.2s; Inspect's
+"Reading the source", the Library's "Scanning", the picker's "Loading"), and a job bar's sheen (`.bar
+.sheen`: the whole time a job runs, since many stages move the bar little or in steps and a
+stall-only sheen flickered, a soft
+blue-white band sweeps the filled part every 1.6s, ease-in-out, by `transform` only on an overlay as wide
+as the fill (`--p`), since old WebKit animates nothing inside `<progress>`; under 2% fill it crosses the
+whole track at 60%). `prefers-reduced-motion: reduce` turns all of them off. Straps are static.
 
 ## Copy
 

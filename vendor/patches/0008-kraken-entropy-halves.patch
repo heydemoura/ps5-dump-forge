@@ -1,5 +1,5 @@
 diff --git a/ps5upload-fpkg/src/kraken.rs b/ps5upload-fpkg/src/kraken.rs
-index 3d7d78c..3ed7b96 100644
+index 0a06b7c..6016505 100644
 --- a/ps5upload-fpkg/src/kraken.rs
 +++ b/ps5upload-fpkg/src/kraken.rs
 @@ -2,8 +2,8 @@
@@ -25,7 +25,7 @@ index 3d7d78c..3ed7b96 100644
  
  mod huff;
  
-@@ -1183,6 +1184,9 @@ fn decode_half(src: &[u8], out: &mut [u8], at: usize, len: usize, delta: bool) -
+@@ -1189,6 +1190,9 @@ fn decode_half(src: &[u8], out: &mut [u8], at: usize, len: usize, delta: bool) -
              eb.get_length()?
          });
      }
@@ -35,7 +35,7 @@ index 3d7d78c..3ed7b96 100644
      let mut esc = esc.into_iter();
      let mut lens = lens.iter().map(|&v| -> Result<usize> {
          Ok(3 + if v == 255 {
-@@ -1253,6 +1257,15 @@ fn decode_half(src: &[u8], out: &mut [u8], at: usize, len: usize, delta: bool) -
+@@ -1259,6 +1263,15 @@ fn decode_half(src: &[u8], out: &mut [u8], at: usize, len: usize, delta: bool) -
      Ok(())
  }
  
@@ -84,10 +84,10 @@ index be72096..b39e694 100644
          let body = encode(data)?;
          assert_eq!(decode(&body, data.len()).unwrap(), data);
 diff --git a/ps5upload-fpkg/src/kraken_image.rs b/ps5upload-fpkg/src/kraken_image.rs
-index c76ecce..58c9786 100644
+index 7c39bbd..41ae2df 100644
 --- a/ps5upload-fpkg/src/kraken_image.rs
 +++ b/ps5upload-fpkg/src/kraken_image.rs
-@@ -586,8 +586,8 @@ pub struct DescribedBlock {
+@@ -585,8 +585,8 @@ pub struct DescribedBlock {
      pub odd_lz: bool,
      /// The record's mode bits 32..=36, as stored: 32 and 35 mark delta literals (literal mode 0)
      /// in the even and odd halves, 33 and 36 mark LZ halves, 34 is `odd_reset` (the odd half restarts the decoder;
@@ -98,7 +98,7 @@ index c76ecce..58c9786 100644
      pub mode_bits: u8,
  }
  
-@@ -792,25 +792,31 @@ pub fn decode_described(image: &[u8], b: &DescribedBlock) -> Result<Vec<u8>> {
+@@ -791,25 +791,31 @@ pub fn decode_described(image: &[u8], b: &DescribedBlock) -> Result<Vec<u8>> {
      let even_logical = b.len.min(kraken::HALF as u64);
      let mut halves = Vec::new();
      let (e, o) = src.split_at((b.even_len as usize).min(src.len()));
@@ -146,7 +146,7 @@ index c76ecce..58c9786 100644
      }
      kraken::decode_block(&halves, b.len as usize)
  }
-@@ -1267,4 +1273,67 @@ mod tests {
+@@ -1266,4 +1272,67 @@ mod tests {
              "{e:?}"
          );
      }

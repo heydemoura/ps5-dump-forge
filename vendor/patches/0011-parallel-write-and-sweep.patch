@@ -54,7 +54,7 @@ index b2debf8..798df5a 100644
  mod tests {
      use super::*;
 diff --git a/ps5upload-fpkg/src/stream.rs b/ps5upload-fpkg/src/stream.rs
-index 7946741..3e81c1d 100644
+index fc1f362..079e90c 100644
 --- a/ps5upload-fpkg/src/stream.rs
 +++ b/ps5upload-fpkg/src/stream.rs
 @@ -10,7 +10,7 @@
@@ -66,7 +66,7 @@ index 7946741..3e81c1d 100644
  use std::sync::atomic::{AtomicBool, Ordering};
  
  use crate::cnt_write::{self, CntParams};
-@@ -177,6 +177,48 @@ pub(crate) fn compression_threads(cap: Option<usize>) -> usize {
+@@ -181,6 +181,48 @@ pub(crate) fn compression_threads(cap: Option<usize>) -> usize {
      }
  }
  
@@ -115,7 +115,7 @@ index 7946741..3e81c1d 100644
  fn cancelled() -> crate::Error {
      crate::Error::Cancelled
  }
-@@ -292,32 +334,54 @@ pub fn write_package(
+@@ -295,32 +337,54 @@ pub fn write_package(
      let mut file_digests = FileDigester::new(files.len());
      let mut block = vec![0u8; BLOCK as usize];
      let mut spans: Vec<(usize, usize, usize)> = Vec::with_capacity(8);
@@ -188,13 +188,13 @@ index 7946741..3e81c1d 100644
              // Bytes of the outer image, the same measure the verifier reports.
              (progress.bytes)(((index + 1) * BLOCK).min(outer_size), outer_size);
 diff --git a/ps5upload-fpkg/src/verify.rs b/ps5upload-fpkg/src/verify.rs
-index 580ca03..52dd2e2 100644
+index 580ca03..664bb2d 100644
 --- a/ps5upload-fpkg/src/verify.rs
 +++ b/ps5upload-fpkg/src/verify.rs
-@@ -391,6 +391,54 @@ pub fn verify_streaming_controlled(
+@@ -389,6 +389,54 @@ pub fn verify_streaming_controlled(
+     verify_file_controlled(PkgFile::open(path)?, passcode, progress, cancel)
+ }
  
- /// [`verify_streaming_controlled`] over a package already open, e.g. through the handle it was
- /// just written with, so the bytes checked are that file's whatever its path now names.
 +/// Outer blocks the sweep reads per batch (8 MiB).
 +const SWEEP_BATCH: u64 = 128;
 +
@@ -243,9 +243,9 @@ index 580ca03..52dd2e2 100644
 +    })
 +}
 +
+ /// [`verify_streaming_controlled`] over a package already open, e.g. through the handle it was
+ /// just written with, so the bytes checked are that file's whatever its path now names.
  pub fn verify_file_controlled(
-     mut file: PkgFile,
-     passcode: &str,
 @@ -494,35 +542,16 @@ pub fn verify_file_controlled(
  
      // The sweep: every data block must reach the digest `imagedigs` carries — by decryption in

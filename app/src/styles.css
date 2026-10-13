@@ -633,23 +633,19 @@ ul.findings li.info .icon { color: var(--accent-ink); }
 .field-error { margin: 6px 0 0; margin-inline-start: 14px; font-size: 12px; }
 
 /* ---------- Jobs ---------- */
-/* Jobs: one card below the other cards, full width, a row per job (newest first). It grows to
-   fill the rest of the window (see .screen.with-jobs) and scrolls inside .job-list once the
-   list is taller than that, never below min-height. The 0px basis keeps the list's own height
-   out of the screen's size (`auto` grows the card to the whole list and the page scrolls
-   instead; `flex: 1`'s 0% basis acts like `auto` against the screen's indefinite height). */
+/* Jobs: one card below the other cards, full width, a row per job (newest first). It fills the
+   rest of the window when short (see .screen.with-jobs) and grows with its rows: the page
+   scrolls, never a box inside it (a nested scroll traps the wheel and the PS5's cursor). */
 .card.jobs {
-  display: flex; flex-direction: column; flex: 1 1 0px; min-height: 240px;
+  display: flex; flex-direction: column; flex: 1 1 auto; min-height: 240px;
   padding: 12px 20px 4px;
 }
 .card.jobs .card-head { margin-bottom: 2px; flex: none; }
-/* Positioned, so the rows' absolutely positioned bits (.visually-hidden) are clipped by this
-   scroll box too; otherwise those from hidden rows stretch the page below the window. */
-.job-list { flex: 1; min-height: 0; overflow: auto; position: relative; }
+/* Positioned, so the rows' absolutely positioned bits (.visually-hidden) stay inside it. */
+.job-list { flex: 1; position: relative; }
 .head-note { font-size: 12.5px; }
-/* A new job scrolls into .job-list, not the page (that box always scrolls internally), so no
-   sticky-header offset is needed here, unlike a page-level scroll target. */
-.job { padding: 8px 0 14px; scroll-margin: 12px 0; }
+/* A new job scrolls the page to itself: clear of the sticky header. */
+.job { padding: 8px 0 14px; scroll-margin: calc(var(--top) + 12px) 0 12px; }
 .job + .job { border-top: 1px solid var(--line); }
 /* An LZ4 tab job (pack, unpack, trace, unpatch): a yellow edge and its LZ4 tag. */
 .job.lz4 { padding-inline-start: 12px; box-shadow: inset 3px 0 0 var(--lz4-line); }
@@ -659,9 +655,40 @@ ul.findings li.info .icon { color: var(--accent-ink); }
 .job-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .job-name strong { font-size: 13.5px; font-weight: 600; line-height: 1.35; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .job-name .pathline { font-size: 11.5px; }
-.job progress { margin-top: 10px; }
+/* The bar's wrapper. While the job runs, a soft light band sweeps its filled
+   part: `.sheen` is as wide as the fill (--p) and clips the band, which moves by transform only
+   (old WebKit animates nothing inside <progress>). Under 2% fill (`.track`) the band crosses the
+   whole track, fainter over the dark track. */
+.bar { position: relative; margin-top: 10px; }
+.bar .sheen {
+  position: absolute; top: 0; bottom: 0; left: 0; width: calc(var(--p, 0) * 100%);
+  border-radius: 999px; overflow: hidden; pointer-events: none;
+  -webkit-mask-image: -webkit-radial-gradient(white, black); /* old WebKit: clip the moving band */
+}
+[dir="rtl"] .bar .sheen { left: auto; right: 0; }
+.bar .sheen.track { width: 100%; }
+.bar .sheen.track::after { opacity: 0.6; }
+.bar .sheen::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 100%;
+  background: linear-gradient(90deg, rgba(214, 226, 255, 0) 20%, rgba(214, 226, 255, 0.34) 50%, rgba(214, 226, 255, 0) 80%);
+  transform: translateX(-100%);
+  animation: sheen 1.6s ease-in-out infinite;
+}
+[dir="rtl"] .bar .sheen::after { animation-direction: reverse; }
+@keyframes sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 .job-status { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font-size: 12.5px; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .job-status .path { color: var(--fg-2); }
+/* The job's steps (`ol.steps`): done ones with a green check, the current one in accent ink, the
+   rest muted; "›" between them (a mirrored glyph, so it points the other way in RTL). Wraps. */
+ol.steps {
+  list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px 6px;
+  font-size: 12.5px; line-height: 1.45; color: var(--muted);
+}
+ol.steps li { display: inline-flex; align-items: center; gap: 6px; }
+ol.steps li.done { color: var(--fg-2); }
+ol.steps li.now { color: var(--accent-ink); font-weight: 600; }
+ol.steps .sep { color: var(--muted); font-weight: 400; }
+ol.steps .icon { width: 13px; height: 13px; color: var(--good); margin-inline-end: -2px; }
 progress {
   display: block; width: 100%; height: 8px; border: 0; border-radius: 999px;
   -webkit-appearance: none; appearance: none; background: #262633; overflow: hidden;

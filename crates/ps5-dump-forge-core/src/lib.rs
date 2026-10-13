@@ -94,8 +94,8 @@ pub enum Lz4Mode {
 }
 
 /// How hard a `.pkg` build compresses its image: the encoder's `kraken::Level`, named the same,
-/// but `Fast` by default. The console reads every level the same way; a slower one makes a
-/// slightly smaller package with every core busy for longer.
+/// but `Fast` by default. The console reads every compressed level the same way; a slower one
+/// makes a slightly smaller package with every core busy for longer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KrakenLevel {
@@ -107,6 +107,9 @@ pub enum KrakenLevel {
     /// An optimal parse with deeper searches priced three times: ~9x slower than `Fast`
     /// (38 MB/s, 35.7%).
     Smallest,
+    /// No compression: every block stored raw in the same layout. The fallback for a console
+    /// that refuses to start a compressed package (compression is proven on FW 5.10 only).
+    Stored,
 }
 
 /// An archive's password. `Debug` prints `<redacted>` and [`ConvertRequest`] never serializes
@@ -216,10 +219,16 @@ fn default_ffpfsc_level() -> u32 {
 pub type JobId = u64;
 
 /// What a running job tells its owner. Serialized as `{"kind": "...", ...}`; the app emits
-/// these as `job://progress`, `job://log` and `job://done`.
+/// these as `job://stages`, `job://progress`, `job://log` and `job://done`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Event {
+    /// Once, first: every `Progress` stage the job will report, in the order it reports them.
+    /// A job that fails stops part way through the list.
+    Stages {
+        job: JobId,
+        stages: Vec<String>,
+    },
     Progress {
         job: JobId,
         /// `extract` (an archive source, first), `scan`, `preflight`, `measure` (LZ4 into an

@@ -55,7 +55,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   replaces `transport-tauri.tsx`, `Picker.tsx` the native dialogs, `main-http.tsx` runs `launcher.ts`
   (start the payload via elfldr) and `appcache.ts` first.
   `app/scripts/*.mjs`: plain-node checks (`check-paths`, `check-poller`, `check-launcher`, `smoke`).
-- `vendor/ps5upload-{fpkg,pkg}`: ps5upload v6.1.2 crates (readers, FPKG builder, verify) plus a
+- `vendor/ps5upload-{fpkg,pkg}`: ps5upload v7.0.22 crates (readers, FPKG builder, verify) plus a
   local patch series in `vendor/patches/`; see `vendor/README.md`. Edition 2021 on purpose.
 - `scripts/`: checks and releases (see Commands); `check-versions.sh` also matches the tag on a tag build.
   `fuzz/`: cargo-fuzz targets, its own workspace.
@@ -242,6 +242,9 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   in PFS) fail preflight with every offender listed.
 - `.pkg` is built with `BuildRequest::production` only (plaintext `PPRPLAIN-NOAUTH!`, Kraken);
   installing needs kstuff + fpkg-enable + ppr-patch. Debug keys are embedded.
+  The builder writes a fresh `ampr_emu.index` from the packaged files (a libSceAmpr title or a source
+  with one; a stale index crashes the game; a case clash refuses), except for an LZ4-packed source, whose
+  own index is kept byte for byte (the runtime checks each record against the pack manifest by file id).
 - The UI names formats without the dot (`ffpkg`, `exfat`, `ffpfs`, `ffpfsc`, `fpkg`; `KIND_LABEL` in
   `common.tsx`), and in running text in bold (`Prose`); paths and file names keep the extension. The debug
   FPKG is labelled `fpkg`; its files, the `Format`/`Kind` id and the CLI flag stay `pkg`. Format copy and
@@ -278,18 +281,22 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   fpkg (`.pkg`), exfat for a `.pkg` source (by user decision; picker order Folder, fpkg, exfat, ffpfsc, ffpkg,
   ffpfs), exFAT inside a `.ffpfsc` at zlib
   level 6, all cores for compression (`serve`: cores − 1), `.pkg` Kraken level `fast` (also `balanced`,
-  `smallest`; tests use `fast` only), no extra free space beyond each format's built-in spare, output next
+  `smallest`, and `stored`: every block raw, the fallback for a console that won't start a compressed
+  package; tests use `fast` only), no extra free space beyond each format's built-in spare, output next
   to the source (an empty output `dir` is the source's folder, never the process's working directory).
 - Progress is one bar per job: `Event::Progress` `done`/`total` span every pass (write, verify,
   ...); `Ctx::expect_rest` renews the estimate as each pass learns its size. No pass fills the bar while
   another is left: LZ4 measuring and auto-loose sampling count the write and check passes after them,
   and `Ctx::reserve` holds back a packed image's check through its packs while it is checked as written.
-  The UI keeps the bar under 100% until `Done` is `Ok`.
+  The UI keeps the bar under 100% until `Done` is `Ok`. Each job first emits `Event::Stages`
+  (`{"kind":"stages","job":N,"stages":[...]}`, from `convert::stages(req)`: the `Progress` stage ids
+  in order; Tauri `job://stages`, server `GET /api/jobs` `jobs[].stages`, `[]` until known); core's
+  test helper `run` holds every job to it (reported stages only move forward through the list).
 - The Tauri app has no HTTP sidecar and no `tauri-plugin-fs`; the capability grants only the app's
   commands, dialogs and event listening. The web UI is a separate build served by `serve`.
 - Verification: fast by default everywhere (every structural check + seeded BLAKE3 sample of 8 MiB
   slices), full is opt-in (`full_verify`, `--full-verify`, the "Full verification" switch). A fast `.pkg`
-  also samples the builder's own block sweep and `playgo-chunk.crc` check (vendor patch 0021, the job's seed).
+  also samples the builder's own block sweep and `playgo-chunk.crc` check (vendor patch 0012, the job's seed).
 - PS5 payload: one plain `.elf`, no PKG, no signing, no updates (replace the file). FreeBSD 11 ABI via
   `--cfg libc_unstable_freebsd_version="11"` (the env var is ignored by libc ≥ 0.2.187) and struct-size
   asserts in the CLI. `panic=abort`.

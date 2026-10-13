@@ -47,13 +47,11 @@ pub struct StreamRequest<'a> {
     /// Compress the inner image with Kraken (see [`crate::kraken_image`]), spooling it where
     /// this says. `None` stores it uncompressed.
     pub kraken_spool: Option<KrakenSpool>,
-    /// How hard the Kraken encoder works on a compressed image.
+    /// How hard the Kraken encoder works on a compressed image; `Stored` keeps every block raw.
     pub level: crate::kraken::Level,
     /// Threads compressing the image; `None` or `Some(0)` is every core, and no cap goes past
     /// the core count.
     pub threads: Option<usize>,
-    /// Store a compressed image's blocks raw instead (see [`crate::kraken_image::store_only`]).
-    pub kraken_store: bool,
     /// The container's DRM type (see [`crate::cnt_write::LICENSED_DRM_TYPE`]).
     pub drm_type: u32,
     /// How the inner image's metadata region is stored.
@@ -156,7 +154,13 @@ pub enum KrakenSpool {
 fn spool_file(out: &File, spool: &KrakenSpool) -> Result<File> {
     Ok(match spool {
         KrakenSpool::InPlace => out.try_clone()?,
-        KrakenSpool::File(path) => File::create(path)?,
+        // Never truncate a spool another build is writing.
+        KrakenSpool::File(path) => std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| crate::Error::Format(format!("{}: {e}", path.display())))?,
     })
 }
 
@@ -265,7 +269,6 @@ pub fn write_package(
                 spool_base(where_to),
                 threads,
                 request.level,
-                request.kraken_store,
                 cancel,
                 &mut |done, total| (progress.bytes)(done, total),
             )?;
@@ -511,9 +514,9 @@ pub fn write_package(
         cnt_offset,
         seed: request.seed,
         passcode: request.passcode,
-        content_type: cnt_write::content_class(&request.param_json).0,
+        content_type: cnt_write::content_class(&request.param_json, plan.has_eboot()).0,
         drm_type: request.drm_type,
-        content_flags: cnt_write::content_class(&request.param_json).1,
+        content_flags: cnt_write::content_class(&request.param_json, plan.has_eboot()).1,
         inner_size,
     })?;
     out.seek(SeekFrom::Start(cnt_offset))?;
@@ -557,7 +560,7 @@ pub fn write_package(
     let manifest = pfsimage::build(&pfsimage::ManifestParams {
         facts: &cnt.facts,
         content_id: request.content_id,
-        content_type: cnt_write::content_class(&request.param_json).0,
+        content_type: cnt_write::content_class(&request.param_json, plan.has_eboot()).0,
         param_json: &request.param_json,
         content_version: request.content_version,
         cnt_offset,

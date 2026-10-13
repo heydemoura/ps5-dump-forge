@@ -62,7 +62,8 @@ fn request(source: &Path, format: Format, output: &Path) -> ConvertRequest {
     }
 }
 
-/// Runs one job to completion; returns its events and result.
+/// Runs one job to completion; returns its events and result. Every job's stage list is
+/// checked against what it reports ([`announced_stages`]).
 fn run(req: ConvertRequest) -> (Vec<Event>, Result<JobReport, String>) {
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
@@ -76,10 +77,42 @@ fn run(req: ConvertRequest) -> (Vec<Event>, Result<JobReport, String>) {
         if let Event::Done { result, .. } = &event {
             let result = result.clone();
             events.push(event);
+            announced_stages(&events);
             return (events, result);
         }
         events.push(event);
     }
+}
+
+/// The one `Stages` event comes first and lists every `Progress` stage, which only ever moves
+/// forward through it (a failed job stops part way). Returns the list.
+fn announced_stages(events: &[Event]) -> Vec<String> {
+    let lists: Vec<&Vec<String>> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Stages { stages, .. } => Some(stages),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lists.len(), 1, "one Stages event: {events:?}");
+    assert!(matches!(events[0], Event::Stages { .. }), "Stages first");
+    let list = lists[0];
+    let line = serde_json::to_string(&events[0]).unwrap();
+    assert!(line.starts_with(r#"{"kind":"stages","job":"#), "{line}");
+    let mut at = 0;
+    for e in events {
+        if let Event::Progress { stage, .. } = e {
+            let i = list.iter().position(|s| s == stage);
+            let i = i.unwrap_or_else(|| panic!("{stage} is not in {list:?}"));
+            assert!(i >= at, "{stage} after {} in {list:?}", list[at]);
+            at = i;
+        }
+    }
+    // A job that finishes reports every stage it announced.
+    if let Some(Event::Done { result: Ok(_), .. }) = events.last() {
+        assert_eq!(&stages(events), list, "reported vs announced");
+    }
+    list.clone()
 }
 
 fn tree_bytes(root: &Path) -> Vec<(String, Vec<u8>)> {
@@ -340,6 +373,34 @@ fn stages(events: &[Event]) -> Vec<&str> {
     out
 }
 
+/// A game of many tiny files: the builder's per-file passes (check, plan) take a small share
+/// of the bar, never most of it before compress begins.
+#[test]
+fn pkg_of_tiny_files_keeps_the_bar_for_compress() {
+    let root = dir("pkg-tiny");
+    let src = root.join("src");
+    write(&src, "eboot.bin", b"\x7fELF fake eboot");
+    write(
+        &src,
+        "sce_sys/param.json",
+        br#"{"titleId":"PPSA01234","contentId":"UP0000-PPSA01234_00-TESTTESTTESTTEST"}"#,
+    );
+    for i in 0..600 {
+        write(&src, &format!("data/tiny/{i:03}.bin"), &[i as u8; 32]);
+    }
+    let (events, result) = run(request(&src, Format::Pkg, &root.join("tiny.pkg")));
+    result.unwrap();
+    let bar = one_bar(&events);
+    let planned = bar.iter().rposition(|&(s, _, _)| s == "plan").unwrap();
+    let most = bar[..=planned]
+        .iter()
+        .filter(|&&(_, _, t)| t > 0)
+        .map(|&(_, d, t)| d as f64 / t as f64)
+        .fold(0.0, f64::max);
+    assert!(most < 0.10, "{most} after plan: {bar:?}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn folder_to_pkg_verifies_and_publishes() {
     let root = dir("pkg");
@@ -353,6 +414,16 @@ fn folder_to_pkg_verifies_and_publishes() {
     let (events, result) = run(request(&src, Format::Pkg, &pkg));
     let report = result.unwrap();
     assert_eq!(snapshot(&src), before, "the source is never touched");
+    // The builder's per-file reads move the one bar in check and plan.
+    let bar = one_bar(&events);
+    for stage in ["check", "plan"] {
+        let done: Vec<u64> = bar
+            .iter()
+            .filter(|&&(s, _, _)| s == stage)
+            .map(|&(_, d, _)| d)
+            .collect();
+        assert!(done.first() < done.last(), "{stage}: {bar:?}");
+    }
     assert_eq!(report.output, pkg.canonicalize().unwrap());
     assert_eq!(report.bytes, std::fs::metadata(&pkg).unwrap().len());
     let checks = report.checks.join("\n");
@@ -2083,10 +2154,7 @@ fn an_unpatch_conversion_installs_the_release_runtime() {
         let back = root.join(format!("back-{ext}"));
         run(request(&out, Format::Folder, &back)).1.unwrap();
         assert!(!back.join("fakelib/libSceAgc.sprx").exists(), "{ext}");
-        // The `.pkg` builder adds its keystone after the index is written.
-        if format == Format::Pkg {
-            std::fs::remove_file(back.join("sce_sys/keystone")).unwrap();
-        }
+        // The `.pkg` builder writes the index anew, its keystone and param.json included.
         assert_indexes_folder(&back);
     }
     let _ = std::fs::remove_dir_all(root);
@@ -2263,11 +2331,18 @@ fn lz4_pack_straight_into_each_image() {
             });
             let report = result.unwrap_or_else(|e| panic!("{rules} {ext}: {e}"));
             one_bar(&events);
-            let order = stages(&events);
-            let at = |s: &str| order.iter().position(|x| *x == s).unwrap();
-            assert!(
-                at("measure") < at("write") && at("write") < at("verify"),
-                "{order:?}"
+            // `run` holds this to the announced list; preflight is not reported again after
+            // measure.
+            assert_eq!(
+                stages(&events),
+                [
+                    "scan",
+                    "preflight",
+                    "measure",
+                    "write",
+                    "verify",
+                    "finalize"
+                ]
             );
             assert!(logged(&events, "no temporary folder"), "{events:?}");
             assert!(logged(&events, "measured LZ4 packs"), "{events:?}");

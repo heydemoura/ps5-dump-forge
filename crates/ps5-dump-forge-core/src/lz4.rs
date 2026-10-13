@@ -473,17 +473,15 @@ fn final_index(
         }
     }
     match ps5upload_fpkg::ampr_index::build(&rows, mtime) {
-        Some(index) => {
+        Ok(index) => {
             ctx.log(format!(
                 "LZ4: writing a new {INDEX} for {} files",
                 rows.len()
             ));
             Ok(Some(index))
         }
-        None => {
-            findings.push(format!(
-                "two paths differ only in case, which {INDEX} cannot tell apart"
-            ));
+        Err(e) => {
+            findings.push(e);
             Ok(None)
         }
     }

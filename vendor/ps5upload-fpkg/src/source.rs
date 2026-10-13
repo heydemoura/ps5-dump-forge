@@ -108,8 +108,12 @@ pub fn open(path: &Path) -> Result<Box<dyn SourceTree>> {
         "exfat" => Ok(Box::new(crate::exfat::ExFatSource::open(path)?)),
         "ffpkg" | "ufs2" => Ok(Box::new(crate::ufs2_source::Ufs2Source::open(path)?)),
         "ffpfsc" => open_ffpfsc(path),
+        "ffpfs" => crate::pfs_source::open(
+            Box::new(std::fs::File::open(path)?),
+            format!("ffpfs {}", path.display()),
+        ),
         _ => format_err(format!(
-            "{} is neither a folder nor a supported image (.exfat, .ffpkg, .ffpfsc)",
+            "{} is neither a folder nor a supported image (.exfat, .ffpkg, .ffpfs, .ffpfsc)",
             path.display()
         )),
     }
@@ -144,6 +148,11 @@ pub(crate) fn ffpfsc_tree(
             label.clone(),
         )?))
     };
+    // A nested PFS image (a `pfs_image.dat` inside a `.ffpfsc`) is a third kind of image.
+    let mut reader = reader;
+    if crate::pfs_source::is_pfs_image(&mut reader) {
+        return crate::pfs_source::open(Box::new(reader), label);
+    }
     if inner.ends_with(".exfat") {
         return exfat(reader);
     }
@@ -154,7 +163,7 @@ pub(crate) fn ffpfsc_tree(
         Ok(tree) => Ok(tree),
         Err(first) => ufs2(pfsc(open()?)?).map_err(|_| {
             crate::Error::Format(format!(
-                "{label}: the image inside is neither exFAT nor UFS2 ({first})"
+                "{label}: the image inside is not exFAT, UFS2 or PFS ({first})"
             ))
         }),
     }
@@ -259,6 +268,9 @@ pub struct Check {
 #[derive(Debug, Default)]
 pub struct Readiness {
     pub checks: Vec<Check>,
+    /// What [`imports_ampr`] said of `eboot.bin`, so a caller can hand it on as
+    /// [`crate::build::BuildRequest::imports_ampr`] instead of scanning again.
+    pub imports_ampr: bool,
 }
 
 impl Readiness {
@@ -689,9 +701,141 @@ fn scan_for(tree: &mut dyn SourceTree, rel: &str, start: u64, len: u64, needle: 
     false
 }
 
+/// Is `tree` an LZ4-packed folder (ampr_emu's asset packs): a root `ampr_assets.index` that
+/// starts with `AMPRPAK4`? Its `ampr_emu.index` also lists the files inside the packs, and the
+/// pack manifest is checked against it (file id = record order, path, size), so a package
+/// carries that index as it is. A listed manifest whose first bytes cannot be read is an error,
+/// never "not packed": that answer would regenerate the index and drop the packed records.
+pub fn lz4_packed(tree: &mut dyn SourceTree) -> crate::Result<bool> {
+    let listed = tree
+        .files()
+        .iter()
+        .any(|f| f.path == "ampr_assets.index" && f.size >= 8);
+    Ok(listed && tree.read_range("ampr_assets.index", 0, 8)? == b"AMPRPAK4")
+}
+
+/// Does the folder's own `ampr_emu.index` describe the folder? `ampr_emu` trusts its sizes, so
+/// a stale one is worth saying, even though a package always carries a freshly generated one
+/// (an LZ4-packed folder's excepted: see [`lz4_packed`]).
+fn ampr_index_check(tree: &mut dyn SourceTree) -> (bool, String) {
+    let name = crate::ampr_index::NAME;
+    let packed = match lz4_packed(tree) {
+        Ok(packed) => packed,
+        Err(e) => {
+            return (
+                false,
+                format!("the folder's ampr_assets.index (LZ4 packs?) cannot be read: {e}"),
+            );
+        }
+    };
+    let unlisted_packs = || {
+        format!(
+            "the folder holds LZ4 packs but no readable {name}, the one list of the files \
+             inside them: a package cannot be built from it"
+        )
+    };
+    let Some((at, size)) = tree
+        .files()
+        .iter()
+        .find(|f| f.path.eq_ignore_ascii_case(name))
+        .map(|f| (f.path.clone(), f.size))
+    else {
+        if packed {
+            return (false, unlisted_packs());
+        }
+        return (
+            true,
+            format!(
+                "eboot.bin imports libSceAmpr; the package or image will carry an {name} \
+                 generated from its files (the folder has none)"
+            ),
+        );
+    };
+    let regenerated = "a package or a game image carries one generated from its files \
+                       instead";
+    // Read whole only within the builder's bound for whole reads: a corrupt, huge file is
+    // reported, never held in memory.
+    let Some(listed) = (size <= crate::build::MAX_WHOLE_READS)
+        .then(|| tree.read(&at).ok())
+        .flatten()
+        .and_then(|d| crate::ampr_index::parse(&d))
+    else {
+        if packed {
+            return (false, unlisted_packs());
+        }
+        return (
+            false,
+            format!("the folder's {name} is not a readable AMPRIDX3 index: {regenerated}"),
+        );
+    };
+    if packed {
+        return (
+            true,
+            format!(
+                "the folder holds LZ4 packs: its {name} lists {} files, the packed ones \
+                 included, and a package keeps it as it is (it must match the packs)",
+                listed.len()
+            ),
+        );
+    }
+    let on_disk: std::collections::HashMap<String, u64> = tree
+        .files()
+        .iter()
+        .filter(|f| !f.path.eq_ignore_ascii_case(name))
+        .map(|f| (f.path.to_ascii_lowercase(), f.size))
+        .collect();
+    let mut first: Option<String> = None;
+    let (mut gone, mut resized) = (0usize, 0usize);
+    let mut seen = std::collections::HashSet::new();
+    for e in &listed {
+        let key = e.path.to_ascii_lowercase();
+        match on_disk.get(&key) {
+            None => {
+                gone += 1;
+                first.get_or_insert_with(|| format!("{} is listed but missing", e.path));
+            }
+            Some(&size) if size != e.size => {
+                resized += 1;
+                first.get_or_insert_with(|| {
+                    format!("{} is listed at {} bytes, {size} on disk", e.path, e.size)
+                });
+            }
+            Some(_) => {}
+        }
+        seen.insert(key);
+    }
+    let unlisted: Vec<&String> = on_disk.keys().filter(|k| !seen.contains(*k)).collect();
+    if let Some(p) = unlisted.first() {
+        first.get_or_insert_with(|| format!("{p} is not listed"));
+    }
+    match first {
+        None => (
+            true,
+            format!(
+                "eboot.bin imports libSceAmpr and the folder's {name} matches its {} files",
+                listed.len()
+            ),
+        ),
+        Some(example) => (
+            false,
+            format!(
+                "the folder's {name} is stale ({gone} listed missing, {} unlisted, {resized} \
+                 sizes differ; {example}): {regenerated}",
+                unlisted.len()
+            ),
+        ),
+    }
+}
+
 /// Report readiness for a source tree. Never blocks: the caller decides which findings
 /// matter for the build it is about to run.
 pub fn readiness(tree: &mut dyn SourceTree) -> Readiness {
+    readiness_with(tree, None)
+}
+
+/// [`readiness`], taking [`imports_ampr`]'s answer for `eboot.bin` when the caller already has
+/// it (`Some`) instead of scanning the module again.
+pub fn readiness_with(tree: &mut dyn SourceTree, imports_ampr: Option<bool>) -> Readiness {
     let mut r = Readiness::default();
     let files = tree.files().to_vec();
     let has = |path: &str| files.iter().any(|f| f.path == path);
@@ -754,21 +898,10 @@ pub fn readiness(tree: &mut dyn SourceTree) -> Readiness {
     // like a broken package rather than a missing dependency. Say so before the build.
     // Spider-Man 2 built without `ampr_emu.index` exited at startup ("returned from main",
     // CE-108255-1); the same build with the index at the folder root played (FW 5.10).
-    if imports_ampr(tree, "eboot.bin") {
-        let has_index = tree
-            .files()
-            .iter()
-            .any(|f| f.path.eq_ignore_ascii_case("ampr_emu.index"));
-        r.push(
-            "ampr_emu.index for a libSceAmpr title",
-            true,
-            if has_index {
-                "eboot.bin imports libSceAmpr and the folder carries ampr_emu.index"
-            } else {
-                "eboot.bin imports libSceAmpr; the package will carry an ampr_emu.index \
-                 generated from its files (the folder has none)"
-            },
-        );
+    r.imports_ampr = imports_ampr.unwrap_or_else(|| self::imports_ampr(tree, "eboot.bin"));
+    if r.imports_ampr {
+        let (ok, detail) = ampr_index_check(tree);
+        r.push("ampr_emu.index for a libSceAmpr title", ok, detail);
     }
 
     if let Some(m) = module_magic(tree, "eboot.bin") {
@@ -790,6 +923,7 @@ pub fn readiness(tree: &mut dyn SourceTree) -> Readiness {
 
 #[cfg(test)]
 mod tests {
+
     /// The launch rewrite leaves valid JSON with only the three launch fields changed.
     #[test]
     fn launch_rewrite_clears_update_and_patch_fields() {

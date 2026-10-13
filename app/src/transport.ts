@@ -5,7 +5,13 @@
 export type Unlisten = () => void;
 
 /** The events api.ts listens to. `jobs://restore` comes from the http poller only. */
-export type EventName = "job://progress" | "job://log" | "job://done" | "close-requested" | "jobs://restore";
+export type EventName =
+  | "job://progress"
+  | "job://stages"
+  | "job://log"
+  | "job://done"
+  | "close-requested"
+  | "jobs://restore";
 
 export interface PickOptions {
   /** A folder, else a file. */

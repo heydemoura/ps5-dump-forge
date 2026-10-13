@@ -116,6 +116,11 @@ pub struct PlannedFile {
 }
 
 impl Plan {
+    /// Whether the package has an `eboot.bin` at its root (DLC has none).
+    pub fn has_eboot(&self) -> bool {
+        self.files.iter().any(|f| f.path == "eboot.bin")
+    }
+
     /// Mark the executables, which the image flags as modules. `is_module` answers for one
     /// path, normally from the file's first bytes (see [`is_module_header`]).
     ///
@@ -125,8 +130,16 @@ impl Plan {
     /// `sceSblACMgrGetFsSandboxType(.../eboot.bin) failed. 0x80020016` (FW 5.10 Phat).
     pub fn mark_modules(&mut self, mut is_module: impl FnMut(&str) -> bool) {
         for f in &mut self.files {
-            f.module = !f.generated && f.size >= 4 && is_module(&f.path);
+            f.module = f.may_be_module() && is_module(&f.path);
         }
+    }
+}
+
+impl PlannedFile {
+    /// Whether [`Plan::mark_modules`] asks about this file: not generated, and long enough
+    /// for a module's 4-byte magic.
+    pub fn may_be_module(&self) -> bool {
+        !self.generated && self.size >= 4
     }
 }
 

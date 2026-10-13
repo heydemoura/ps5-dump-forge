@@ -1,7 +1,7 @@
 // The job list under a screen's cards: one row per job, newest first, the same list on every
 // screen that starts jobs (Convert, LZ4).
 
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 
 import {
   api,
@@ -15,7 +15,7 @@ import {
   type JobReport,
   type VerifyReport,
 } from "./api";
-import { basename, CardHead, Dots, FormatPill, kindLabel, PathLine } from "./common";
+import { basename, CardHead, FormatPill, kindLabel, PathLine } from "./common";
 import { useMessages } from "./i18n";
 import type { Messages } from "./locales/en";
 import { Icon, type IconName } from "./icons";
@@ -25,8 +25,8 @@ import { running } from "./target";
 type T = Messages["jobs"];
 
 /** Below all the cards, full width: a new job shows next to the choices that made it, and the
- * queue grows to fill the rest of the window (scrolling inside itself). `started`: jobs this
- * screen started, which scroll into view (not the ones a reload restores). */
+ * queue fills the rest of the window, growing with its rows (the page scrolls). `started`: jobs
+ * this screen started, which scroll into view (not the ones a reload restores). */
 export function JobsCard(props: {
   jobs: Job[];
   dispatch: (a: Action) => void;
@@ -155,16 +155,28 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
   else if (job.stage === undefined) [status, tone] = [t.queued, ""];
   else [status, tone] = [(t.stages as Record<string, string | undefined>)[job.stage] ?? job.stage, "blue"];
   const running = !result && job.stage !== undefined;
-  // A stage that has not moved the bar (reading the source, checking, planning, finishing, or a
-  // pass before its first bytes) may sit a while: dots show the job is alive.
-  const waiting = running && !cancelling && job.done === job.stageDone;
+  // One clock per running row, each second: how long the stage has run.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [running]);
+  // A sheen crosses the bar while the job runs (the whole track while the fill is too thin to
+  // see it): many stages move it little or in steps (checking, planning, a large file), and a
+  // sheen that came and went with each step flickered.
+  const alive = running && !cancelling;
+  const stepMs = Math.max(0, now - job.stageAt);
+  const step = running && stepMs >= STEP_MS ? clock(stepMs) : null;
   const lz4 = lz4Job(job.request);
+  // Every step the job will run, once core said; gone when the job ends (its result says it).
+  const steps = !result && job.stages?.length ? <Steps job={job} /> : null;
   // Packing straight into an image: its write pass packs too.
   if (running && job.stage === "write" && lz4?.id === "pack" && targetKind(job.request!) !== "lz4")
     status = t.packingWriting;
 
-  // A job just started here scrolls into view inside the job list, which may already be
-  // scrolled; restored ones (a reload) leave the list at its top, the newest job.
+  // A job just started here scrolls the page to itself; restored ones (a reload) leave the
+  // page where it is.
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     if (fresh) ref.current?.scrollIntoView({ block: "nearest" });
@@ -203,17 +215,27 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
           {confirming ? t.stopHint : ""}
         </span>
       </header>
-      {running && <progress value={job.shown} max={1} aria-label={`${name}: ${status}`} />}
+      {running && (
+        <div className="bar" style={{ "--p": job.shown } as CSSProperties}>
+          <progress value={job.shown} max={1} aria-label={`${name}: ${status}`} />
+          {alive && <span className={job.shown < 0.02 ? "sheen track" : "sheen"} aria-hidden="true" />}
+        </div>
+      )}
+      {running && steps}
       <p className="job-status">
         <span className={`tag status ${tone}`}>
           {status}
-          {waiting && <Dots />}
         </span>
-        {running && job.total > 0 && (
+        {running && (job.total > 0 || step) && (
           <span className="meta">
-            <strong>{Math.floor(100 * job.shown)}%</strong>
-            {job.speed !== undefined && ` · ${rateLabel(t, job.stage ?? "")} ${prettyBytes(job.speed)}/s`}
-            {job.etaMs !== undefined && ` · ${t.left(prettyDuration(job.etaMs))}`}
+            {job.total > 0 && (
+              <>
+                <strong>{Math.floor(100 * job.shown)}%</strong>
+                {job.speed !== undefined && ` · ${rateLabel(t, job.stage ?? "")} ${prettyBytes(job.speed)}/s`}
+                {job.etaMs !== undefined && ` · ${t.left(prettyDuration(job.etaMs))}`}
+              </>
+            )}
+            {step && `${job.total > 0 ? " · " : ""}${t.inStep(step)}`}
           </span>
         )}
         {result && "Ok" in result && (
@@ -223,6 +245,7 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
           </span>
         )}
       </p>
+      {!running && steps}
       {pathShown && result && "Ok" in result && (
         <p className="out-box path-shown" ref={pathBox} tabIndex={-1} aria-label={t.outputPath}>
           {result.Ok.output}
@@ -263,6 +286,51 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
   );
 }
 
+/** The job's steps in order, neighbours with one label merged (preflight and check are one
+ * "Checking"): done before the current one, the rest not started. A stage the messages don't
+ * name shows its id, like the status tag. */
+function Steps({ job }: { job: Job }) {
+  const t = useMessages().jobs;
+  const labels = t.steps as Record<string, string | undefined>;
+  const steps: { label: string; last: number }[] = [];
+  (job.stages ?? []).forEach((id, i) => {
+    const label = labels[id] ?? id;
+    const prev = steps[steps.length - 1];
+    if (prev?.label === label) prev.last = i;
+    else steps.push({ label, last: i });
+  });
+  const step = job.step;
+  const at = step === undefined ? -1 : steps.findIndex((s) => step <= s.last);
+  return (
+    // `role="list"`: WebKit drops the list role of an `ol` styled without markers.
+    <ol className="steps" role="list" aria-label={t.stepsLabel}>
+      {steps.map((s, i) => {
+        const state = at < 0 || i > at ? "later" : i < at ? "done" : "now";
+        return (
+          <li key={i} className={state} aria-current={state === "now" ? "step" : undefined}>
+            {i > 0 && (
+              <span className="sep" aria-hidden="true">
+                ›
+              </span>
+            )}
+            {state === "done" && <Icon name="check" />}
+            {state === "now" ? (
+              s.label
+            ) : (
+              <>
+                <span aria-hidden="true">{s.label}</span>
+                <span className="visually-hidden">
+                  {state === "done" ? t.stepDone(s.label) : t.stepLater(s.label)}
+                </span>
+              </>
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 /** The verified fold's title: the mode (when the report has one) and the checks passed. */
 function verifiedTitle(t: T, r: JobReport): string {
   const n = r.checks.length;
@@ -277,6 +345,17 @@ function coverage(t: T, v: VerifyReport): string {
 
 /** How long "Stop job?" waits for the second click. */
 const CONFIRM_MS = 4000;
+/** A stage running this long shows its time on the meta line. */
+const STEP_MS = 10_000;
+
+/** A stage's running time as a clock: "0:42", "12:05", "1:02:09". */
+function clock(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const ss = String(s % 60).padStart(2, "0");
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}:${ss}`;
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${ss}`;
+}
 
 /** A failed job's error: core's text verbatim, under a plain title for a preflight failure. */
 function FailureText({ err, format }: { err: string; format?: Format }) {

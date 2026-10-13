@@ -10,6 +10,7 @@ import type {
   LogEvent,
   ProgressEvent,
   SnapshotJob,
+  StagesEvent,
 } from "./api";
 
 const LOG_LINES = 500;
@@ -20,6 +21,11 @@ export interface Job {
   request?: ConvertRequest;
   /** No progress yet: the job waits in core's queue. */
   stage?: string;
+  /** Every stage the job will run, in order, once core said (`job://stages`). */
+  stages?: string[];
+  /** Where `stage` is in `stages`: searched forward from the last one, so a stage id that comes
+   * twice is found in order. */
+  step?: number;
   done: number;
   total: number;
   /** Shown fraction, 0..1. Never drops: core's job total is an estimate that can grow. */
@@ -38,6 +44,7 @@ export interface Job {
 export type Action =
   | { type: "started"; id: JobId; request: ConvertRequest }
   | { type: "progress"; e: ProgressEvent; at: number }
+  | { type: "stages"; e: StagesEvent }
   | { type: "log"; e: LogEvent }
   | { type: "done"; e: DoneEvent }
   | { type: "restore"; e: JobsRestore; at: number }
@@ -50,6 +57,16 @@ function bar(shown: number, done: number, total: number): number {
 }
 const UNFINISHED = 0.99;
 
+/** `stage`'s index in `stages`, from `from` on, else anywhere; else `from` (a stage the list
+ * doesn't name leaves the step where it was). */
+function stepOf(stages: string[] | undefined, stage: string | undefined, from: number | undefined): number | undefined {
+  if (!stages || stage === undefined) return from;
+  const i = stages.indexOf(stage, from ?? 0);
+  if (i >= 0) return i;
+  const j = stages.indexOf(stage);
+  return j >= 0 ? j : from;
+}
+
 function blank(id: JobId): Job {
   return { id, done: 0, total: 0, shown: 0, stageAt: 0, stageDone: 0, log: [] };
 }
@@ -57,12 +74,14 @@ function blank(id: JobId): Job {
 /** A job as the server's list has it: request, last progress, log tail and result. */
 function fromSnapshot(j: Job, s: SnapshotJob, at: number): Job {
   let k: Job = { ...j, request: s.request ?? j.request, log: s.log.slice(-LOG_LINES) };
+  if (s.stages?.length) k = { ...k, stages: s.stages };
   const p = s.progress;
   if (p) {
     const shown = bar(j.shown, p.done, p.total);
     k = { ...k, stage: p.stage, done: p.done, total: p.total, shown, stageAt: at, stageDone: p.done };
     k = { ...k, etaMs: undefined, speed: undefined };
   }
+  k = { ...k, step: stepOf(k.stages, k.stage, k.step) };
   if (s.done) k = finish(k, s.done.result);
   return k;
 }
@@ -80,6 +99,10 @@ function update(jobs: Job[], id: JobId, f: (j: Job) => Job): Job[] {
   return next;
 }
 
+/** Stages whose time grows with the bytes they stream: speed and time left are shown only for
+ * these. */
+const BYTE_STAGES = new Set(["compress", "write", "measure", "pack", "verify"]);
+
 export function jobsReducer(jobs: Job[], a: Action): Job[] {
   switch (a.type) {
     case "started":
@@ -92,6 +115,7 @@ export function jobsReducer(jobs: Job[], a: Action): Job[] {
           return {
             ...j,
             stage,
+            step: stepOf(j.stages, stage, j.step),
             done,
             total,
             shown,
@@ -101,12 +125,17 @@ export function jobsReducer(jobs: Job[], a: Action): Job[] {
             speed: undefined,
           };
         }
+        // Only a pass that streams the game's bytes has a rate worth projecting; the others
+        // (reading the source, checking, planning, finishing) show their time in the step.
         const elapsed = a.at - j.stageAt;
-        const rate = elapsed >= 1000 ? (done - j.stageDone) / elapsed : 0;
+        const rate = BYTE_STAGES.has(stage) && elapsed >= 1000 ? (done - j.stageDone) / elapsed : 0;
         const etaMs = rate > 0 && total > done ? (total - done) / rate : undefined;
         const speed = rate > 0 ? rate * 1000 : j.speed;
         return { ...j, done, total, shown, etaMs, speed };
       });
+    case "stages":
+      if (a.e.stages.length === 0) return jobs;
+      return update(jobs, a.e.job, (j) => ({ ...j, stages: a.e.stages, step: stepOf(a.e.stages, j.stage, undefined) }));
     case "log":
       return update(jobs, a.e.job, (j) => ({ ...j, log: [...j.log, a.e.line].slice(-LOG_LINES) }));
     case "done":

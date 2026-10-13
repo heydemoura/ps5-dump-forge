@@ -1,8 +1,8 @@
 diff --git a/ps5upload-fpkg/src/build.rs b/ps5upload-fpkg/src/build.rs
-index 8f67755..161e4c8 100644
+index f1db2c7..3725439 100644
 --- a/ps5upload-fpkg/src/build.rs
 +++ b/ps5upload-fpkg/src/build.rs
-@@ -254,6 +254,19 @@ impl Stage {
+@@ -292,6 +292,19 @@ impl Stage {
      }
  }
  
@@ -22,7 +22,7 @@ index 8f67755..161e4c8 100644
  fn enter(control: &mut BuildControl, stage: Stage) {
      if let Some(f) = control.stage.as_deref_mut() {
          f(stage);
-@@ -265,7 +278,8 @@ fn enter(control: &mut BuildControl, stage: Stage) {
+@@ -303,7 +316,8 @@ fn enter(control: &mut BuildControl, stage: Stage) {
  pub struct BuildControl<'a> {
      /// Bytes written of the mount image, reported as the write proceeds.
      pub bytes: Option<&'a mut dyn FnMut(u64, u64)>,
@@ -32,7 +32,7 @@ index 8f67755..161e4c8 100644
      pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
      /// Called as each [`Stage`] begins.
      pub stage: Option<&'a mut dyn FnMut(Stage)>,
-@@ -509,7 +523,10 @@ fn prepare_with(
+@@ -551,7 +565,10 @@ fn prepare_with(
          log.push(line.to_string());
          progress(line);
      };
@@ -43,7 +43,7 @@ index 8f67755..161e4c8 100644
      let mut files: Vec<SourceFile> = tree.files().to_vec();
      if files.is_empty() {
          return format_err(format!("{} has no files", tree.describe()));
-@@ -543,6 +560,7 @@ fn prepare_with(
+@@ -585,6 +602,7 @@ fn prepare_with(
          ));
      }
      let readiness = source::readiness(tree);
@@ -51,7 +51,7 @@ index 8f67755..161e4c8 100644
      let warnings: Vec<String> = readiness
          .warnings()
          .map(|c| format!("{}: {}", c.name, c.detail))
-@@ -591,6 +609,8 @@ fn prepare_with(
+@@ -633,6 +651,8 @@ fn prepare_with(
      let mut repairs: std::collections::HashMap<String, (self_repair::SelfRepair, u64)> =
          std::collections::HashMap::new();
      for f in files.iter_mut() {
@@ -60,7 +60,7 @@ index 8f67755..161e4c8 100644
          // A backport's `fakelib/` holds newer system libraries the game loads in place of the
          // console's own; working releases ship some with the PS4 signature, and every one of
          // them is used exactly as shipped. Rewriting them is not a repair.
-@@ -666,19 +686,29 @@ fn prepare_with(
+@@ -708,19 +728,29 @@ fn prepare_with(
          return format_err("the source has no eboot.bin");
      }
      let content_version = source::content_version_word(&param_json).unwrap_or(0);
@@ -90,15 +90,15 @@ index 8f67755..161e4c8 100644
      // The debug license the console's launch checks need (see `license`), generated for this
      // content id. A dump's own license files are never used: they belong to another console.
      extras.extend(cnt_write::license_extras(&content_id));
-@@ -711,6 +741,7 @@ fn prepare_with(
+@@ -753,6 +783,7 @@ fn prepare_with(
          .collect();
      files.retain(|f| !container_only_file(f));
      let time = request.time.unwrap_or_else(now);
 +    check_cancel(control)?;
      // A libSceAmpr title looks its files up through `ampr_emu.index` at the image root (see
-     // `ampr_index`); a dump without one gets one generated from exactly the files packaged.
-     let mut generated: std::collections::HashMap<String, Vec<u8>> =
-@@ -745,13 +776,20 @@ fn prepare_with(
+     // `ampr_index`), and `ampr_emu` trusts its sizes. It is always generated from exactly the
+     // files packaged: a dump's own copy lists the folder as it was, before the param.json
+@@ -793,13 +824,20 @@ fn prepare_with(
          crate::ImageMode::Native => request.seed.unwrap_or_else(random_seed),
      };
  
@@ -121,7 +121,7 @@ index 8f67755..161e4c8 100644
      // Refuse an over-large source here, before a single byte is read.
      if plan.ndblock > outer_write::max_inner_blocks() {
          return format_err(format!(
-@@ -858,15 +896,17 @@ fn prepare_with(
+@@ -906,15 +944,17 @@ fn prepare_with(
  
  /// Write the package `prepared` describes into `out`, then verify it.
  ///
@@ -147,7 +147,7 @@ index 8f67755..161e4c8 100644
  pub fn write_package(
      prepared: &Prepared,
      tree: &mut dyn source::SourceTree,
-@@ -875,6 +915,7 @@ pub fn write_package(
+@@ -923,6 +963,7 @@ pub fn write_package(
      progress: &mut dyn FnMut(&str),
      control: &mut BuildControl,
  ) -> Result<BuildReport> {
@@ -155,7 +155,7 @@ index 8f67755..161e4c8 100644
      if out.metadata()?.len() != 0 {
          return format_err(format!(
              "{} is not empty; the package is written into a new file",
-@@ -890,7 +931,7 @@ pub fn write_package(
+@@ -938,7 +979,7 @@ pub fn write_package(
          control,
          Mode::Streaming,
      )?;
@@ -164,21 +164,17 @@ index 8f67755..161e4c8 100644
      let size = out.metadata()?.len();
      if size != written {
          return format_err(format!(
-@@ -962,11 +1003,11 @@ fn build_mode(
-         Ok(written) => written,
-         Err(e) => return Err(cleanup(e)),
-     };
--    drop(file);
--    let report = match verify_written(&prepared, &partial, progress, control) {
-+    let report = match verify_written(&prepared, &file, progress, control) {
-         Ok(report) => report,
-         Err(e) => return Err(cleanup(e)),
-     };
-+    drop(file);
+@@ -1006,8 +1047,8 @@ fn build_mode(
+         control,
+         mode,
+     )?;
++    let report = verify_written(&prepared, &file, progress, control)?;
+     drop(file);
+-    let report = verify_written(&prepared, &partial, progress, control)?;
      if final_path.exists() {
-         return Err(cleanup(crate::Error::Format(format!(
+         return format_err(format!(
              "output appeared during conversion: {}",
-@@ -986,23 +1027,31 @@ fn build_mode(
+@@ -1028,23 +1069,33 @@ fn build_mode(
      })
  }
  
@@ -203,17 +199,19 @@ index 8f67755..161e4c8 100644
              f(done, total);
          }
      };
--    match verify::verify_streaming(path, &prepared.request.passcode, &mut verify_bytes)? {
-+    match verify::verify_file_controlled(
+-    let report = verify::verify_streaming(path, &prepared.request.passcode, &mut verify_bytes)?;
++    let report = verify::verify_file_controlled(
 +        file,
 +        &prepared.request.passcode,
 +        &mut verify_bytes,
 +        cancel,
-+    )? {
-         report if report.ok() => Ok(report),
-         report => format_err(format!("the built package failed verification:\n{report}")),
++    )?;
++    // A stop asked for during the last read is still a stop: the package is not accepted.
++    check_cancel(control)?;
+     if !report.ok() {
+         return format_err(format!("the built package failed verification:\n{report}"));
      }
-@@ -1024,11 +1073,6 @@ fn write_mode(
+@@ -1067,11 +1118,6 @@ fn write_mode(
      let param_json = &prepared.param_json;
      let content_version = prepared.content_version;
      let (time, seed) = (prepared.time, prepared.seed);
@@ -225,8 +223,8 @@ index 8f67755..161e4c8 100644
  
      let written = match mode {
          Mode::Streaming => {
-@@ -1083,9 +1127,7 @@ fn write_mode(
-             written?.size
+@@ -1125,9 +1171,7 @@ fn write_mode(
+             stream::write_package(out, &stream_request, &mut read_range, &mut p, cancel)?.size
          }
          Mode::InMemory => {
 -            if cancelled() {
@@ -237,10 +235,10 @@ index 8f67755..161e4c8 100644
                  match prepared.sizes.get(path) {
                      Some(0) => Ok(Vec::new()),
 diff --git a/ps5upload-fpkg/src/kraken_image.rs b/ps5upload-fpkg/src/kraken_image.rs
-index ea27cf8..5b0c3f9 100644
+index e2e8d1d..300e33b 100644
 --- a/ps5upload-fpkg/src/kraken_image.rs
 +++ b/ps5upload-fpkg/src/kraken_image.rs
-@@ -259,7 +259,7 @@ pub fn compress(
+@@ -257,7 +257,7 @@ pub fn compress(
                  return Ok(None);
              };
              if cancel.load(Ordering::Relaxed) {
@@ -249,7 +247,7 @@ index ea27cf8..5b0c3f9 100644
              }
              let bytes = match (&t.owner, &t.source) {
                  (Owner::File(_), Some((path, off))) => {
-@@ -293,6 +293,11 @@ pub fn compress(
+@@ -291,6 +291,11 @@ pub fn compress(
              Ok(Some((t, bytes)))
          },
          |(t, bytes)| {
@@ -258,24 +256,9 @@ index ea27cf8..5b0c3f9 100644
 +            if cancel.load(Ordering::Relaxed) {
 +                return Err(crate::Error::Cancelled);
 +            }
-             // Stored (`PS5UPLOAD_FPKG_KRAKEN_STORE=1`, see `store_only`): every half raw, the same
-             // layout with nothing for the console's decoder to decompress.
-             let halves = if store {
-diff --git a/ps5upload-fpkg/src/lib.rs b/ps5upload-fpkg/src/lib.rs
-index 3908347..4ef80bf 100644
---- a/ps5upload-fpkg/src/lib.rs
-+++ b/ps5upload-fpkg/src/lib.rs
-@@ -75,6 +75,10 @@ pub enum Error {
-     Io(#[from] std::io::Error),
-     #[error("{0}")]
-     Format(String),
-+    /// The caller's cancel flag stopped a build or a verification. Its own variant, so a caller
-+    /// can tell a stop it asked for from a failure without reading the message.
-+    #[error("the build was cancelled")]
-+    Cancelled,
- }
- 
- pub type Result<T> = std::result::Result<T, Error>;
+             // Stored (`Level::Stored`, or `PS5UPLOAD_FPKG_KRAKEN_STORE=1` through the build, see
+             // `store_only`): every half raw, the same layout with nothing for the console's
+             // decoder to decompress.
 diff --git a/ps5upload-fpkg/src/si.rs b/ps5upload-fpkg/src/si.rs
 index 47299c2..b2debf8 100644
 --- a/ps5upload-fpkg/src/si.rs
@@ -304,10 +287,10 @@ index 47299c2..b2debf8 100644
          let len = (zip_start - start).min(BLOCK) as usize;
          out.extend_from_slice(&crc32c(&file.read_at(start, len)?).to_le_bytes());
 diff --git a/ps5upload-fpkg/src/stream.rs b/ps5upload-fpkg/src/stream.rs
-index e9331ac..7946741 100644
+index b56dce2..fc1f362 100644
 --- a/ps5upload-fpkg/src/stream.rs
 +++ b/ps5upload-fpkg/src/stream.rs
-@@ -178,7 +178,7 @@ pub(crate) fn compression_threads(cap: Option<usize>) -> usize {
+@@ -182,7 +182,7 @@ pub(crate) fn compression_threads(cap: Option<usize>) -> usize {
  }
  
  fn cancelled() -> crate::Error {
@@ -316,7 +299,7 @@ index e9331ac..7946741 100644
  }
  
  /// Write the whole package to `out`, which must be empty and seekable.
-@@ -204,6 +204,10 @@ pub fn write_package(
+@@ -208,6 +208,10 @@ pub fn write_package(
      // its length, which is only known once every block is compressed.
      // A stored build passes through this stage at once.
      (progress.stage)(crate::build::Stage::Compress);
@@ -327,7 +310,7 @@ index e9331ac..7946741 100644
      let kraken = match &request.kraken_spool {
          Some(where_to) => {
              (progress.phase)("compressing the image");
-@@ -326,6 +330,9 @@ pub fn write_package(
+@@ -329,6 +333,9 @@ pub fn write_package(
      };
  
      // ── the outer metadata ───────────────────────────────────────────────────────────
@@ -337,7 +320,7 @@ index e9331ac..7946741 100644
      (progress.phase)("writing the layout");
      let mut game_digest = [0u8; 32];
      let mut superblock = Vec::new();
-@@ -338,6 +345,9 @@ pub fn write_package(
+@@ -341,6 +348,9 @@ pub fn write_package(
          image_time(request.image_mode, request.time),
          kraken.as_ref().map(|_| inner_size),
      )? {
@@ -347,7 +330,7 @@ index e9331ac..7946741 100644
          if index != lay.superblock_block {
              if let Some(xts) = &xts {
                  let sector = if index < lay.superblock_block {
-@@ -379,6 +389,9 @@ pub fn write_package(
+@@ -382,6 +392,9 @@ pub fn write_package(
      out.write_all(&fih)?;
  
      // ── the container ────────────────────────────────────────────────────────────────
@@ -357,7 +340,7 @@ index e9331ac..7946741 100644
      (progress.phase)("writing the container");
      // PlayGo maps files to chunks by where their bytes sit in the mount image — for a compressed
      // image, where their compressed blocks are.
-@@ -447,6 +460,9 @@ pub fn write_package(
+@@ -450,6 +463,9 @@ pub fn write_package(
      crc_table.extend_from_slice(&si_write::chunk_crc(&cnt.bytes));
  
      // ── the install metadata ─────────────────────────────────────────────────────────
@@ -367,7 +350,7 @@ index e9331ac..7946741 100644
      (progress.phase)("writing the install metadata");
      let digests_18 = si_write::InnerDigests {
          blocks: block_digests,
-@@ -511,6 +527,10 @@ pub fn write_package(
+@@ -514,6 +530,10 @@ pub fn write_package(
      let si = si_write::zip(&members, request.time);
      out.seek(SeekFrom::Start(cnt_offset + cnt.bytes.len() as u64))?;
      out.write_all(&si)?;
@@ -457,10 +440,10 @@ index 1437ba6..580ca03 100644
                          "si playgo-chunk.crc",
                          stored == expected,
 diff --git a/ps5upload-fpkg/tests/prepared.rs b/ps5upload-fpkg/tests/prepared.rs
-index 173d0bc..d0e0161 100644
+index 6e833d0..4aae569 100644
 --- a/ps5upload-fpkg/tests/prepared.rs
 +++ b/ps5upload-fpkg/tests/prepared.rs
-@@ -453,3 +453,133 @@ fn a_thread_cap_builds_the_same_package() {
+@@ -531,3 +531,133 @@ fn a_thread_cap_builds_the_same_package() {
      };
      assert!(built(Some(1), "threads-one") == built(None, "threads-all"));
  }

@@ -66,8 +66,13 @@ function ffpfscLevelNote(level: number, t: Messages["target"]): Note {
 }
 
 /** The `.fpkg` compression levels, in picker order, with their icons (labels and notes: `M`). */
-const KRAKEN_LEVELS: KrakenLevel[] = ["fast", "balanced", "smallest"];
-const KRAKEN_ICON: Record<KrakenLevel, IconName> = { fast: "bolt", balanced: "scale", smallest: "compress" };
+const KRAKEN_LEVELS: KrakenLevel[] = ["fast", "balanced", "smallest", "stored"];
+const KRAKEN_ICON: Record<KrakenLevel, IconName> = {
+  fast: "bolt",
+  balanced: "scale",
+  smallest: "compress",
+  stored: "file",
+};
 
 /** The `.fpkg` firmware limit, under the format's one-liner. */
 export function PkgWarning() {
@@ -128,7 +133,7 @@ export function FfpfscField(props: {
   );
 }
 
-/** `.fpkg`: Fast / Balanced / Smallest. */
+/** `.fpkg`: Fast / Balanced / Smallest / Stored. */
 export function KrakenField(props: {
   prefix: string;
   value: KrakenLevel;

@@ -1,5 +1,5 @@
 diff --git a/ps5upload-fpkg/src/build.rs b/ps5upload-fpkg/src/build.rs
-index b50e266..8f67755 100644
+index 86d7769..f1db2c7 100644
 --- a/ps5upload-fpkg/src/build.rs
 +++ b/ps5upload-fpkg/src/build.rs
 @@ -66,6 +66,10 @@ pub struct BuildRequest {
@@ -13,7 +13,7 @@ index b50e266..8f67755 100644
      /// Whether the build itself consults the diagnostic variables `PS5UPLOAD_FPKG_PARAM_FILE`,
      /// `PS5UPLOAD_FPKG_SPOOL_DIR`, `PS5UPLOAD_FPKG_DRM_TYPE` and `PS5UPLOAD_FPKG_KRAKEN_STORE`.
      /// [`BuildRequest::new`] sets it, as the build always did; [`BuildRequest::production`]
-@@ -96,6 +100,7 @@ impl BuildRequest {
+@@ -97,6 +101,7 @@ impl BuildRequest {
                  .and_then(|v| v.parse().ok())
                  .unwrap_or_default(),
              language: None,
@@ -21,7 +21,7 @@ index b50e266..8f67755 100644
              env_overrides: true,
          }
      }
-@@ -125,6 +130,7 @@ impl BuildRequest {
+@@ -126,6 +131,7 @@ impl BuildRequest {
              kraken: true,
              level: crate::kraken::Level::Balanced,
              language: None,
@@ -29,29 +29,29 @@ index b50e266..8f67755 100644
              env_overrides: false,
          }
      }
-@@ -1066,6 +1072,7 @@ fn write_mode(
-                 kraken_store: request.env_overrides && crate::kraken_image::store_only(),
-                 drm_type: drm_type(request),
-                 level: request.level,
+@@ -1107,6 +1113,7 @@ fn write_mode(
+                     .kraken
+                     .then(|| spool_for(out_path, request.env_overrides)),
+                 level: kraken_level(request),
 +                threads: request.threads,
+                 drm_type: drm_type(request),
                  metadata_codec: request.metadata_codec,
              };
-             let written =
 diff --git a/ps5upload-fpkg/src/stream.rs b/ps5upload-fpkg/src/stream.rs
-index 44a8b90..e9331ac 100644
+index b467b6a..b56dce2 100644
 --- a/ps5upload-fpkg/src/stream.rs
 +++ b/ps5upload-fpkg/src/stream.rs
 @@ -49,6 +49,9 @@ pub struct StreamRequest<'a> {
      pub kraken_spool: Option<KrakenSpool>,
-     /// How hard the Kraken encoder works on a compressed image.
+     /// How hard the Kraken encoder works on a compressed image; `Stored` keeps every block raw.
      pub level: crate::kraken::Level,
 +    /// Threads compressing the image; `None` or `Some(0)` is every core, and no cap goes past
 +    /// the core count.
 +    pub threads: Option<usize>,
-     /// Store a compressed image's blocks raw instead (see [`crate::kraken_image::store_only`]).
-     pub kraken_store: bool,
      /// The container's DRM type (see [`crate::cnt_write::LICENSED_DRM_TYPE`]).
-@@ -164,6 +167,16 @@ fn spool_base(spool: &KrakenSpool) -> u64 {
+     pub drm_type: u32,
+     /// How the inner image's metadata region is stored.
+@@ -168,6 +171,16 @@ fn spool_base(spool: &KrakenSpool) -> u64 {
      }
  }
  
@@ -68,7 +68,7 @@ index 44a8b90..e9331ac 100644
  fn cancelled() -> crate::Error {
      crate::Error::Format("the build was cancelled".to_string())
  }
-@@ -194,7 +207,7 @@ pub fn write_package(
+@@ -198,7 +211,7 @@ pub fn write_package(
      let kraken = match &request.kraken_spool {
          Some(where_to) => {
              (progress.phase)("compressing the image");
@@ -77,7 +77,7 @@ index 44a8b90..e9331ac 100644
              let keystone = crate::inner::keystone(request.passcode);
              let metadata = source.metadata_region();
              let image = crate::kraken_image::compress(
-@@ -528,6 +541,16 @@ mod tests {
+@@ -531,6 +544,16 @@ mod tests {
      use crate::plan;
      use crate::source::SourceFile;
  
@@ -95,10 +95,10 @@ index 44a8b90..e9331ac 100644
      /// in afid order, whether they come from the stream or from a built image.
      #[test]
 diff --git a/ps5upload-fpkg/tests/prepared.rs b/ps5upload-fpkg/tests/prepared.rs
-index 25c1170..173d0bc 100644
+index 2e4519e..6e833d0 100644
 --- a/ps5upload-fpkg/tests/prepared.rs
 +++ b/ps5upload-fpkg/tests/prepared.rs
-@@ -432,3 +432,24 @@ fn the_manifest_serializes() {
+@@ -510,3 +510,24 @@ fn the_manifest_serializes() {
      assert!(json.contains(r#""path":"eboot.bin""#), "{json}");
      let _ = tree.describe();
  }
@@ -124,7 +124,7 @@ index 25c1170..173d0bc 100644
 +    assert!(built(Some(1), "threads-one") == built(None, "threads-all"));
 +}
 diff --git a/ps5upload-fpkg/tests/production.rs b/ps5upload-fpkg/tests/production.rs
-index 6826cb9..38ebe38 100644
+index 0557842..c5dca1a 100644
 --- a/ps5upload-fpkg/tests/production.rs
 +++ b/ps5upload-fpkg/tests/production.rs
 @@ -65,6 +65,7 @@ fn a_production_request_ignores_every_environment_override() {

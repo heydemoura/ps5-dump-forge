@@ -475,7 +475,27 @@ pub(crate) fn log_cadence(cadence: &mut crate::durable::Cadence, ctx: &Ctx) {
     }
 }
 
+/// The `Progress` stages a job reports, in order ([`crate::Event::Stages`]). The request
+/// decides them: no source kind (folder, image, `.pkg`, archive) adds or drops one, nor does
+/// full verification. `.pkg`'s middle ones are the builder's `Stage` ids (`verify` is both
+/// the builder's read-back and ours).
+pub(crate) fn stages(req: &ConvertRequest) -> Vec<&'static str> {
+    let packing = crate::lz4::packing(req);
+    let middle: &[&str] = match req.format {
+        Format::Pkg => &["check", "plan", "compress", "write"],
+        Format::Folder | Format::Lz4 if packing => &["write", "pack"],
+        Format::Folder | Format::Lz4 => &["write"],
+        _ if packing => &["measure", "write"],
+        _ => &["write"],
+    };
+    let mut stages = vec!["scan", "preflight"];
+    stages.extend(middle);
+    stages.extend(["verify", "finalize"]);
+    stages
+}
+
 pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> {
+    ctx.stages(&stages(req));
     ctx.progress("scan", 0, 1);
     let kind = Kind::of(&req.source)?;
     // Before the open: a change after this point, however early, fails the publish.
@@ -692,7 +712,10 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
     };
     #[cfg(target_os = "freebsd")]
     let dest = checked.dest.context("the destination was not probed")?;
-    ctx.progress("preflight", 1, 1);
+    // After a measure pass the stage stays `measure`: preflight is not reported again.
+    if measured.is_none() {
+        ctx.progress("preflight", 1, 1);
+    }
     // The UFS2 indirect-block seam is sampled in a `.ffpkg`, alone or inside a `.ffpfsc`.
     let mode = if req.full_verify {
         Mode::Full

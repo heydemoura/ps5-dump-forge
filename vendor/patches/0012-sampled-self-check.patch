@@ -1,8 +1,8 @@
 diff --git a/ps5upload-fpkg/src/build.rs b/ps5upload-fpkg/src/build.rs
-index 0d53df4..2fdf002 100644
+index 3725439..51a37fc 100644
 --- a/ps5upload-fpkg/src/build.rs
 +++ b/ps5upload-fpkg/src/build.rs
-@@ -284,6 +284,9 @@ pub struct BuildControl<'a> {
+@@ -321,6 +321,9 @@ pub struct BuildControl<'a> {
      pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
      /// Called as each [`Stage`] begins.
      pub stage: Option<&'a mut dyn FnMut(Stage)>,
@@ -12,27 +12,38 @@ index 0d53df4..2fdf002 100644
  }
  
  /// Build the package. `progress` receives short phase lines.
-@@ -1047,11 +1050,12 @@ fn verify_written(
+@@ -951,8 +954,8 @@ fn prepare_with(
+ /// deletes, and on success it holds the whole package, synced, which the caller publishes.
+ /// `tree` is the tree `prepared` came from.
+ ///
+-/// The package is read back through `out` itself with [`verify::verify_file_controlled`] and
+-/// the report is returned in [`BuildReport::verify`]; a package that fails a check is an error
++/// The package is read back through `out` itself with [`verify::verify_file_controlled`] (a
++/// seeded sample of its blocks with [`BuildControl::sample`]) and the report is returned in [`BuildReport::verify`]; a package that fails a check is an error
+ /// (whose message carries the report), so an `Ok` report always has `verify.ok()`. A set
+ /// [`BuildControl::cancel`] ends any stage with [`crate::Error::Cancelled`].
+ pub fn write_package(
+@@ -1088,11 +1091,12 @@ fn verify_written(
              f(done, total);
          }
      };
--    match verify::verify_file_controlled(
-+    match verify::verify_file_sampled(
+-    let report = verify::verify_file_controlled(
++    let report = verify::verify_file_sampled(
          file,
          &prepared.request.passcode,
          &mut verify_bytes,
          cancel,
 +        control.sample,
-     )? {
-         report if report.ok() => Ok(report),
-         report => format_err(format!("the built package failed verification:\n{report}")),
+     )?;
+     // A stop asked for during the last read is still a stop: the package is not accepted.
+     check_cancel(control)?;
 diff --git a/ps5upload-fpkg/src/verify.rs b/ps5upload-fpkg/src/verify.rs
-index 52dd2e2..45debb0 100644
+index 664bb2d..26c30a6 100644
 --- a/ps5upload-fpkg/src/verify.rs
 +++ b/ps5upload-fpkg/src/verify.rs
 @@ -440,10 +440,48 @@ fn failing_blocks(
- }
- 
+ /// [`verify_streaming_controlled`] over a package already open, e.g. through the handle it was
+ /// just written with, so the bytes checked are that file's whatever its path now names.
  pub fn verify_file_controlled(
 +    file: PkgFile,
 +    passcode: &str,
@@ -201,8 +212,56 @@ index 52dd2e2..45debb0 100644
 +        );
 +    }
 +}
+diff --git a/ps5upload-fpkg/tests/prepared.rs b/ps5upload-fpkg/tests/prepared.rs
+index 4aae569..d5b3fa4 100644
+--- a/ps5upload-fpkg/tests/prepared.rs
++++ b/ps5upload-fpkg/tests/prepared.rs
+@@ -661,3 +661,43 @@ fn the_written_handle_is_what_gets_verified() {
+     assert_eq!(report.path, path);
+     assert_eq!(report.size, std::fs::metadata(&moved).unwrap().len());
+ }
++
++#[test]
++fn a_sampled_self_check_runs_through_write_package() {
++    let src = TempDir::new("sampled-src");
++    let out = TempDir::new("sampled-out");
++    write_tree(src.path());
++    let mut tree = FolderSource::open(src.path()).unwrap();
++    let prepared = build::prepare(
++        &mut tree,
++        &request(src.path()),
++        &mut BuildControl::default(),
++    )
++    .unwrap();
++    let path = out.path().join("sampled.part");
++    let mut file = std::fs::OpenOptions::new()
++        .read(true)
++        .write(true)
++        .create_new(true)
++        .open(&path)
++        .unwrap();
++    let report = build::write_package(
++        &prepared,
++        &mut tree,
++        &mut file,
++        &path,
++        &mut |_| {},
++        &mut BuildControl {
++            sample: Some(7),
++            ..BuildControl::default()
++        },
++    )
++    .unwrap();
++    assert!(report.verify.ok(), "{}", report.verify);
++    let text = report.verify.to_string();
++    assert!(
++        text.contains("(a sample of") && text.contains("seed 7)"),
++        "{text}"
++    );
++    assert!(text.contains("batches sampled"), "{text}");
++}
 diff --git a/ps5upload-fpkg/tests/scale.rs b/ps5upload-fpkg/tests/scale.rs
-index c62e3c3..8fd9717 100644
+index d5a06ef..bae5ca7 100644
 --- a/ps5upload-fpkg/tests/scale.rs
 +++ b/ps5upload-fpkg/tests/scale.rs
 @@ -119,6 +119,7 @@ fn the_streaming_writer_reports_progress() {
@@ -213,7 +272,7 @@ index c62e3c3..8fd9717 100644
      };
      let report = build::build_controlled(
          &request(source.path(), out.path()),
-@@ -565,6 +566,7 @@ fn a_cancelled_build_leaves_nothing_behind() {
+@@ -575,6 +576,7 @@ fn a_cancelled_build_leaves_nothing_behind() {
          stage: None,
          bytes: None,
          cancel: Some(&cancel),

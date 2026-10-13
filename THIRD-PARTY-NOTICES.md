@@ -15,7 +15,7 @@ The complete corresponding source of every release is attached to that release a
 `vendor/ps5upload-pkg` (UFS2 reader, package inspection) are taken from ps5upload with a small
 local patch series (`vendor/patches/`, described in `vendor/README.md`).
 
-- Upstream: https://github.com/phantomptr/ps5upload, tag `v6.1.2` (`4eaa6af`)
+- Upstream: https://github.com/phantomptr/ps5upload, tag `v7.0.22` (`01afdf8`)
 - License: GNU General Public License, version 3 or (at your option) any later version.
   The GPL-3.0 text is in `LICENSE`.
 

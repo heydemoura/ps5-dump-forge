@@ -28,8 +28,8 @@ export type Format = Kind | "lz4";
 export type Lz4Mode = "trace" | "unpack" | "unpatch" | "pack";
 /** The image inside a `.ffpfsc` container. */
 export type InnerFormat = "exfat" | "ffpkg" | "ffpfs";
-/** How hard a `.pkg` build compresses (Kraken). */
-export type KrakenLevel = "fast" | "balanced" | "smallest";
+/** How hard a `.pkg` build compresses (Kraken); `stored`: every inner block raw, same layout. */
+export type KrakenLevel = "fast" | "balanced" | "smallest" | "stored";
 export type JobId = number;
 
 export interface ConvertRequest {
@@ -100,6 +100,13 @@ export interface LogEvent {
   kind: "log";
   job: JobId;
   line: string;
+}
+/** Every stage the job will run, in order (the same ids as `ProgressEvent.stage`); sent once,
+ * early (possibly after the first `scan` progress). */
+export interface StagesEvent {
+  kind: "stages";
+  job: JobId;
+  stages: string[];
 }
 export interface DoneEvent {
   kind: "done";
@@ -250,6 +257,8 @@ export interface SnapshotJob {
   id: JobId;
   request: ConvertRequest | null;
   progress: ProgressEvent | null;
+  /** The job's stages in order (`StagesEvent`); empty until known. */
+  stages: string[];
   done: DoneEvent | null;
   /** The last lines (the server keeps 200). */
   log: string[];
@@ -355,6 +364,8 @@ export const api = {
 export const events = {
   progress: (f: (e: ProgressEvent) => void): Promise<UnlistenFn> =>
     listen<ProgressEvent>("job://progress", f),
+  stages: (f: (e: StagesEvent) => void): Promise<UnlistenFn> =>
+    listen<StagesEvent>("job://stages", f),
   log: (f: (e: LogEvent) => void): Promise<UnlistenFn> =>
     listen<LogEvent>("job://log", f),
   done: (f: (e: DoneEvent) => void): Promise<UnlistenFn> =>

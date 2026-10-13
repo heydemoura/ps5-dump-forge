@@ -7,11 +7,13 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 pub mod ampr_index;
+pub mod ampr_pack;
 pub mod build;
 pub mod cnt;
 pub mod cnt_write;
 pub mod crypto;
 pub mod exfat;
+pub mod exfat_write;
 pub mod ffpfsc;
 pub mod fih;
 pub mod fih_write;
@@ -24,6 +26,7 @@ pub mod license;
 pub mod naps;
 pub mod outer;
 pub mod outer_write;
+pub mod pfs_source;
 pub mod pfsc;
 pub mod pfsc_reader;
 pub mod pfsimage;
@@ -75,9 +78,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Format(String),
-    /// The caller's cancel flag stopped a build or a verification. Its own variant, so a caller
-    /// can tell a stop it asked for from a failure without reading the message.
-    #[error("the build was cancelled")]
+    /// The caller asked to stop (the image writers vendored from PS5 Dump Forge return it).
+    #[error("cancelled")]
     Cancelled,
 }
 

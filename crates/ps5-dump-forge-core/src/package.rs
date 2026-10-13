@@ -15,7 +15,7 @@ use ps5_dump_forge_fpkg::FpkgSource;
 use ps5upload_fpkg::build::{self, BuildControl, BuildRequest, Origin, Prepared, Stage};
 use ps5upload_fpkg::kraken::Level;
 use ps5upload_fpkg::source::{self, SourceFile, SourceTree};
-use ps5upload_fpkg::{Error, sdk_rules};
+use ps5upload_fpkg::{Error, cnt_write, sdk_rules};
 use unicode_normalization::is_nfc;
 
 use crate::convert::SourceStamp;
@@ -35,19 +35,15 @@ const GAME: u64 = 0;
 const APP: u64 = 65536;
 /// The AMPR file index a libSceAmpr title reads from the image root.
 const AMPR_INDEX: &str = "ampr_emu.index";
-/// The readiness check `source::readiness` adds for a title that imports libSceAmpr.
-const AMPR_CHECK: &str = "ampr_emu.index for a libSceAmpr title";
-/// What `prepare` logs when it cannot generate the index.
-const AMPR_SKIPPED: &str = "not generating ampr_emu.index";
 const MIB: u64 = 1024 * 1024;
 
 /// What stops a package build before anything is prepared (findings), and what is worth
 /// showing either way (notes): readiness, category, firmware, ids, package path names, and
-/// the AMPR case-collision rule.
+/// the AMPR case-collision rule. Last, whether `eboot.bin` imports libSceAmpr, for `prepare`.
 pub(crate) fn source_findings(
     tree: &mut dyn SourceTree,
     info: &GameInfo,
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<String>, Vec<String>, bool) {
     let mut findings = Vec::new();
     let mut notes = Vec::new();
     let files: Vec<String> = tree
@@ -95,8 +91,8 @@ pub(crate) fn source_findings(
         ));
     }
 
-    // ponytail: readiness scans eboot.bin for libSceAmpr (up to ~80 MiB, not cancellable),
-    // and prepare runs it once more.
+    // ponytail: readiness scans eboot.bin for libSceAmpr (up to ~80 MiB, not cancellable);
+    // `prepare` takes the answer (`BuildRequest::imports_ampr`) instead of scanning again.
     let readiness = source::readiness(tree);
     for c in &readiness.checks {
         let mark = if c.ok { "ok" } else { "warning" };
@@ -121,19 +117,30 @@ pub(crate) fn source_findings(
     }
     findings.extend(listing("package path", &bad));
 
-    let ampr = readiness.checks.iter().any(|c| c.name == AMPR_CHECK);
+    let ampr = readiness.imports_ampr;
+    // `prepare` builds the index anew for a libSceAmpr title and for a source with its own,
+    // except an LZ4-packed one (its index is kept: the pack manifest's file ids come from it);
+    // that copy itself is left out, and so is artwork the container may carry instead (`prepare`
+    // still refuses a clash it does index). A manifest that cannot be read skips this check:
+    // `prepare` fails with that read's error.
     let own_index = files.iter().any(|p| p.eq_ignore_ascii_case(AMPR_INDEX));
-    if ampr && !own_index {
-        let clashes = case_clashes(&files);
+    if (ampr || own_index) && matches!(source::lz4_packed(tree), Ok(false)) {
+        let listed: Vec<String> = files
+            .iter()
+            .filter(|p| !p.eq_ignore_ascii_case(AMPR_INDEX))
+            .filter(|p| !cnt_write::CONTAINER_ONLY.contains(&p.as_str()))
+            .cloned()
+            .collect();
+        let clashes = case_clashes(&listed);
         if !clashes.is_empty() {
             findings.push(format!(
-                "eboot.bin imports libSceAmpr and the source has no {AMPR_INDEX}; the one the \
-                 package needs cannot be generated, because these paths differ only in case:"
+                "the package's {AMPR_INDEX} cannot be generated, because these paths differ \
+                 only in case:"
             ));
             findings.extend(listing("same path but for case", &clashes));
         }
     }
-    (findings, notes)
+    (findings, notes, ampr)
 }
 
 /// Why a package (PFS) path cannot be written as is: `plan::build` checks nothing.
@@ -167,14 +174,15 @@ fn case_clashes(files: &[String]) -> Vec<String> {
     clashes
 }
 
-/// Refusals only `prepare` can tell: its own AMPR index skip, as a hard error.
-pub(crate) fn prepared_findings(prepared: &Prepared) -> Vec<String> {
-    prepared
-        .log()
-        .iter()
-        .filter(|l| l.starts_with(AMPR_SKIPPED))
-        .map(|l| format!("{l}: a libSceAmpr title needs it, so the package is refused"))
-        .collect()
+/// `prepare`'s error as the job reports it: the AMPR index case clash it refuses (the
+/// backstop of `source_findings`' rule) is a preflight finding, the rest as `fpkg` has them.
+fn prepare_error(e: Error) -> anyhow::Error {
+    match e {
+        Error::Format(m) if m.contains(&format!("which {AMPR_INDEX} cannot tell apart")) => {
+            anyhow!("preflight failed:\n  {m}")
+        }
+        e => fpkg("preparing the package")(e),
+    }
 }
 
 /// The vendored error as the job reports it; a stop the job asked for is `cancelled`. The
@@ -272,7 +280,7 @@ pub(crate) fn run(
     stamp: &SourceStamp,
 ) -> anyhow::Result<JobReport> {
     ctx.log(CONSOLE);
-    let (more, notes) = source_findings(tree.as_mut(), info);
+    let (more, notes, imports_ampr) = source_findings(tree.as_mut(), info);
     findings.extend(more);
     for note in notes {
         ctx.log(note);
@@ -287,10 +295,12 @@ pub(crate) fn run(
     // `source`/`output_dir` are not read by `prepare`/`write_package`; the `.part` is ours.
     let mut request = BuildRequest::production(&req.source, dir);
     request.threads = req.compression_threads;
+    request.imports_ampr = Some(imports_ampr);
     request.level = match req.kraken_level {
         KrakenLevel::Fast => Level::Fast,
         KrakenLevel::Balanced => Level::Balanced,
         KrakenLevel::Smallest => Level::Smallest,
+        KrakenLevel::Stored => Level::Stored,
     };
     let stage = Cell::new(Stage::Check.id());
     let sized = Cell::new(false);
@@ -319,6 +329,30 @@ pub(crate) fn run(
         }
         ctx.progress(stage.get(), done, total)
     };
+    // `prepare`'s per-file reads (a SELF header in check, 4 bytes in plan) move the bar too, each
+    // counted as `unit` bytes. The passes after them are not sized yet: compress reads the
+    // source, write and verify about as much again each (a package is at most a little over its
+    // files), so 4x the source until compress renews it, the source taken as at least 40 bytes
+    // a file (a package spends more than that on each). One read counts 1/40 of a file's share
+    // of that source, at most 64 KiB (about what streaming 64 KiB costs: a seek, an archive
+    // entry found), so the two passes take at most ~1% of the stand-in: a game of many tiny
+    // files would otherwise fill the bar before compress begins.
+    let files = (tree.files().len() as u64).max(1);
+    let source = file_bytes.max(files.saturating_mul(40));
+    let unit = (source / files.saturating_mul(40)).min(64 * 1024);
+    let mut on_files = |s: Stage, done: u64, total: u64| {
+        if !sized.replace(true) {
+            // Check's count stands in for plan's, which plan renews.
+            let reads = if s == Stage::Check { total * 2 } else { total };
+            let rest = source.saturating_mul(4);
+            ctx.expect_rest(reads.saturating_mul(unit).saturating_add(rest));
+        }
+        ctx.progress(
+            s.id(),
+            done.saturating_mul(unit),
+            total.saturating_mul(unit),
+        )
+    };
     // What the package write watches instead of the job's cancel (`sync_beside`).
     #[cfg(target_os = "freebsd")]
     let abort = AtomicBool::new(false);
@@ -335,17 +369,16 @@ pub(crate) fn run(
         bytes: Some(&mut on_bytes),
         cancel: Some(ctx.cancel),
         stage: Some(&mut on_stage),
+        files: Some(&mut on_files),
         sample: match mode {
             Mode::Fast { seed, .. } => Some(seed),
             Mode::Full => None,
         },
     };
-    let prepared = build::prepare(tree.as_mut(), &request, &mut control)
-        .map_err(fpkg("preparing the package"))?;
+    let prepared = build::prepare(tree.as_mut(), &request, &mut control).map_err(prepare_error)?;
     for line in prepared.log() {
         ctx.log(format!("fpkg: {line}"));
     }
-    let mut findings = prepared_findings(&prepared);
     // The builder spools its compressed image inside the package itself (production requests
     // read no spool dir), so the package is the only thing written.
     let size = prepared.estimated_size();
@@ -355,12 +388,11 @@ pub(crate) fn run(
     #[cfg(target_os = "freebsd")]
     ctx.watch(dir);
     let checked = preflight::destination(dir, need, size, ctx.cancel);
-    findings.extend(checked.findings);
     for note in checked.notes {
         ctx.log(note);
     }
-    if !findings.is_empty() {
-        bail!("preflight failed:\n  {}", findings.join("\n  "));
+    if !checked.findings.is_empty() {
+        bail!("preflight failed:\n  {}", checked.findings.join("\n  "));
     }
     #[cfg(target_os = "freebsd")]
     let dest = checked
@@ -709,7 +741,7 @@ mod tests {
         eboot
     }
 
-    fn findings_of(tree: &mut Mem) -> (Vec<String>, Vec<String>) {
+    fn findings_of(tree: &mut Mem) -> (Vec<String>, Vec<String>, bool) {
         let (info, _) = preflight::input(tree);
         source_findings(tree, &info)
     }
@@ -723,28 +755,45 @@ mod tests {
             ("data/level.bin", vec![2; 10]),
         ];
         let mut tree = Mem::new(&files);
-        let (findings, notes) = findings_of(&mut tree);
+        let (findings, notes, ampr) = findings_of(&mut tree);
         assert!(
             findings
                 .iter()
                 .any(|f| f.contains("data/Level.bin = data/level.bin")),
             "{findings:?}"
         );
-        assert!(notes.iter().any(|n| n.contains(AMPR_CHECK)), "{notes:?}");
+        assert!(ampr);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.contains("ampr_emu.index for a libSceAmpr title")),
+            "{notes:?}"
+        );
 
-        // The backstop: prepare itself skips the index, and that skip is refused too.
+        // The backstop: prepare itself refuses the index, as a preflight finding too.
         let request = BuildRequest::production("unused", "unused");
-        let prepared = build::prepare(&mut tree, &request, &mut BuildControl::default()).unwrap();
-        let found = prepared_findings(&prepared);
-        assert_eq!(found.len(), 1, "{:?}", prepared.log());
+        let Err(e) = build::prepare(&mut tree, &request, &mut BuildControl::default()) else {
+            panic!("prepare built an index for a case clash");
+        };
+        let text = prepare_error(e).to_string();
+        assert!(text.starts_with("preflight failed:"), "{text}");
+        assert!(text.contains("data/Level.bin"), "{text}");
 
-        // Its own index makes the collision harmless; without libSceAmpr it never mattered.
-        let mut own = files.to_vec();
-        own.push((AMPR_INDEX, vec![0; 8]));
-        assert!(findings_of(&mut Mem::new(&own)).0.is_empty());
+        // A source's own index is rebuilt too, so it does not help; without libSceAmpr or an
+        // index of its own the collision never mattered.
         let mut plain = files.to_vec();
         plain[0].1 = vec![0x7f; 4096];
-        assert!(findings_of(&mut Mem::new(&plain)).0.is_empty());
+        let (findings, _, ampr) = findings_of(&mut Mem::new(&plain));
+        assert!(findings.is_empty() && !ampr, "{findings:?}");
+        let mut own = plain.clone();
+        own.push((AMPR_INDEX, vec![0; 8]));
+        let (findings, ..) = findings_of(&mut Mem::new(&own));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("data/Level.bin = data/level.bin")),
+            "{findings:?}"
+        );
     }
 
     #[test]
@@ -759,7 +808,7 @@ mod tests {
             (long.as_str(), vec![1]),
             ("sce_sys/playgo-chunk.dat", vec![1]),
         ]);
-        let (findings, _) = findings_of(&mut tree);
+        let (findings, ..) = findings_of(&mut tree);
         let text = findings.join("\n");
         for want in [
             "applicationCategoryType is 33554432",

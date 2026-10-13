@@ -43,6 +43,7 @@ export function App() {
   useEffect(() => {
     const subs = [
       events.progress((e) => dispatch({ type: "progress", e, at: Date.now() })),
+      events.stages((e) => dispatch({ type: "stages", e })),
       events.log((e) => dispatch({ type: "log", e })),
       events.done((e) => dispatch({ type: "done", e })),
       // The quit prompt never opens behind a dialog (help, delete): those close as cancelled.

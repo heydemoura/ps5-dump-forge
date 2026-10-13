@@ -3,7 +3,10 @@
 //! sevenz-rust2 push their data through callbacks) and hands over the asked-for entry's bytes
 //! through a bounded queue, skipping the entries before it. An entry the session has already
 //! gone past starts a new session from the archive's start: cheap for a non-solid archive (a
-//! skip reads headers only), a decode of everything before it for a solid one.
+//! skip reads headers only), a decode of everything before it for a solid one. Two things keep
+//! a pass of small reads over many entries (a header of each, a package builder's check) off
+//! that path: an unfinished entry with little left is read to its end and the session goes on,
+//! and the first bytes of every entry decoded from its start are kept and served again.
 
 use super::*;
 use std::{
@@ -15,6 +18,17 @@ use std::{
 
 /// Chunks in flight from a session (each at most 64 KiB).
 const QUEUE: usize = 64;
+
+/// The most of an unfinished entry read to its end (and dropped) to go on to a later entry in
+/// the same session.
+// ponytail: 64 MiB decoded and thrown away against a restart's walk of headers up to the next
+// entry (thousands in a big archive), or a solid archive's re-decode of everything before it;
+// a bigger rest restarts.
+const DRAIN_MAX: u64 = 64 << 20;
+
+/// The first bytes of every entry kept once decoded (a header check reads 4 to 32 of them).
+// ponytail: 64 B per entry decoded, never dropped: 7,000 entries hold under 1 MiB.
+const HEAD: usize = 64;
 
 /// Reads entries of one archive, a session at a time.
 pub struct Reader {
@@ -29,6 +43,11 @@ pub struct Reader {
     /// The caller's cancel flag: every wait for the session checks it.
     cancel: Arc<AtomicBool>,
     session: Option<Session>,
+    /// The first bytes (up to [`HEAD`]) of each entry decoded from its start; an entry of at
+    /// most [`HEAD`] bytes only whole, once its end (and the archive's check of it) came.
+    heads: HashMap<String, Vec<u8>>,
+    /// Sessions started.
+    sessions: u64,
 }
 
 enum Msg {
@@ -51,6 +70,8 @@ struct Session {
     size: u64,
     at: u64,
     ended: bool,
+    /// The current entry's first bytes handed out, up to [`HEAD`].
+    head: Vec<u8>,
     cancel: Arc<AtomicBool>,
     /// What the last chunk had left over.
     pending: Vec<u8>,
@@ -94,6 +115,8 @@ impl Reader {
             empty: Arc::new(empty),
             cancel,
             session: None,
+            heads: HashMap::new(),
+            sessions: 0,
         }
     }
 
@@ -104,6 +127,20 @@ impl Reader {
         offset: u64,
         len: usize,
     ) -> Result<Vec<u8>, ArchiveError> {
+        // Its head, kept: the bytes a read gives, the session left where it is (a stop still
+        // stops, as a read through the session would).
+        if let Some(h) = self.heads.get(entry) {
+            if let Err(e) = check(&self.cancel) {
+                self.session = None;
+                return Err(e);
+            }
+            let whole = self.sizes.get(entry) == Some(&(h.len() as u64));
+            let end = offset.saturating_add(len as u64);
+            if whole || end <= h.len() as u64 {
+                let from = offset.min(h.len() as u64) as usize;
+                return Ok(h[from..end.min(h.len() as u64) as usize].to_vec());
+            }
+        }
         let result = self.try_read(entry, offset, len);
         if result.is_err() {
             self.session = None;
@@ -127,11 +164,11 @@ impl Reader {
             // would leave a trail of freed large blocks behind.
             let left = usize::try_from(s.size.saturating_sub(s.at)).unwrap_or(usize::MAX);
             let mut out = Vec::with_capacity(len.min(left));
-            match s.fill(&mut out, len)? {
+            match s.fill(&mut out, len, &mut self.heads)? {
                 // At the entry's end, its end comes first: the archive's check of it fails
                 // the read that completes it, not a later one nobody makes.
                 true if s.at >= s.size && !s.ended => {
-                    if !s.fill(&mut Vec::new(), 1)? || !s.ended {
+                    if !s.fill(&mut Vec::new(), 1, &mut self.heads)? || !s.ended {
                         return Err(corrupt(&format!(
                             "{entry} is longer than the archive lists."
                         )));
@@ -163,28 +200,40 @@ impl Reader {
             let mut skip = offset - s.at;
             while skip > 0 && !s.ended {
                 let mut gone = Vec::with_capacity(skip.min(1 << 20) as usize);
-                if !s.fill(&mut gone, skip.min(1 << 20) as usize)? {
+                if !s.fill(&mut gone, skip.min(1 << 20) as usize, &mut self.heads)? {
                     return Ok(false);
                 }
                 skip -= gone.len() as u64;
             }
             return Ok(true);
         }
-        // Another entry: the current one must be done (its end taken) first.
-        if !s.ended {
-            if s.at < s.size || !s.pending.is_empty() {
-                return Ok(false);
-            }
-            if !s.fill(&mut Vec::new(), 1)? || !s.ended {
-                return Ok(false);
-            }
-        }
+        // Another entry, not gone past (else a new session, with nothing read in vain)...
         if s.passed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(entry)
         {
             return Ok(false);
+        }
+        // ...once the current one is done: read to its end (and its end taken) when little of
+        // it is left.
+        if !s.ended {
+            if s.size.saturating_sub(s.at) > DRAIN_MAX {
+                return Ok(false);
+            }
+            while !s.ended {
+                let mut gone =
+                    Vec::with_capacity(s.size.saturating_sub(s.at).min(1 << 20) as usize);
+                if !s.fill(&mut gone, 1 << 20, &mut self.heads)? {
+                    return Ok(false);
+                }
+                if s.at > s.size {
+                    return Err(corrupt(&format!(
+                        "{} is longer than the archive lists.",
+                        s.current
+                    )));
+                }
+            }
         }
         if !s
             .target
@@ -197,6 +246,7 @@ impl Reader {
         s.size = self.sizes.get(entry).copied().unwrap_or(0);
         s.at = 0;
         s.ended = false;
+        s.head.clear();
         // Then up to `offset` in it.
         self.moved_to(entry, offset)
     }
@@ -204,6 +254,7 @@ impl Reader {
     /// A new session from the archive's start, serving `entry` first.
     fn start(&mut self, entry: &str) -> Result<(), ArchiveError> {
         self.session = None;
+        self.sessions += 1;
         let stop = Arc::new(AtomicBool::new(false));
         let (target_tx, target_rx) = mpsc::sync_channel::<String>(1);
         let (data_tx, data_rx) = mpsc::sync_channel(QUEUE);
@@ -242,6 +293,7 @@ impl Reader {
             size: self.sizes.get(entry).copied().unwrap_or(0),
             at: 0,
             ended: false,
+            head: Vec::new(),
             cancel: self.cancel.clone(),
             pending: Vec::new(),
             thread: Some(thread),
@@ -251,16 +303,28 @@ impl Reader {
 }
 
 impl Session {
-    /// Appends up to `len` bytes of the current entry to `out`, fewer at its end. False: the
-    /// session went to the archive's end without the entry.
-    fn fill(&mut self, out: &mut Vec<u8>, len: usize) -> Result<bool, ArchiveError> {
+    /// Appends up to `len` bytes of the current entry to `out`, fewer at its end, keeping its
+    /// head in `heads` once known. False: the session went to the archive's end without the
+    /// entry.
+    fn fill(
+        &mut self,
+        out: &mut Vec<u8>,
+        len: usize,
+        heads: &mut HashMap<String, Vec<u8>>,
+    ) -> Result<bool, ArchiveError> {
         while out.len() < len && !self.ended {
             check(&self.cancel)?;
             if self.pending.is_empty() {
                 let data = self.data.as_ref().expect("an open session");
                 match data.recv_timeout(Duration::from_millis(100)) {
                     Ok(Msg::Chunk(b)) => self.pending = b,
-                    Ok(Msg::End) => self.ended = true,
+                    Ok(Msg::End) => {
+                        self.ended = true;
+                        // A short entry whole, now that the archive has checked it.
+                        if self.head.len() as u64 == self.size && self.size <= HEAD as u64 {
+                            heads.insert(self.current.clone(), self.head.clone());
+                        }
+                    }
                     Ok(Msg::Missing) => return Ok(false),
                     Ok(Msg::Failed(e)) => return Err(e),
                     Err(mpsc::RecvTimeoutError::Timeout) => check(&self.cancel)?,
@@ -272,6 +336,14 @@ impl Session {
             }
             let n = (len - out.len()).min(self.pending.len());
             out.extend_from_slice(&self.pending[..n]);
+            if self.head.len() < HEAD && self.at == self.head.len() as u64 {
+                let k = n.min(HEAD - self.head.len());
+                self.head.extend_from_slice(&self.pending[..k]);
+                // Bytes short of the entry's end need no check of it to be served again.
+                if self.size > HEAD as u64 {
+                    heads.insert(self.current.clone(), self.head.clone());
+                }
+            }
             self.pending.drain(..n);
             self.at += n as u64;
         }
@@ -353,5 +425,96 @@ impl Sink for Feed {
     }
     fn done(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A STORED zip of `files`, written to a fresh temporary folder.
+    fn zip(name: &str, files: &[(String, Vec<u8>)]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("forge-archive-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (mut out, mut cd) = (Vec::new(), Vec::new());
+        for (path, data) in files {
+            let (crc, n) = (crc32fast::hash(data), data.len() as u32);
+            let common = |sig: u32, extra: &[u8]| {
+                let mut h = sig.to_le_bytes().to_vec();
+                h.extend_from_slice(extra);
+                for v in [20u16, 0, 0, 0, 0] {
+                    h.extend_from_slice(&v.to_le_bytes());
+                }
+                for v in [crc, n, n] {
+                    h.extend_from_slice(&v.to_le_bytes());
+                }
+                h.extend_from_slice(&(path.len() as u16).to_le_bytes());
+                h.extend_from_slice(&0u16.to_le_bytes());
+                h
+            };
+            let mut c = common(0x02014b50, &20u16.to_le_bytes());
+            c.extend_from_slice(&[0; 10]);
+            c.extend_from_slice(&(out.len() as u32).to_le_bytes());
+            c.extend_from_slice(path.as_bytes());
+            cd.extend_from_slice(&c);
+            out.extend_from_slice(&common(0x04034b50, &[]));
+            out.extend_from_slice(path.as_bytes());
+            out.extend_from_slice(data);
+        }
+        let (at, count) = (out.len() as u32, files.len() as u16);
+        out.extend_from_slice(&cd);
+        out.extend_from_slice(&0x06054b50u32.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        for v in [count, count] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [cd.len() as u32, at] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&[0; 2]);
+        let path = dir.join("game.zip");
+        fs::write(&path, out).unwrap();
+        path
+    }
+
+    /// A pass of head reads over every entry in archive order runs in one session (an entry
+    /// with more than [`DRAIN_MAX`] left still restarts); then heads in any order come from
+    /// what was kept, and every byte matches the entry.
+    #[test]
+    fn head_reads_drain_and_are_kept() {
+        let mut files: Vec<(String, Vec<u8>)> = (0..200u32)
+            .map(|i| {
+                let size = [10, 64, 65, 1000, 70_000][i as usize % 5] + i as usize;
+                let data = (0..size).map(|j| (i * 31 + j as u32 * 7) as u8).collect();
+                (format!("g/f{i:03}"), data)
+            })
+            .collect();
+        files.insert(100, ("g/big".into(), vec![7; DRAIN_MAX as usize + 65_536]));
+        files.insert(50, ("g/empty".into(), Vec::new()));
+        let path = zip("heads", &files);
+        let listing = list(&path, None).unwrap();
+        let mut r = Reader::new(&path, None, listing, Arc::default());
+        let head = |d: &[u8], o: usize, n: usize| d[o.min(d.len())..(o + n).min(d.len())].to_vec();
+        let wanted: Vec<_> = files.iter().filter(|(_, d)| !d.is_empty()).collect();
+        for (p, d) in &wanted {
+            assert_eq!(r.read_at(p, 0, 32).unwrap(), head(d, 0, 32), "{p}");
+        }
+        // One session, and one more after `big`: too much of it was left to read through.
+        assert_eq!(r.sessions, 2);
+        for (p, d) in wanted.iter().rev() {
+            assert_eq!(r.read_at(p, 0, 4).unwrap(), head(d, 0, 4), "{p}");
+            assert_eq!(r.read_at(p, 10, 22).unwrap(), head(d, 10, 22), "{p}");
+            if d.len() <= HEAD {
+                assert_eq!(r.read_at(p, 0, 1 << 20).unwrap(), **d, "{p}");
+                assert_eq!(r.read_at(p, 100, 4).unwrap(), Vec::<u8>::new(), "{p}");
+            }
+        }
+        assert_eq!(r.sessions, 2);
+        // Whole reads, past what was kept, give the same bytes.
+        for (p, d) in &wanted {
+            assert_eq!(r.read_at(p, 0, d.len() + 1).unwrap(), **d, "{p}");
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }

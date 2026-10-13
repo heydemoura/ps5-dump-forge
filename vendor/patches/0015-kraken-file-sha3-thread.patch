@@ -1,5 +1,5 @@
 diff --git a/ps5upload-fpkg/src/kraken_image.rs b/ps5upload-fpkg/src/kraken_image.rs
-index 6f4737c..eaec0a0 100644
+index 546e82c..719fcc6 100644
 --- a/ps5upload-fpkg/src/kraken_image.rs
 +++ b/ps5upload-fpkg/src/kraken_image.rs
 @@ -219,6 +219,34 @@ fn pipeline_local<T: Send, U: Send>(
@@ -36,8 +36,8 @@ index 6f4737c..eaec0a0 100644
 +
  /// Compress the image described by `plan` into `spool` from byte `base` on. `read` fetches a byte range of a source
  /// file, `metadata` is the metadata region's logical bytes and `keystone` the generated one.
- /// `store` keeps every block raw (see [`store_only`]).
-@@ -249,11 +277,17 @@ pub fn compress(
+ #[allow(clippy::too_many_arguments)]
+@@ -247,11 +275,17 @@ pub fn compress(
      let mut blocks: Vec<StoredBlock> = Vec::new();
      let mut cursor = 0u64;
      let files = plan.afid_order.len();
@@ -58,7 +58,7 @@ index 6f4737c..eaec0a0 100644
          threads.max(1),
          || {
              let Some(t) = next.next() else {
-@@ -319,16 +353,13 @@ pub fn compress(
+@@ -318,16 +352,13 @@ pub fn compress(
              // Everything is stored back to back, so the stored position never jumps and the only
              // anchors the descriptor needs are the ones that open each 16-record window.
              if let Owner::File(afid) = t.owner {
@@ -80,7 +80,7 @@ index 6f4737c..eaec0a0 100644
              }
              let stored_at = cursor;
              let mut parts = Vec::with_capacity(2);
-@@ -352,10 +383,13 @@ pub fn compress(
+@@ -351,10 +382,13 @@ pub fn compress(
              progress(done, total);
              Ok(())
          },
@@ -98,7 +98,7 @@ index 6f4737c..eaec0a0 100644
      // Files with no bytes still have a digest: that of nothing.
      for (afid, &fi) in plan.afid_order.iter().enumerate() {
          if plan.files[fi].size == 0 {
-@@ -1332,4 +1366,73 @@ mod tests {
+@@ -1331,4 +1365,72 @@ mod tests {
          assert_eq!(out.len(), kraken::BLOCK);
          assert!(out[kraken::HALF..].iter().all(|&b| b == 0));
      }
@@ -150,7 +150,6 @@ index 6f4737c..eaec0a0 100644
 +            0,
 +            3,
 +            kraken::Level::Fast,
-+            false,
 +            &cancel,
 +            &mut |_, _| {},
 +        );

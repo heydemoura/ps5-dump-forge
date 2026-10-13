@@ -1,5 +1,5 @@
 diff --git a/ps5upload-fpkg/Cargo.toml b/ps5upload-fpkg/Cargo.toml
-index 175181d..7284ef8 100644
+index 9b5c803..92cf9a4 100644
 --- a/ps5upload-fpkg/Cargo.toml
 +++ b/ps5upload-fpkg/Cargo.toml
 @@ -1,8 +1,8 @@
@@ -10,12 +10,21 @@ index 175181d..7284ef8 100644
 -version.workspace = true
 +edition = "2021" # upstream ps5upload is 2021; kept to minimise the vendor diff
 +license = "GPL-3.0-or-later"
-+version = "6.1.2" # pinned upstream tag v6.1.2
++version = "7.0.22" # pinned upstream tag v7.0.22
  
  [dependencies]
  # Cross-platform OS randomness for the outer PFS seed. Opening /dev/urandom
+@@ -12,7 +12,7 @@ aes = "0.9"
+ flate2 = "1"
+ crc32fast = "1"
+ # Raw LZ4 blocks for AMPR asset packs (already in the tree through smb2).
+-lz4_flex = { version = "0.13", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
++lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] } # Forge's version (upstream 0.13): one copy in the lock
+ # AMPR pack profiles (drakmor's TOML format).
+ toml = "1"
+ hmac = "0.13"
 diff --git a/ps5upload-pkg/Cargo.toml b/ps5upload-pkg/Cargo.toml
-index 85a48ba..343bfba 100644
+index b09ceda..80f2678 100644
 --- a/ps5upload-pkg/Cargo.toml
 +++ b/ps5upload-pkg/Cargo.toml
 @@ -1,8 +1,8 @@
@@ -26,7 +35,7 @@ index 85a48ba..343bfba 100644
 -version.workspace = true
 +edition = "2021" # upstream ps5upload is 2021; kept to minimise the vendor diff
 +license = "GPL-3.0-or-later"
-+version = "6.1.2" # pinned upstream tag v6.1.2
++version = "7.0.22" # pinned upstream tag v7.0.22
  
  [dependencies]
- blake3.workspace = true
+ # PS3 NPDRM packages: SHA-1 keystream (debug) and AES-128 counter mode (retail).

@@ -2576,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "ps5upload-fpkg"
-version = "6.1.2"
+version = "7.0.22"
 dependencies = [
  "aes",
  "crc32fast",
@@ -2584,6 +2584,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac",
  "libc",
+ "lz4_flex",
  "num-bigint",
  "ps5upload-pkg",
  "serde",
@@ -2591,15 +2592,18 @@ dependencies = [
  "sha2 0.11.0",
  "sha3",
  "thiserror 2.0.21",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
 name = "ps5upload-pkg"
-version = "6.1.2"
+version = "7.0.22"
 dependencies = [
+ "aes",
  "blake3",
  "serde",
  "serde_json",
+ "sha1",
  "thiserror 2.0.21",
 ]
 
@@ -3060,6 +3064,17 @@ dependencies = [
  "ppmd-rust",
  "sha2 0.11.0",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "digest 0.11.3",
 ]
 
 [[package]]

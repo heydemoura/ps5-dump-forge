@@ -32,7 +32,7 @@ installed. Every format can be created and read back (an image or `.fpkg` can be
 
 | Format | Console speed | Size on disk | Notes |
 |---|---|---|---|
-| `.fpkg` (debug FPKG, saved as `.pkg`) | Native, full speed | 30–60% less, depending on the game | Installs on firmware 11.60 or lower with kstuff + fpkg-enable + ppr-patch. Kraken level (`--kraken`): **Fast** (default), **Balanced** / **Smallest** ≈ 2.6% smaller at ~6× / ~9× the compression time. Reads packages from this builder and compatible debug builders. |
+| `.fpkg` (debug FPKG, saved as `.pkg`) | Native, full speed | 30–60% less, depending on the game | Installs on firmware 11.60 or lower with kstuff + fpkg-enable + ppr-patch. Kraken level (`--kraken`): **Fast** (default), **Balanced** / **Smallest** ≈ 2.6% smaller at ~6× / ~9× the compression time, **Stored** uncompressed (for a console that installs a compressed package but won't start it). Reads packages from this builder and compatible debug builders. |
 | `.ffpkg` (UFS2) | Full image speed | Equal to the game size | ShadowMountPlus's recommendation. |
 | `.exfat` (512 B sectors, 64 KiB clusters) | Full image speed | Equal to the game size | For games that only run like external-drive content. |
 | `.ffpfs` (PFS, uncompressed) | Full image speed | Equal to the game size | Experimental in ShadowMountPlus. ASCII file names only. |
@@ -113,7 +113,7 @@ Every desktop archive also has `ps5-dump-forge` (`ps5-dump-forge.exe` on Windows
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to ffpkg      # folder | exfat | ffpkg | ffpfs | ffpfsc | pkg (debug FPKG)
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to ffpfsc --inner exfat   # inner: exfat (default) | ffpkg | ffpfs
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to ffpfsc --level 6        # zlib level 0 (store) .. 9 (smallest), default 6
-./ps5-dump-forge convert ~/Games/PPSA01234 --to pkg --kraken fast       # fast (default) | balanced | smallest
+./ps5-dump-forge convert ~/Games/PPSA01234 --to pkg --kraken fast       # fast (default) | balanced | smallest | stored
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to exfat --full-verify     # check every byte, not a sample
 ./ps5-dump-forge convert Game.part1.rar --to ffpkg --password-stdin     # archive source; password from stdin
 ```
@@ -145,7 +145,7 @@ system.
 Big thanks to **[PhantomPtr](https://github.com/phantomptr)** for
 **[ps5upload](https://github.com/phantomptr/ps5upload)**. Its Rust engine is the reference implementation this
 project learned the PS5 formats from: the FPKG package builder and reader (PFS, PFSC, Kraken, CNT/FIH,
-PlayGo, debug license), and the exFAT and UFS2 readers. Its crates are vendored here (`vendor/`, v6.1.2).
+PlayGo, debug license), and the exFAT and UFS2 readers. Its crates are vendored here (`vendor/`, v7.0.22).
 
 Big thanks to **[drakmor](https://github.com/drakmor)**, author of
 **[ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus)**, for the mount side this tool writes for and

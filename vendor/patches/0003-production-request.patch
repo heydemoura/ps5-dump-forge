@@ -1,20 +1,21 @@
 diff --git a/ps5upload-fpkg/src/build.rs b/ps5upload-fpkg/src/build.rs
-index 34c051e..b50e266 100644
+index bbd3b02..86d7769 100644
 --- a/ps5upload-fpkg/src/build.rs
 +++ b/ps5upload-fpkg/src/build.rs
-@@ -66,6 +66,11 @@ pub struct BuildRequest {
+@@ -66,6 +66,12 @@ pub struct BuildRequest {
      /// Narrows the package's PlayGo languages to this one (`fr-FR`, …; see
      /// [`cnt_write::playgo_scenario_json`]). Absent, it declares all of them with `en-US` first.
      pub language: Option<String>,
 +    /// Whether the build itself consults the diagnostic variables `PS5UPLOAD_FPKG_PARAM_FILE`,
 +    /// `PS5UPLOAD_FPKG_SPOOL_DIR`, `PS5UPLOAD_FPKG_DRM_TYPE` and `PS5UPLOAD_FPKG_KRAKEN_STORE`.
 +    /// [`BuildRequest::new`] sets it, as the build always did; [`BuildRequest::production`]
-+    /// clears it, so nothing in the environment reaches that build.
++    /// clears it, so nothing in the environment reaches that build. [`Self::level`]
++    /// `Stored` stores the blocks raw either way.
 +    pub env_overrides: bool,
  }
  
  impl BuildRequest {
-@@ -91,14 +96,58 @@ impl BuildRequest {
+@@ -91,14 +97,68 @@ impl BuildRequest {
                  .and_then(|v| v.parse().ok())
                  .unwrap_or_default(),
              language: None,
@@ -62,6 +63,16 @@ index 34c051e..b50e266 100644
 +        .unwrap_or(cnt_write::LICENSED_DRM_TYPE)
 +}
 +
++/// The Kraken level the build compresses at: the request's, or [`crate::kraken::Level::Stored`]
++/// when `PS5UPLOAD_FPKG_KRAKEN_STORE=1` and the request lets the environment in.
++fn kraken_level(request: &BuildRequest) -> crate::kraken::Level {
++    if request.env_overrides && crate::kraken_image::store_only() {
++        crate::kraken::Level::Stored
++    } else {
++        request.level
++    }
++}
++
  /// Where a compressed build spools its image: in the package itself, or in
 -/// `PS5UPLOAD_FPKG_SPOOL_DIR` when set (a separate file, copied in once the image is done).
 -fn spool_for(partial: &Path) -> stream::KrakenSpool {
@@ -73,10 +84,10 @@ index 34c051e..b50e266 100644
 +        .then(|| std::env::var_os("PS5UPLOAD_FPKG_SPOOL_DIR"))
 +        .flatten()
 +    {
-         Some(dir) if !dir.is_empty() => {
-             let name = format!(
-                 "{}.kraken",
-@@ -569,9 +618,27 @@ fn prepare_with(
+         Some(dir) if !dir.is_empty() => stream::KrakenSpool::File(spool_path(&dir, partial)),
+         _ => stream::KrakenSpool::InPlace,
+     }
+@@ -600,9 +660,27 @@ fn prepare_with(
      // `PS5UPLOAD_FPKG_PARAM_FILE` packages that exact param.json instead, e.g. one taken from a
      // known-good release of the same title, whose edits (sdkVersion, userDefinedParam*) the
      // game may depend on. Its content id must still match the package's.
@@ -106,31 +117,32 @@ index 34c051e..b50e266 100644
              if source::content_id(&replaced).as_deref() != Some(content_id.as_str()) {
                  return format_err(format!(
                      "{} names a different content id than {content_id}",
-@@ -993,7 +1060,11 @@ fn write_mode(
+@@ -1025,8 +1103,11 @@ fn write_mode(
                  icon_dds: prepared.icon_dds.clone(),
                  extras: prepared.extras.clone(),
                  playgo_chunks: request.playgo_chunks,
 -                kraken_spool: request.kraken.then(|| spool_for(out_path)),
+-                level: request.level,
 +                kraken_spool: request
 +                    .kraken
 +                    .then(|| spool_for(out_path, request.env_overrides)),
-+                kraken_store: request.env_overrides && crate::kraken_image::store_only(),
++                level: kraken_level(request),
 +                drm_type: drm_type(request),
-                 level: request.level,
                  metadata_codec: request.metadata_codec,
              };
-@@ -1102,8 +1173,7 @@ fn write_mode(
+             // A separate spool is only ever scratch, whatever happens to the build.
+@@ -1134,8 +1215,7 @@ fn write_mode(
                  seed,
                  passcode: &request.passcode,
-                 content_type: cnt_write::content_class(param_json).0,
+                 content_type: cnt_write::content_class(param_json, plan.has_eboot()).0,
 -                drm_type: crate::cnt_write::drm_type_override()
 -                    .unwrap_or(crate::cnt_write::LICENSED_DRM_TYPE),
 +                drm_type: drm_type(request),
-                 content_flags: cnt_write::content_class(param_json).1,
+                 content_flags: cnt_write::content_class(param_json, plan.has_eboot()).1,
                  inner_size,
              })?;
 diff --git a/ps5upload-fpkg/src/kraken_image.rs b/ps5upload-fpkg/src/kraken_image.rs
-index 483fa5b..ea27cf8 100644
+index 3e16fe4..e2e8d1d 100644
 --- a/ps5upload-fpkg/src/kraken_image.rs
 +++ b/ps5upload-fpkg/src/kraken_image.rs
 @@ -141,7 +141,9 @@ fn plan_blocks(plan: &Plan) -> (Vec<Todo>, u64) {
@@ -138,76 +150,121 @@ index 483fa5b..ea27cf8 100644
  /// Compression is the default since the console's hardware decoder accepted our blocks (a
  /// compressed Minecraft played on a FW 5.10 console); storing stays available as a fallback.
 -fn store_only() -> bool {
-+/// The build reads it only where its request lets the environment in, and passes the answer
-+/// to [`compress`].
++/// The build reads it only where its request lets the environment in, and then compresses at
++/// [`kraken::Level::Stored`], which is what [`compress`] tests.
 +pub fn store_only() -> bool {
      std::env::var("PS5UPLOAD_FPKG_KRAKEN_STORE").is_ok_and(|v| v == "1")
  }
  
-@@ -218,6 +220,7 @@ fn pipeline_local<T: Send, U: Send>(
- 
- /// Compress the image described by `plan` into `spool` from byte `base` on. `read` fetches a byte range of a source
- /// file, `metadata` is the metadata region's logical bytes and `keystone` the generated one.
-+/// `store` keeps every block raw (see [`store_only`]).
- #[allow(clippy::too_many_arguments)]
- pub fn compress(
-     plan: &Plan,
-@@ -228,6 +231,7 @@ pub fn compress(
-     base: u64,
-     threads: usize,
-     level: kraken::Level,
-+    store: bool,
-     cancel: &AtomicBool,
-     progress: &mut dyn FnMut(u64, u64),
- ) -> Result<KrakenImage> {
-@@ -291,7 +295,7 @@ pub fn compress(
+@@ -289,9 +291,10 @@ pub fn compress(
+             Ok(Some((t, bytes)))
+         },
          |(t, bytes)| {
-             // Stored (`PS5UPLOAD_FPKG_KRAKEN_STORE=1`, see `store_only`): every half raw, the same
-             // layout with nothing for the console's decoder to decompress.
--            let halves = if store_only() {
-+            let halves = if store {
+-            // Stored (`PS5UPLOAD_FPKG_KRAKEN_STORE=1`, see `store_only`): every half raw, the same
+-            // layout with nothing for the console's decoder to decompress.
+-            let halves = if store_only() || level == kraken::Level::Stored {
++            // Stored (`Level::Stored`, or `PS5UPLOAD_FPKG_KRAKEN_STORE=1` through the build, see
++            // `store_only`): every half raw, the same layout with nothing for the console's
++            // decoder to decompress.
++            let halves = if level == kraken::Level::Stored {
                  bytes
                      .chunks(kraken::HALF)
                      .map(|h| Half::Raw(h.to_vec()))
 diff --git a/ps5upload-fpkg/src/stream.rs b/ps5upload-fpkg/src/stream.rs
-index 7ddec4b..44a8b90 100644
+index ff4ffd3..b467b6a 100644
 --- a/ps5upload-fpkg/src/stream.rs
 +++ b/ps5upload-fpkg/src/stream.rs
-@@ -49,6 +49,10 @@ pub struct StreamRequest<'a> {
+@@ -47,8 +47,10 @@ pub struct StreamRequest<'a> {
+     /// Compress the inner image with Kraken (see [`crate::kraken_image`]), spooling it where
+     /// this says. `None` stores it uncompressed.
      pub kraken_spool: Option<KrakenSpool>,
-     /// How hard the Kraken encoder works on a compressed image.
+-    /// How hard the Kraken encoder works on a compressed image.
++    /// How hard the Kraken encoder works on a compressed image; `Stored` keeps every block raw.
      pub level: crate::kraken::Level,
-+    /// Store a compressed image's blocks raw instead (see [`crate::kraken_image::store_only`]).
-+    pub kraken_store: bool,
 +    /// The container's DRM type (see [`crate::cnt_write::LICENSED_DRM_TYPE`]).
 +    pub drm_type: u32,
      /// How the inner image's metadata region is stored.
      pub metadata_codec: crate::inner::MetaCodec,
  }
-@@ -202,6 +206,7 @@ pub fn write_package(
-                 spool_base(where_to),
-                 threads,
-                 request.level,
-+                request.kraken_store,
-                 cancel,
-                 &mut |done, total| (progress.bytes)(done, total),
-             )?;
-@@ -417,8 +422,7 @@ pub fn write_package(
+@@ -423,8 +425,7 @@ pub fn write_package(
          seed: request.seed,
          passcode: request.passcode,
-         content_type: cnt_write::content_class(&request.param_json).0,
+         content_type: cnt_write::content_class(&request.param_json, plan.has_eboot()).0,
 -        drm_type: crate::cnt_write::drm_type_override()
 -            .unwrap_or(crate::cnt_write::LICENSED_DRM_TYPE),
 +        drm_type: request.drm_type,
-         content_flags: cnt_write::content_class(&request.param_json).1,
+         content_flags: cnt_write::content_class(&request.param_json, plan.has_eboot()).1,
          inner_size,
      })?;
+diff --git a/ps5upload-fpkg/tests/prepared.rs b/ps5upload-fpkg/tests/prepared.rs
+index f6cc99e..2e4519e 100644
+--- a/ps5upload-fpkg/tests/prepared.rs
++++ b/ps5upload-fpkg/tests/prepared.rs
+@@ -415,6 +415,58 @@ fn the_estimate_covers_a_directory_heavy_tree() {
+     );
+ }
+ 
++/// ... and a package stored raw (`Level::Stored`): its image is as large as the data it
++/// carries, compressible or not, plus the Kraken layout's own tables.
++#[test]
++fn the_estimate_covers_a_stored_package() {
++    let src = TempDir::new("stored-src");
++    let out = TempDir::new("stored-out");
++    write_tree(src.path());
++    let mut x = 0x9E37_79B9_7F4A_7C15u64;
++    let noise: Vec<u8> = (0..8 << 20)
++        .map(|_| {
++            x ^= x << 13;
++            x ^= x >> 7;
++            x ^= x << 17;
++            x as u8
++        })
++        .collect();
++    std::fs::write(src.path().join("data/large.bin"), &noise).unwrap();
++    std::fs::write(src.path().join("data/zeros.bin"), vec![0u8; 4 << 20]).unwrap();
++    let request = BuildRequest {
++        time: Some((1_700_000_000, 0)),
++        level: ps5upload_fpkg::kraken::Level::Stored,
++        ..BuildRequest::production(src.path(), out.path())
++    };
++    let mut tree = FolderSource::open(src.path()).unwrap();
++    let prepared = build::prepare(&mut tree, &request, &mut BuildControl::default()).unwrap();
++    let path = out.path().join("stored.part");
++    let mut file = std::fs::OpenOptions::new()
++        .read(true)
++        .write(true)
++        .create_new(true)
++        .open(&path)
++        .unwrap();
++    let report = build::write_package(
++        &prepared,
++        &mut tree,
++        &mut file,
++        &path,
++        &mut |_| {},
++        &mut BuildControl::default(),
++    )
++    .unwrap();
++    assert!(report.verify.ok(), "{}", report.verify);
++    // Stored: the zeros take their full size too.
++    assert!(report.size > 12 << 20, "{} bytes", report.size);
++    assert!(
++        prepared.estimated_size() >= report.size,
++        "estimated {} for a package of {}",
++        prepared.estimated_size(),
++        report.size
++    );
++}
++
+ /// A dump's own `ampr_emu.index` lists the folder as it was; the package carries one generated
+ /// from what it packages, so the manifest says Generated, not Source.
+ #[test]
 diff --git a/ps5upload-fpkg/tests/production.rs b/ps5upload-fpkg/tests/production.rs
 new file mode 100644
-index 0000000..6826cb9
+index 0000000..0557842
 --- /dev/null
 +++ b/ps5upload-fpkg/tests/production.rs
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,103 @@
 +//! `BuildRequest::production`: the console's settings whatever the environment says.
 +//!
 +//! The only test in its binary, because it sets process-wide environment variables.
@@ -294,6 +351,20 @@ index 0000000..6826cb9
 +    assert_eq!(drm, ps5upload_fpkg::cnt_write::LICENSED_DRM_TYPE);
 +    // 4 MiB of one byte: compressed, not stored, the package is far smaller than the source.
 +    assert!(report.size < 2 << 20, "{} bytes", report.size);
++
++    // `Level::Stored` stores every block raw with or without the environment's say.
++    let stored_out = root.join("stored");
++    std::fs::create_dir_all(&stored_out).unwrap();
++    let stored = build::build(
++        &BuildRequest {
++            level: Level::Stored,
++            ..BuildRequest::production(&src, &stored_out)
++        },
++        &mut |_| {},
++    )
++    .unwrap();
++    assert!(stored.verify.ok(), "{}", stored.verify);
++    assert!(stored.size > 4 << 20, "{} bytes", stored.size);
 +
 +    std::fs::remove_dir_all(&root).ok();
 +}

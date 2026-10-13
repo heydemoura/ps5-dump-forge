@@ -142,8 +142,8 @@ fn plan_blocks(plan: &Plan) -> (Vec<Todo>, u64) {
 /// Store every block uncompressed instead of compressing it: `PS5UPLOAD_FPKG_KRAKEN_STORE=1`.
 /// Compression is the default since the console's hardware decoder accepted our blocks (a
 /// compressed Minecraft played on a FW 5.10 console); storing stays available as a fallback.
-/// The build reads it only where its request lets the environment in, and passes the answer
-/// to [`compress`].
+/// The build reads it only where its request lets the environment in, and then compresses at
+/// [`kraken::Level::Stored`], which is what [`compress`] tests.
 pub fn store_only() -> bool {
     std::env::var("PS5UPLOAD_FPKG_KRAKEN_STORE").is_ok_and(|v| v == "1")
 }
@@ -249,7 +249,6 @@ fn hash_files(
 
 /// Compress the image described by `plan` into `spool` from byte `base` on. `read` fetches a byte range of a source
 /// file, `metadata` is the metadata region's logical bytes and `keystone` the generated one.
-/// `store` keeps every block raw (see [`store_only`]).
 #[allow(clippy::too_many_arguments)]
 pub fn compress(
     plan: &Plan,
@@ -260,7 +259,6 @@ pub fn compress(
     base: u64,
     threads: usize,
     level: kraken::Level,
-    store: bool,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<KrakenImage> {
@@ -333,9 +331,10 @@ pub fn compress(
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::Error::Cancelled);
             }
-            // Stored (`PS5UPLOAD_FPKG_KRAKEN_STORE=1`, see `store_only`): every half raw, the same
-            // layout with nothing for the console's decoder to decompress.
-            let halves = if store {
+            // Stored (`Level::Stored`, or `PS5UPLOAD_FPKG_KRAKEN_STORE=1` through the build, see
+            // `store_only`): every half raw, the same layout with nothing for the console's
+            // decoder to decompress.
+            let halves = if level == kraken::Level::Stored {
                 bytes
                     .chunks(kraken::HALF)
                     .map(|h| Half::Raw(h.to_vec()))
@@ -1292,7 +1291,6 @@ mod tests {
             0,
             3,
             kraken::Level::Fast,
-            false,
             &cancel,
             &mut |_, _| {},
         );

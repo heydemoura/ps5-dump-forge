@@ -1,8 +1,8 @@
 diff --git a/ps5upload-fpkg/src/kraken.rs b/ps5upload-fpkg/src/kraken.rs
-index 132263b..9acb204 100644
+index 1b3d8c6..f66ee7a 100644
 --- a/ps5upload-fpkg/src/kraken.rs
 +++ b/ps5upload-fpkg/src/kraken.rs
-@@ -1060,25 +1060,82 @@ pub fn encode_block(block: &[u8]) -> Vec<Half> {
+@@ -1066,25 +1066,82 @@ pub fn encode_block(block: &[u8]) -> Vec<Half> {
      encode_block_at(block, Level::default())
  }
  
@@ -99,7 +99,7 @@ index 132263b..9acb204 100644
      }
      halves
  }
-@@ -1428,6 +1485,45 @@ mod tests {
+@@ -1434,6 +1491,45 @@ mod tests {
          assert_eq!(decode_block(&halves, BLOCK).unwrap(), data);
      }
  

@@ -228,8 +228,8 @@ Measured on a PS5 (firmware 13.60), sources and outputs on `/data`:
 
 | Conversion | Size | Time | Verify |
 |---|---|---|---|
-| 007 `.ffpkg` → `.exfat` (UFS2 reader before vendor patch 0015) | 87.3 GB | 26 min | full |
-| 007 `.ffpkg` → folder (with patch 0015) | 86.9 GB | 11.6 min | full |
+| 007 `.ffpkg` → `.exfat` (UFS2 reader before vendor patch ufs2-range-reads, now 0006) | 87.3 GB | 26 min | full |
+| 007 `.ffpkg` → folder (with patch 0006) | 86.9 GB | 11.6 min | full |
 | Directive 8020 folder → `.exfat` | 59.2 GB | 4.75 min (~208 MB/s end to end) | fast, 377 samples, 2.1 GiB |
 
 Write speed of folder → `.exfat` through the speed work (15 s samples of the same game):

@@ -333,6 +333,265 @@ fn the_estimate_covers_container_payloads() {
     assert!(report.size > 8 << 20);
 }
 
+/// A dump's own `ampr_emu.index` lists the folder as it was; the package carries one generated
+/// from what it packages, so the manifest says Generated, not Source.
+#[test]
+fn a_dumps_own_ampr_index_is_generated_anew() {
+    let src = TempDir::new("index-src");
+    write_tree(src.path());
+    std::fs::write(src.path().join("ampr_emu.index"), b"stale").unwrap();
+    let mut tree = FolderSource::open(src.path()).unwrap();
+    let prepared = build::prepare(
+        &mut tree,
+        &request(src.path()),
+        &mut BuildControl::default(),
+    )
+    .unwrap();
+    let entry = prepared
+        .manifest()
+        .iter()
+        .find(|e| e.path == "ampr_emu.index")
+        .unwrap();
+    assert_eq!(entry.origin, Origin::Generated);
+    let bytes = prepared.generated_bytes("ampr_emu.index").unwrap();
+    assert_ne!(bytes, b"stale");
+    assert_eq!(bytes.len() as u64, entry.size);
+    assert!(prepared.log().iter().any(|l| l.contains("regenerating")));
+}
+
+/// A caller that already scanned `eboot.bin` (`readiness`) passes the answer on, and `prepare`
+/// takes it instead of scanning again: told "no", an AMPR module gets no generated index.
+#[test]
+fn a_known_ampr_answer_is_taken_instead_of_a_scan() {
+    let src = TempDir::new("ampr-known");
+    write_tree(src.path());
+    let mut tree = FolderSource::open(src.path()).unwrap();
+    assert!(ps5upload_fpkg::source::readiness(&mut tree).imports_ampr);
+    let has_index = |imports_ampr: Option<bool>, tree: &mut FolderSource| {
+        let request = BuildRequest {
+            imports_ampr,
+            ..request(src.path())
+        };
+        let prepared = build::prepare(tree, &request, &mut BuildControl::default()).unwrap();
+        prepared
+            .manifest()
+            .iter()
+            .any(|e| e.path == "ampr_emu.index")
+    };
+    assert!(has_index(None, &mut tree));
+    assert!(has_index(Some(true), &mut tree));
+    assert!(!has_index(Some(false), &mut tree));
+}
+
+/// The per-file passes of the check and plan stages are counted per file visited, those they
+/// skip without a read included: from 0 to every file, a call per 256 files rather than one
+/// per file, and no final count once stopped.
+#[test]
+fn the_check_and_plan_files_are_counted() {
+    use build::Stage;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let src = TempDir::new("files-counted");
+    write_tree(src.path());
+    // Too short for a SELF header (check) and, half of them, for a module mark (plan).
+    for i in 0..600 {
+        let path = src.path().join(format!("data/many/{i:03}.bin"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, vec![i as u8; if i % 2 == 0 { 2 } else { 8 }]).unwrap();
+    }
+    let calls = |seen: &[(Stage, u64, u64)], stage: Stage| -> Vec<(u64, u64)> {
+        seen.iter()
+            .filter(|(s, _, _)| *s == stage)
+            .map(|&(_, done, total)| (done, total))
+            .collect()
+    };
+    let mut tree = FolderSource::open(src.path()).unwrap();
+    let mut seen: Vec<(Stage, u64, u64)> = Vec::new();
+    let mut on_files = |stage: Stage, done: u64, total: u64| seen.push((stage, done, total));
+    let mut control = BuildControl {
+        files: Some(&mut on_files),
+        ..BuildControl::default()
+    };
+    build::prepare(&mut tree, &request(src.path()), &mut control).unwrap();
+    for stage in [Stage::Check, Stage::Plan] {
+        let calls = calls(&seen, stage);
+        let total = calls[0].1;
+        assert!(total > 600, "{stage:?}: {calls:?}");
+        let want: Vec<(u64, u64)> = (0..total)
+            .step_by(256)
+            .chain([total])
+            .map(|done| (done, total))
+            .collect();
+        assert_eq!(calls, want, "{stage:?}");
+    }
+    let last_check = seen.iter().rposition(|(s, _, _)| *s == Stage::Check);
+    let first_plan = seen.iter().position(|(s, _, _)| *s == Stage::Plan);
+    assert!(last_check < first_plan);
+
+    // Stopped during plan: the pass ends where it stopped, without its final count.
+    let cancel = AtomicBool::new(false);
+    let mut seen: Vec<(Stage, u64, u64)> = Vec::new();
+    let mut on_files = |stage: Stage, done: u64, total: u64| {
+        seen.push((stage, done, total));
+        if stage == Stage::Plan && done == 256 {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    };
+    let mut control = BuildControl {
+        files: Some(&mut on_files),
+        cancel: Some(&cancel),
+        ..BuildControl::default()
+    };
+    let result = build::prepare(&mut tree, &request(src.path()), &mut control);
+    assert!(matches!(result, Err(ps5upload_fpkg::Error::Cancelled)));
+    let plan = calls(&seen, Stage::Plan);
+    assert_eq!(
+        plan.iter().map(|c| c.0).collect::<Vec<_>>(),
+        [0, 256],
+        "{plan:?}"
+    );
+}
+
+/// An LZ4-packed folder's own index also lists the files inside its packs, and ampr_emu checks
+/// each record it opens against the pack manifest: the package carries it byte for byte. The
+/// same folder without packs gets one generated anew; a packed one whose index is missing or
+/// unreadable is refused, and readiness says so.
+#[test]
+fn a_packed_sources_own_index_is_packaged_as_is() {
+    use ps5upload_fpkg::ampr_index::{self, Entry};
+    let src = TempDir::new("packed-index-src");
+    write_tree(src.path());
+    let mut manifest = b"AMPRPAK4".to_vec();
+    manifest.resize(64, 0);
+    std::fs::write(src.path().join("ampr_assets.index"), &manifest).unwrap();
+    std::fs::write(src.path().join("ampr_assets-000.pak"), [0u8; 128]).unwrap();
+    // The folder as the packer saw it (pic0 included, which a package leaves out), plus the
+    // packed files, which are not files of the folder.
+    let records: Vec<Entry> = [
+        ("eboot.bin", 4096),
+        ("sce_sys/param.json", 120),
+        ("sce_sys/pic0.png", 1024),
+        ("data/packed/a.bin", 5_000_000),
+        ("data/packed/b.bin", 77),
+    ]
+    .map(|(path, size)| Entry {
+        path: path.into(),
+        size,
+        mtime: 42,
+    })
+    .to_vec();
+    let own = ampr_index::build_entries(&records).unwrap();
+    std::fs::write(src.path().join("ampr_emu.index"), &own).unwrap();
+    let prepare = |src: &Path| {
+        let mut tree = FolderSource::open(src).unwrap();
+        build::prepare(&mut tree, &request(src), &mut BuildControl::default())
+    };
+
+    let prepared = prepare(src.path()).unwrap();
+    let entry = prepared
+        .manifest()
+        .iter()
+        .find(|e| e.path == "ampr_emu.index")
+        .unwrap();
+    assert_eq!(
+        (entry.origin, entry.size),
+        (Origin::Source, own.len() as u64)
+    );
+    assert!(prepared.generated_bytes("ampr_emu.index").is_none());
+    assert!(prepared.log().iter().any(|l| l.contains("as it is")));
+    let out = TempDir::new("packed-index-out");
+    let report = build::build(
+        &BuildRequest {
+            output_dir: out.path().to_path_buf(),
+            ..request(src.path())
+        },
+        &mut |_| {},
+    )
+    .unwrap();
+    let mount = mount_of(&report.path);
+    let walked = inner::read(&mount, prepared.plan().meta_base).unwrap();
+    let f = walked
+        .files
+        .iter()
+        .find(|f| f.path == "ampr_emu.index")
+        .unwrap();
+    assert_eq!(
+        &mount[f.offset as usize..(f.offset + f.size) as usize],
+        &own[..]
+    );
+    let mut tree = FolderSource::open(src.path()).unwrap();
+    let readiness = ps5upload_fpkg::source::readiness(&mut tree);
+    let check = |r: &ps5upload_fpkg::source::Readiness| {
+        let c = r
+            .checks
+            .iter()
+            .find(|c| c.name.starts_with("ampr_emu.index"))
+            .unwrap();
+        (c.ok, c.detail.clone())
+    };
+    let (ok, detail) = check(&readiness);
+    assert!(ok && detail.contains("as it is"), "{detail}");
+
+    // Not packed: generated anew from what the package holds.
+    std::fs::write(src.path().join("ampr_assets.index"), b"NOTAPACK").unwrap();
+    let prepared = prepare(src.path()).unwrap();
+    assert_ne!(
+        prepared.generated_bytes("ampr_emu.index").unwrap(),
+        &own[..]
+    );
+
+    // Packed, with no index or an unreadable one: refused.
+    std::fs::write(src.path().join("ampr_assets.index"), &manifest).unwrap();
+    for own in [None, Some(&b"stale"[..])] {
+        match own {
+            None => std::fs::remove_file(src.path().join("ampr_emu.index")).unwrap(),
+            Some(bytes) => std::fs::write(src.path().join("ampr_emu.index"), bytes).unwrap(),
+        }
+        let err = prepare(src.path()).err().unwrap();
+        assert!(
+            err.to_string().contains("no readable ampr_emu.index"),
+            "{err}"
+        );
+        let mut tree = FolderSource::open(src.path()).unwrap();
+        let (ok, detail) = check(&ps5upload_fpkg::source::readiness(&mut tree));
+        assert!(
+            !ok && detail.contains("no readable ampr_emu.index"),
+            "{detail}"
+        );
+    }
+}
+
+/// A listed `ampr_assets.index` whose first bytes cannot be read is an error, not "not packed":
+/// that answer would regenerate the index and drop the records of the packed files.
+#[test]
+fn an_unreadable_pack_manifest_fails_the_build() {
+    let src = TempDir::new("packed-unreadable-src");
+    write_tree(src.path());
+    let mut manifest = b"AMPRPAK4".to_vec();
+    manifest.resize(64, 0);
+    std::fs::write(src.path().join("ampr_assets.index"), &manifest).unwrap();
+    let mut tree = FolderSource::open(src.path()).unwrap();
+    std::fs::remove_file(src.path().join("ampr_assets.index")).unwrap();
+    let err = build::prepare(
+        &mut tree,
+        &request(src.path()),
+        &mut BuildControl::default(),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(err, ps5upload_fpkg::Error::Io(_)), "{err}");
+    let readiness = ps5upload_fpkg::source::readiness(&mut tree);
+    let check = readiness
+        .checks
+        .iter()
+        .find(|c| c.name.starts_with("ampr_emu.index"))
+        .unwrap();
+    assert!(
+        !check.ok && check.detail.contains("cannot be read"),
+        "{}",
+        check.detail
+    );
+}
+
 /// A thread cap changes how long compression takes, never what it produces.
 #[test]
 fn a_thread_cap_builds_the_same_package() {
@@ -442,4 +701,44 @@ fn the_written_handle_is_what_gets_verified() {
     assert!(report.verify.ok(), "{}", report.verify);
     assert_eq!(report.path, path);
     assert_eq!(report.size, std::fs::metadata(&moved).unwrap().len());
+}
+
+#[test]
+fn a_sampled_self_check_runs_through_write_package() {
+    let src = TempDir::new("sampled-src");
+    let out = TempDir::new("sampled-out");
+    write_tree(src.path());
+    let mut tree = FolderSource::open(src.path()).unwrap();
+    let prepared = build::prepare(
+        &mut tree,
+        &request(src.path()),
+        &mut BuildControl::default(),
+    )
+    .unwrap();
+    let path = out.path().join("sampled.part");
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    let report = build::write_package(
+        &prepared,
+        &mut tree,
+        &mut file,
+        &path,
+        &mut |_| {},
+        &mut BuildControl {
+            sample: Some(7),
+            ..BuildControl::default()
+        },
+    )
+    .unwrap();
+    assert!(report.verify.ok(), "{}", report.verify);
+    let text = report.verify.to_string();
+    assert!(
+        text.contains("(a sample of") && text.contains("seed 7)"),
+        "{text}"
+    );
+    assert!(text.contains("batches sampled"), "{text}");
 }

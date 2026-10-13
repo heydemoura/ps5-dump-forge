@@ -176,6 +176,24 @@ const en = {
       verify: "Verifying",
       finalize: "Finishing",
     },
+    /** The job row's step list: short labels, one per stage id; ids with the same label next to
+     * each other are one step (preflight and check). */
+    steps: {
+      scan: "Reading",
+      preflight: "Checking",
+      check: "Checking",
+      plan: "Planning",
+      compress: "Compressing",
+      write: "Writing",
+      measure: "Measuring",
+      pack: "Packing",
+      verify: "Verifying",
+      finalize: "Finishing",
+    },
+    stepsLabel: "Steps",
+    /** Screen readers: a step's state (the current one is `aria-current`). */
+    stepDone: (s: string) => `${s}, done`,
+    stepLater: (s: string) => `${s}, not started yet`,
     packingWriting: "Packing and writing",
     rate: { read: "read", compress: "compress", pack: "pack", write: "write" },
     showPath: "Show path",
@@ -201,6 +219,7 @@ const en = {
     stopHint: "Click Stop job? again within 4 seconds to stop it.",
     from: "from ",
     left: (d: string) => `${d} left`,
+    inStep: (time: string) => `${time} in this step`,
     result: (bytes: string, n: number) => `${bytes}, ${num(n)} ${plural(n, { one: "file", other: "files" })} →`,
     outputPath: "Output path",
     checks: "Checks",
@@ -583,6 +602,12 @@ const en = {
         label: "Smallest",
         note: {
           text: "About 2.7% smaller than Fast, but compressing takes about 9× as long, with every core busy the whole time.",
+        },
+      },
+      stored: {
+        label: "Stored",
+        note: {
+          text: "No compression: the package is about the game's size. Try it if a compressed package installs but won't start (reported on firmware 8.60 and 10.40).",
         },
       },
     } satisfies Record<KrakenLevel, { label: string; note: Note }>,

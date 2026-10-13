@@ -61,7 +61,7 @@ pub struct BuildRequest {
     /// layout.
     pub kraken: bool,
     /// How hard the Kraken encoder works: `PS5UPLOAD_FPKG_LEVEL` (`fast`, `balanced`,
-    /// `smallest`) overrides the default, Balanced.
+    /// `smallest`, or `stored` for no compression) overrides the default, Balanced.
     pub level: crate::kraken::Level,
     /// Narrows the package's PlayGo languages to this one (`fr-FR`, …; see
     /// [`cnt_write::playgo_scenario_json`]). Absent, it declares all of them with `en-US` first.
@@ -73,8 +73,14 @@ pub struct BuildRequest {
     /// Whether the build itself consults the diagnostic variables `PS5UPLOAD_FPKG_PARAM_FILE`,
     /// `PS5UPLOAD_FPKG_SPOOL_DIR`, `PS5UPLOAD_FPKG_DRM_TYPE` and `PS5UPLOAD_FPKG_KRAKEN_STORE`.
     /// [`BuildRequest::new`] sets it, as the build always did; [`BuildRequest::production`]
-    /// clears it, so nothing in the environment reaches that build.
+    /// clears it, so nothing in the environment reaches that build. [`Self::level`]
+    /// `Stored` stores the blocks raw either way.
     pub env_overrides: bool,
+    /// The caller's answer to [`source::imports_ampr`]`(tree, "eboot.bin")` for this source,
+    /// e.g. [`source::Readiness::imports_ampr`] from a [`source::readiness`] it already ran.
+    /// The scan reads up to 16 MiB of the module plus its dynamic segment, which is slow from a
+    /// source that decodes as it reads (an archive). `None` (every constructor) scans, once.
+    pub imports_ampr: Option<bool>,
 }
 
 impl BuildRequest {
@@ -102,6 +108,7 @@ impl BuildRequest {
             language: None,
             threads: None,
             env_overrides: true,
+            imports_ampr: None,
         }
     }
 
@@ -132,6 +139,7 @@ impl BuildRequest {
             language: None,
             threads: None,
             env_overrides: false,
+            imports_ampr: None,
         }
     }
 }
@@ -146,6 +154,16 @@ fn drm_type(request: &BuildRequest) -> u32 {
         .unwrap_or(cnt_write::LICENSED_DRM_TYPE)
 }
 
+/// The Kraken level the build compresses at: the request's, or [`crate::kraken::Level::Stored`]
+/// when `PS5UPLOAD_FPKG_KRAKEN_STORE=1` and the request lets the environment in.
+fn kraken_level(request: &BuildRequest) -> crate::kraken::Level {
+    if request.env_overrides && crate::kraken_image::store_only() {
+        crate::kraken::Level::Stored
+    } else {
+        request.level
+    }
+}
+
 /// Where a compressed build spools its image: in the package itself, or in
 /// `PS5UPLOAD_FPKG_SPOOL_DIR` when set and `env` allows it (a separate file, copied in once the
 /// image is done).
@@ -154,16 +172,42 @@ fn spool_for(partial: &Path, env: bool) -> stream::KrakenSpool {
         .then(|| std::env::var_os("PS5UPLOAD_FPKG_SPOOL_DIR"))
         .flatten()
     {
-        Some(dir) if !dir.is_empty() => {
-            let name = format!(
-                "{}.kraken",
-                partial
-                    .file_name()
-                    .map_or_else(Default::default, |n| n.to_string_lossy())
-            );
-            stream::KrakenSpool::File(PathBuf::from(dir).join(name))
-        }
+        Some(dir) if !dir.is_empty() => stream::KrakenSpool::File(spool_path(&dir, partial)),
         _ => stream::KrakenSpool::InPlace,
+    }
+}
+
+/// A spool file in the shared `dir` that no other build uses: two builds of the same content
+/// id into different output folders have the same `.partial` name, so the name also carries
+/// this process and a per-process count.
+fn spool_path(dir: &std::ffi::OsStr, partial: &Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!(
+        "{}.{}-{n}.kraken",
+        partial
+            .file_name()
+            .map_or_else(Default::default, |n| n.to_string_lossy()),
+        std::process::id()
+    );
+    PathBuf::from(dir).join(name)
+}
+
+/// A file a build made, removed when this is dropped — on an error, a cancel or a panic —
+/// unless [`Leftover::keep`] was called once the file is done with.
+struct Leftover(Option<PathBuf>);
+
+impl Leftover {
+    fn keep(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Leftover {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            std::fs::remove_file(path).ok();
+        }
     }
 }
 
@@ -274,6 +318,19 @@ fn enter(control: &mut BuildControl, stage: Stage) {
     }
 }
 
+/// How often [`BuildControl::files`] hears from a per-file pass: every this many files, and
+/// at its first and last.
+const FILES_EVERY: u64 = 256;
+
+/// `done` of the `total` files of `stage`'s per-file pass, passed on when [`FILES_EVERY`] says.
+fn files_done(control: &mut BuildControl, stage: Stage, done: u64, total: u64) {
+    if done.is_multiple_of(FILES_EVERY) || done == total {
+        if let Some(f) = control.files.as_deref_mut() {
+            f(stage, done, total);
+        }
+    }
+}
+
 /// Optional controls an asynchronous caller supplies: byte progress, stages and cancellation.
 #[derive(Default)]
 pub struct BuildControl<'a> {
@@ -284,6 +341,13 @@ pub struct BuildControl<'a> {
     pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
     /// Called as each [`Stage`] begins.
     pub stage: Option<&'a mut dyn FnMut(Stage)>,
+    /// Files visited of a stage's per-file pass, as `(stage, done, total)`: the SELF header
+    /// checks of [`Stage::Check`] and the module marks of [`Stage::Plan`], at most one small
+    /// read each. Every file of the pass counts, those it skips without a read included
+    /// (`fakelib/` and files under 32 bytes in check; generated and under 4 bytes in plan), so
+    /// `done` ends at `total`. Called at the pass's first file, every 256 files and once all
+    /// are visited, never after a stop.
+    pub files: Option<&'a mut dyn FnMut(Stage, u64, u64)>,
     /// `Some(seed)`: the built package's self-check reads a seeded sample of its blocks
     /// ([`verify::verify_file_sampled`]), for a caller that checks the files itself.
     pub sample: Option<u64>,
@@ -306,16 +370,20 @@ pub fn build_controlled(
 
 /// The writer that holds the whole image in memory. Gate G2 verified this one, and
 /// `tests/scale.rs` still compares the streaming writer against it byte for byte.
+///
+/// It writes the flat layout only. A request for the block (Kraken) layout, the default, goes
+/// to the streaming writer, the only one that has it: planning a block layout and then writing
+/// it flat would give a package whose layout descriptor does not match its image.
 pub fn build_in_memory(
     request: &BuildRequest,
     progress: &mut dyn FnMut(&str),
 ) -> Result<BuildReport> {
-    build_mode(
-        request,
-        progress,
-        &mut BuildControl::default(),
-        Mode::InMemory,
-    )
+    let mode = if request.kraken {
+        Mode::Streaming
+    } else {
+        Mode::InMemory
+    };
+    build_mode(request, progress, &mut BuildControl::default(), mode)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -335,8 +403,8 @@ pub enum Origin {
     Rewritten,
     /// A malformed executable served repaired (see [`self_repair`]); its size may differ.
     Repaired,
-    /// Made by the build; the source has no file at this path (`ampr_emu.index` for a
-    /// libSceAmpr title, `sce_sys/keystone` when the source has none).
+    /// Made by the build: `ampr_emu.index` for a libSceAmpr title (in place of the source's
+    /// own, if it has one), `sce_sys/keystone` when the source has none.
     Generated,
 }
 
@@ -492,7 +560,7 @@ const PARAM_JSON: &str = "sce_sys/param.json";
 /// The most bytes [`prepare`] reads whole: `param.json` and the container's payloads together
 /// (see [`read_whole`]). Real ones are a few megabytes, trophies included.
 // ponytail: 256 MiB held in memory (twice while the container is written), stream the payloads into the container if a title ever needs more
-const MAX_WHOLE_READS: u64 = 256 << 20;
+pub(crate) const MAX_WHOLE_READS: u64 = 256 << 20;
 
 /// The files [`prepare`] reads into memory: `param.json`, the icons and the other
 /// presentation and protected entries the container carries.
@@ -502,6 +570,29 @@ fn read_whole(path: &str) -> bool {
         || path == "sce_sys/icon0.dds"
         || cnt_write::PRESENTATION.iter().any(|(_, p, _)| *p == path)
         || cnt_write::PROTECTED.iter().any(|(_, p, _, _)| *p == path)
+}
+
+/// Require an LZ4-packed source's own `ampr_emu.index` (in `files`) to be there and to parse:
+/// the pack manifest's file ids are its records, so it is the one index the package can carry.
+fn check_packed_index(tree: &mut dyn source::SourceTree, files: &[SourceFile]) -> Result<()> {
+    let at = files
+        .iter()
+        .find(|f| f.path.eq_ignore_ascii_case(AMPR_INDEX))
+        .map(|f| (f.path.clone(), f.size));
+    let readable = match at {
+        Some((path, size)) if size <= MAX_WHOLE_READS => {
+            crate::ampr_index::parse(&tree.read(&path)?).is_some()
+        }
+        _ => false,
+    };
+    if readable {
+        return Ok(());
+    }
+    format_err(format!(
+        "{} holds LZ4 packs (ampr_assets.index) but no readable {AMPR_INDEX}, the one list of \
+         the files inside them: a package cannot be built from it",
+        tree.describe()
+    ))
 }
 
 /// Work out a build from `tree` without writing anything: readiness, the effective
@@ -563,7 +654,7 @@ fn prepare_with(
             before - files.len()
         ));
     }
-    let readiness = source::readiness(tree);
+    let readiness = source::readiness_with(tree, request.imports_ampr);
     check_cancel(control)?;
     let warnings: Vec<String> = readiness
         .warnings()
@@ -612,10 +703,12 @@ fn prepare_with(
     // Executables some dumpers leave malformed are served repaired (see `self_repair`).
     let mut repairs: std::collections::HashMap<String, (self_repair::SelfRepair, u64)> =
         std::collections::HashMap::new();
-    for f in files.iter_mut() {
+    let total = files.len() as u64;
+    for (done, f) in files.iter_mut().enumerate() {
         // One header read per file: a quarter of a million of them on a large game.
         check_cancel(control)?;
-        // A backport's `fakelib/` (or `fakelib2/`) holds newer system libraries the game loads in place of the
+        files_done(control, Stage::Check, done as u64, total);
+        // A backport's `fakelib/` holds newer system libraries the game loads in place of the
         // console's own; working releases ship some with the PS4 signature, and every one of
         // them is used exactly as shipped. Rewriting them is not a repair.
         if f.size < 0x20 || is_fakelib(&f.path) {
@@ -630,6 +723,8 @@ fn prepare_with(
             f.size = repair.new_size(f.size);
         }
     }
+    check_cancel(control)?;
+    files_done(control, Stage::Check, total, total);
     // The declared size class, from everything but `param.json` itself.
     let unpacked: u64 = files
         .iter()
@@ -747,31 +842,45 @@ fn prepare_with(
     let time = request.time.unwrap_or_else(now);
     check_cancel(control)?;
     // A libSceAmpr title looks its files up through `ampr_emu.index` at the image root (see
-    // `ampr_index`); a dump without one gets one generated from exactly the files packaged.
+    // `ampr_index`), and `ampr_emu` trusts its sizes. It is always generated from exactly the
+    // files packaged: a dump's own copy lists the folder as it was, before the param.json
+    // rewrite, executable repairs, left-out files and the icons the container carries.
+    // An LZ4-packed source's is the exception: it also lists the files inside the packs, and
+    // ampr_emu checks each record it opens against the pack manifest (file id = record order,
+    // path, size), so any change breaks the game. That one is packaged byte for byte.
     let mut generated: std::collections::HashMap<String, Vec<u8>> =
         std::collections::HashMap::new();
-    if !files
+    let dump_index = files
         .iter()
-        .any(|f| f.path.eq_ignore_ascii_case(AMPR_INDEX))
-        && source::imports_ampr(tree, "eboot.bin")
-    {
-        let listed: Vec<(String, u64)> = files.iter().map(|f| (f.path.clone(), f.size)).collect();
-        match crate::ampr_index::build(&listed, time.0) {
-            Some(index) => {
-                progress(&format!(
-                    "generating {AMPR_INDEX} for libSceAmpr ({} files)",
-                    listed.len()
-                ));
-                files.push(SourceFile {
-                    path: AMPR_INDEX.to_string(),
-                    size: index.len() as u64,
-                });
-                generated.insert(AMPR_INDEX.to_string(), index);
-            }
-            None => progress(&format!(
-                "not generating {AMPR_INDEX}: two files differ only in case"
-            )),
+        .any(|f| f.path.eq_ignore_ascii_case(AMPR_INDEX));
+    if source::lz4_packed(tree)? {
+        check_packed_index(tree, &files)?;
+        progress(&format!(
+            "keeping the LZ4-packed source's {AMPR_INDEX} as it is: it must match the packs"
+        ));
+    } else if dump_index || readiness.imports_ampr {
+        files.retain(|f| !f.path.eq_ignore_ascii_case(AMPR_INDEX));
+        let mut listed: Vec<(String, u64)> =
+            files.iter().map(|f| (f.path.clone(), f.size)).collect();
+        // The plan adds a keystone when the source has none; it is in the image, so listed.
+        if !files.iter().any(|f| f.path == plan::KEYSTONE) {
+            listed.push((plan::KEYSTONE.to_string(), plan::KEYSTONE_LEN));
         }
+        let index = crate::ampr_index::build(&listed, time.0).map_err(crate::Error::Format)?;
+        progress(&format!(
+            "{} {AMPR_INDEX} for libSceAmpr ({} files)",
+            if dump_index {
+                "regenerating"
+            } else {
+                "generating"
+            },
+            listed.len()
+        ));
+        files.push(SourceFile {
+            path: AMPR_INDEX.to_string(),
+            size: index.len() as u64,
+        });
+        generated.insert(AMPR_INDEX.to_string(), index);
     }
     // A plaintext package carries the marker where a native one carries its random seed, so the
     // slot and the mode can never disagree and `request.seed` only has meaning in the native mode.
@@ -785,15 +894,19 @@ fn prepare_with(
     check_cancel(control)?;
     progress(&format!("planning {}", tree.describe()));
     let mut plan = plan::build_tree(&files, tree.empty_dirs(), request.kraken)?;
-    // Another read per file; once stopped, the rest are skipped and the check below reports it.
-    let cancel = control.cancel;
-    plan.mark_modules(|path| {
-        !stopped(cancel)
+    // Another read per file, the files `Plan::mark_modules` would ask about (see
+    // `PlannedFile::may_be_module`); every file counts as visited.
+    let total = plan.files.len() as u64;
+    for (done, f) in plan.files.iter_mut().enumerate() {
+        check_cancel(control)?;
+        files_done(control, Stage::Plan, done as u64, total);
+        f.module = f.may_be_module()
             && tree
-                .read_range(path, 0, 4)
-                .is_ok_and(|head| plan::is_module_header(&head))
-    });
+                .read_range(&f.path, 0, 4)
+                .is_ok_and(|head| plan::is_module_header(&head));
+    }
     check_cancel(control)?;
+    files_done(control, Stage::Plan, total, total);
     // Refuse an over-large source here, before a single byte is read.
     if plan.ndblock > outer_write::max_inner_blocks() {
         return format_err(format!(
@@ -907,8 +1020,8 @@ fn prepare_with(
 /// deletes, and on success it holds the whole package, synced, which the caller publishes.
 /// `tree` is the tree `prepared` came from.
 ///
-/// The package is read back through `out` itself with [`verify::verify_file_controlled`] and
-/// the report is returned in [`BuildReport::verify`]; a package that fails a check is an error
+/// The package is read back through `out` itself with [`verify::verify_file_controlled`] (a
+/// seeded sample of its blocks with [`BuildControl::sample`]) and the report is returned in [`BuildReport::verify`]; a package that fails a check is an error
 /// (whose message carries the report), so an `Ok` report always has `verify.ok()`. A set
 /// [`BuildControl::cancel`] ends any stage with [`crate::Error::Cancelled`].
 pub fn write_package(
@@ -984,10 +1097,6 @@ fn build_mode(
             partial.display()
         ));
     }
-    let cleanup = |e: crate::Error| -> crate::Error {
-        std::fs::remove_file(&partial).ok();
-        e
-    };
 
     // Read too: a compressed image is written in place and read back for its digests.
     let mut file = std::fs::OpenOptions::new()
@@ -995,7 +1104,10 @@ fn build_mode(
         .write(true)
         .create_new(true)
         .open(&partial)?;
-    let written = match write_mode(
+    // The `.partial` goes on every way out but success: a write or verify error, a failed
+    // rename, a cancel, a panic. It is armed only once this build has created it.
+    let mut leftover = Leftover(Some(partial.clone()));
+    let written = write_mode(
         &prepared,
         tree.as_mut(),
         &mut file,
@@ -1003,22 +1115,17 @@ fn build_mode(
         progress,
         control,
         mode,
-    ) {
-        Ok(written) => written,
-        Err(e) => return Err(cleanup(e)),
-    };
-    let report = match verify_written(&prepared, &file, progress, control) {
-        Ok(report) => report,
-        Err(e) => return Err(cleanup(e)),
-    };
+    )?;
+    let report = verify_written(&prepared, &file, progress, control)?;
     drop(file);
     if final_path.exists() {
-        return Err(cleanup(crate::Error::Format(format!(
+        return format_err(format!(
             "output appeared during conversion: {}",
             final_path.display()
-        ))));
+        ));
     }
     std::fs::rename(&partial, &final_path)?;
+    leftover.keep();
     let size = std::fs::metadata(&final_path)?.len();
     debug_assert_eq!(size, written);
     progress("done");
@@ -1050,16 +1157,19 @@ fn verify_written(
             f(done, total);
         }
     };
-    match verify::verify_file_sampled(
+    let report = verify::verify_file_sampled(
         file,
         &prepared.request.passcode,
         &mut verify_bytes,
         cancel,
         control.sample,
-    )? {
-        report if report.ok() => Ok(report),
-        report => format_err(format!("the built package failed verification:\n{report}")),
+    )?;
+    // A stop asked for during the last read is still a stop: the package is not accepted.
+    check_cancel(control)?;
+    if !report.ok() {
+        return format_err(format!("the built package failed verification:\n{report}"));
     }
+    Ok(report)
 }
 
 /// Write the package into `out` (empty, readable and writable) and return its length.
@@ -1118,18 +1228,17 @@ fn write_mode(
                 kraken_spool: request
                     .kraken
                     .then(|| spool_for(out_path, request.env_overrides)),
-                kraken_store: request.env_overrides && crate::kraken_image::store_only(),
-                drm_type: drm_type(request),
-                level: request.level,
+                level: kraken_level(request),
                 threads: request.threads,
+                drm_type: drm_type(request),
                 metadata_codec: request.metadata_codec,
             };
-            let written =
-                stream::write_package(out, &stream_request, &mut read_range, &mut p, cancel);
-            if let Some(stream::KrakenSpool::File(spool)) = &stream_request.kraken_spool {
-                std::fs::remove_file(spool).ok();
-            }
-            written?.size
+            // A separate spool is only ever scratch, whatever happens to the build.
+            let _spool = Leftover(match &stream_request.kraken_spool {
+                Some(stream::KrakenSpool::File(spool)) => Some(spool.clone()),
+                _ => None,
+            });
+            stream::write_package(out, &stream_request, &mut read_range, &mut p, cancel)?.size
         }
         Mode::InMemory => {
             check_cancel(control)?;
@@ -1226,9 +1335,9 @@ fn write_mode(
                 cnt_offset,
                 seed,
                 passcode: &request.passcode,
-                content_type: cnt_write::content_class(param_json).0,
+                content_type: cnt_write::content_class(param_json, plan.has_eboot()).0,
                 drm_type: drm_type(request),
-                content_flags: cnt_write::content_class(param_json).1,
+                content_flags: cnt_write::content_class(param_json, plan.has_eboot()).1,
                 inner_size,
             })?;
 
@@ -1257,7 +1366,7 @@ fn write_mode(
             let manifest = pfsimage::build(&pfsimage::ManifestParams {
                 facts: &cnt.facts,
                 content_id,
-                content_type: cnt_write::content_class(param_json).0,
+                content_type: cnt_write::content_class(param_json, plan.has_eboot()).0,
                 param_json,
                 content_version,
                 cnt_offset,
@@ -1527,6 +1636,9 @@ pub struct Inspection {
     pub output_free: Option<u64>,
     /// Every readiness finding, passes and warnings alike.
     pub checks: Vec<source::Check>,
+    /// For a libSceAmpr title, whether an image can carry LZ4 asset packs (see
+    /// [`crate::ampr_pack::image::readiness`]); `None` for any other title.
+    pub ampr_packs: Option<crate::ampr_pack::image::Readiness>,
 }
 
 impl Inspection {
@@ -1764,5 +1876,6 @@ pub fn inspect(source_path: &Path, output_dir: &Path) -> Result<Inspection> {
         planned_size,
         output_free: free_bytes(output_dir),
         checks,
+        ampr_packs: crate::ampr_pack::image::readiness(tree.as_mut()),
     })
 }

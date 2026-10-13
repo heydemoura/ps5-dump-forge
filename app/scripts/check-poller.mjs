@@ -1,17 +1,18 @@
 // Checks src/http-client.ts's snapshot diffing with a plain `node scripts/check-poller.mjs`
-// (type stripping, no server): restore, progress/log/done once, a new job, a job dropped from
-// the server's history and a payload restart; then src/jobs.ts's reducer: a restart's reused id
-// starts blank, and the job bar only grows and is full only on success.
+// (type stripping, no server): restore, stages/progress/log/done once, a new job, a job dropped
+// from the server's history and a payload restart; then src/jobs.ts's reducer: a restart's reused
+// id starts blank, the current step follows the stages in order, and the job bar only grows and
+// is full only on success.
 
 import assert from "node:assert/strict";
 
 const c = await import("../src/http-client.ts");
 const got = [];
-for (const e of ["jobs://restore", "job://progress", "job://log", "job://done"]) await c.listen(e, (p) => got.push([e, p]));
+for (const e of ["jobs://restore", "job://stages", "job://progress", "job://log", "job://done"]) await c.listen(e, (p) => got.push([e, p]));
 const take = () => got.splice(0);
 
 const request = { source: "/data/g", format: "exfat", output: "/data/g.exfat", compression_threads: 3, inner: null, remove_backport: false, full_verify: false, kraken_level: "fast", ffpfsc_level: 6 };
-const job = (id, over = {}) => ({ id, request, progress: null, done: null, log: [], log_total: 0, ...over });
+const job = (id, over = {}) => ({ id, request, progress: null, stages: [], done: null, log: [], log_total: 0, ...over });
 const prog = (id, done) => ({ kind: "progress", job: id, stage: "write", done, total: 100 });
 const ok = (id) => ({ kind: "done", job: id, result: { Ok: { output: request.output, bytes: 1, files: 1, checks: [] } } });
 
@@ -58,7 +59,16 @@ ev = take();
 assert.deepEqual(ev.map(([e, p]) => [e, p.replace]), [["jobs://restore", true]]);
 assert.deepEqual(ev[0][1].jobs.map((j) => j.id), [1]);
 
-console.log("http-client poller: ok (restore, diffs once, new job, dropped job ends once, restart rebuilds)");
+// The stage list: one job://stages event when it first shows, before that snapshot's progress.
+const stages = ["scan", "preflight", "check", "write", "verify", "finalize"];
+c.applySnapshot({ instance: "B", jobs: [job(1, { stages, progress: { ...prog(1, 1), stage: "scan" } })] });
+ev = take();
+assert.deepEqual(ev.map(([e]) => e), ["job://stages", "job://progress"]);
+assert.deepEqual(ev[0][1], { kind: "stages", job: 1, stages });
+c.applySnapshot({ instance: "B", jobs: [job(1, { stages, progress: prog(1, 2) })] });
+assert.deepEqual(take().map(([e]) => e), ["job://progress"], "stages are sent once");
+
+console.log("http-client poller: ok (restore, stages and diffs once, new job, dropped job ends once, restart rebuilds)");
 
 // ---- the reducer: a restart reuses ids, so a replacement keeps nothing of the old job ----
 const { jobsReducer } = await import("../src/jobs.ts");
@@ -71,6 +81,19 @@ assert.equal(list[0].result, undefined, "the new job 1 is running, not the old o
 assert.equal(list[0].shown, 0.05);
 assert.deepEqual(list[0].log, ["new"]);
 console.log("jobs reducer: ok (a restart's reused id starts from blank)");
+
+// The current step (src/jobs.ts): stages may come after the first progress; a stage id listed
+// twice is found forward, from the step before it.
+{
+  const at = (jobs, stage) => jobsReducer(jobs, { type: "progress", e: { kind: "progress", job: 9, stage, done: 0, total: 1 }, at: 0 });
+  let s9 = at([], "scan");
+  assert.equal(s9[0].step, undefined);
+  s9 = jobsReducer(s9, { type: "stages", e: { kind: "stages", job: 9, stages: ["scan", "verify", "write", "verify", "finalize"] } });
+  assert.equal(s9[0].step, 0);
+  s9 = at(at(at(s9, "verify"), "write"), "verify");
+  assert.equal(s9[0].step, 3, "the second verify");
+  console.log("jobs: steps follow the stage list in order");
+}
 
 // The job bar (src/jobs.ts): never back, short of full until the job succeeds, even when
 // core's estimate is met before its last pass (R1's plateau, fixed in core; this only guards).

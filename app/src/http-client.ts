@@ -3,7 +3,7 @@
 // events. Type imports only, so a plain `node` can drive it (scripts/check-poller.mjs,
 // scripts/smoke.mjs).
 
-import type { DoneEvent, JobsRestore, LogEvent, ProgressEvent, SnapshotJob } from "./api";
+import type { DoneEvent, JobsRestore, LogEvent, ProgressEvent, SnapshotJob, StagesEvent } from "./api";
 import type { EventName, Unlisten } from "./transport";
 
 export interface Status {
@@ -190,6 +190,8 @@ export function listen<T>(event: EventName, f: (payload: T) => void): Promise<Un
 
 interface Seen {
   progress: string;
+  /** The job's stage list was known (sent once, when it first is). */
+  stages: boolean;
   logTotal: number;
   done: boolean;
   request: boolean;
@@ -206,13 +208,15 @@ let stopping = false;
 function remember(j: SnapshotJob): Seen {
   return {
     progress: JSON.stringify(j.progress),
+    stages: j.stages?.length > 0,
     logTotal: j.log_total,
     done: j.done !== null,
     request: j.request !== null,
   };
 }
 
-/** Feed one snapshot into the app's events: progress when it changed, only the log lines it
+/** Feed one snapshot into the app's events: the stage list once it is known, progress when it
+ * changed, only the log lines it
  * hasn't seen (by `log_total`), done once. A job it never saw is restored whole; so is the
  * whole list after `seen` was reset. A job missing from the list is dropped from `seen`; one
  * it never saw finish gets a done event with `GONE`. */
@@ -232,6 +236,8 @@ function diff(snap: JobsSnapshot): void {
       fresh.push(j);
       continue;
     }
+    if (j.stages?.length > 0 && !was.stages)
+      emit("job://stages", { kind: "stages", job: j.id, stages: j.stages } satisfies StagesEvent);
     if (j.progress && JSON.stringify(j.progress) !== was.progress) {
       const { stage, done, total } = j.progress;
       emit("job://progress", { kind: "progress", job: j.id, stage, done, total } satisfies ProgressEvent);

@@ -18,7 +18,8 @@ usage: ps5-dump-forge inspect <path> [--json] [--password-stdin]
        ps5-dump-forge convert <source> --to folder|exfat|ffpkg|ffpfs|ffpfsc|pkg|lz4
                          [--password-stdin]
                          [--inner exfat|ffpkg|ffpfs] [-o <output>] [--threads N]
-                         [--remove-backport] [--full-verify] [--kraken fast|balanced|smallest]
+                         [--remove-backport] [--full-verify]
+                         [--kraken fast|balanced|smallest|stored]
                          [--level 0..9] [--lz4-profile <toml> | --lz4-traces <zip|dir|journal>]
                          [--lz4-trace [--lz4-trace-space <MiB>] | --lz4-unpack | --lz4-unpatch
                           | --lz4-pack]
@@ -55,7 +56,9 @@ usage: ps5-dump-forge inspect <path> [--json] [--password-stdin]
             sample of the rest
   --level   with --to ffpfsc: zlib level, 0 (store) to 9 (smallest), default 6
   --kraken  with --to pkg: compression level (default fast). balanced and smallest make a
-            package ~2.6% smaller but take ~6x and ~9x longer, every core busy throughout
+            package ~2.6% smaller but take ~6x and ~9x longer, every core busy throughout;
+            stored compresses nothing (a far larger package), for a console that refuses
+            to start a compressed one
   --lz4-pack
             pack the assets into LZ4 packs inside the target: --to folder (the same as
             --to lz4), exfat, ffpkg, ffpfs or ffpfsc (not pkg). Into an image the packs go
@@ -202,7 +205,8 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
                     "fast" => KrakenLevel::Fast,
                     "balanced" => KrakenLevel::Balanced,
                     "smallest" => KrakenLevel::Smallest,
-                    _ => return Err("--kraken takes fast, balanced or smallest".into()),
+                    "stored" => KrakenLevel::Stored,
+                    _ => return Err("--kraken takes fast, balanced, smallest or stored".into()),
                 })
             }
             "--lz4-profile" => lz4_profile = Some(PathBuf::from(value("--lz4-profile")?)),
@@ -1011,6 +1015,12 @@ mod tests {
             panic!("not a convert");
         };
         assert_eq!(r.kraken_level, KrakenLevel::Smallest);
+        let Ok(Cli::Convert { request: r, .. }) =
+            parse_args(args("convert /g --to pkg --kraken stored -o x"))
+        else {
+            panic!("not a convert");
+        };
+        assert_eq!(r.kraken_level, KrakenLevel::Stored);
         let Ok(Cli::Convert { request: r, .. }) =
             parse_args(args("convert /g --to ffpfsc --level 0 -o x"))
         else {

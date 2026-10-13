@@ -107,9 +107,7 @@ pub(crate) fn patch(folder: &Path, runtime: Runtime) -> anyhow::Result<Lz4Patch>
     let mtime = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    let index = ps5upload_fpkg::ampr_index::build(&rows, mtime).ok_or_else(|| {
-        anyhow::anyhow!("two paths differ only in case, which {INDEX} cannot tell apart")
-    })?;
+    let index = ps5upload_fpkg::ampr_index::build(&rows, mtime).map_err(anyhow::Error::msg)?;
     // Room for both new files beside the old ones; on the PS5 this is the destination probe
     // (U1), which fails closed like every other write there.
     let need = (bytes.len() + index.len()) as u64;

@@ -613,11 +613,6 @@ fn padded(mut bytes: Vec<u8>) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// The superblock's absolute offset inside the finalized image, for the FIH.
-pub fn superblock_absolute(outer: &OuterImage) -> u64 {
-    BLOCK + outer.superblock_block * BLOCK
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

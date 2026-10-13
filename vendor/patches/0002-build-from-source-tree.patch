@@ -1,5 +1,5 @@
 diff --git a/ps5upload-fpkg/src/build.rs b/ps5upload-fpkg/src/build.rs
-index 2a12304..34c051e 100644
+index 3589f12..bbd3b02 100644
 --- a/ps5upload-fpkg/src/build.rs
 +++ b/ps5upload-fpkg/src/build.rs
 @@ -4,6 +4,10 @@
@@ -13,7 +13,7 @@ index 2a12304..34c051e 100644
  
  use std::path::{Path, PathBuf};
  
-@@ -247,18 +251,227 @@ enum Mode {
+@@ -278,18 +282,227 @@ enum Mode {
      InMemory,
  }
  
@@ -29,8 +29,8 @@ index 2a12304..34c051e 100644
 +    Rewritten,
 +    /// A malformed executable served repaired (see [`self_repair`]); its size may differ.
 +    Repaired,
-+    /// Made by the build; the source has no file at this path (`ampr_emu.index` for a
-+    /// libSceAmpr title, `sce_sys/keystone` when the source has none).
++    /// Made by the build: `ampr_emu.index` for a libSceAmpr title (in place of the source's
++    /// own, if it has one), `sce_sys/keystone` when the source has none.
 +    Generated,
 +}
 +
@@ -245,7 +245,7 @@ index 2a12304..34c051e 100644
      // Leftovers of an earlier build stay out of this one (see `sdk_rules`).
      let before = files.len();
      files.retain(|f| match sdk_rules::excluded(&f.path) {
-@@ -274,17 +487,17 @@ fn build_mode(
+@@ -305,17 +518,17 @@ fn build_mode(
              before - files.len()
          ));
      }
@@ -266,7 +266,7 @@ index 2a12304..34c051e 100644
      let param_json = source::launch_rewrite(&param_json).unwrap_or(param_json);
      let content_id = match &request.content_id {
          Some(id) => id.clone(),
-@@ -341,7 +554,7 @@ fn build_mode(
+@@ -372,7 +585,7 @@ fn build_mode(
      // The declared size class, from everything but `param.json` itself.
      let unpacked: u64 = files
          .iter()
@@ -275,7 +275,7 @@ index 2a12304..34c051e 100644
          .map(|f| f.size)
          .sum();
      let param_json = match sdk_rules::size_class_rewrite(&param_json, unpacked, files.len() as u64)
-@@ -373,7 +586,7 @@ fn build_mode(
+@@ -404,7 +617,7 @@ fn build_mode(
          }
          _ => param_json,
      };
@@ -284,7 +284,7 @@ index 2a12304..34c051e 100644
          entry.size = param_json.len() as u64;
      }
      if !files.iter().any(|f| f.path == "eboot.bin") {
-@@ -411,9 +624,19 @@ fn build_mode(
+@@ -442,9 +655,19 @@ fn build_mode(
      if !icon_dds.is_empty() {
          carried.insert("sce_sys/icon0.dds");
      }
@@ -306,17 +306,17 @@ index 2a12304..34c051e 100644
 +    files.retain(|f| !container_only_file(f));
      let time = request.time.unwrap_or_else(now);
      // A libSceAmpr title looks its files up through `ampr_emu.index` at the image root (see
-     // `ampr_index`); a dump without one gets one generated from exactly the files packaged.
-@@ -422,7 +645,7 @@ fn build_mode(
-     if !files
+     // `ampr_index`), and `ampr_emu` trusts its sizes. It is always generated from exactly the
+@@ -455,7 +678,7 @@ fn build_mode(
+     let dump_index = files
          .iter()
-         .any(|f| f.path.eq_ignore_ascii_case(AMPR_INDEX))
--        && source::imports_ampr(tree.as_mut(), "eboot.bin")
-+        && source::imports_ampr(tree, "eboot.bin")
-     {
-         let listed: Vec<(String, u64)> = files.iter().map(|f| (f.path.clone(), f.size)).collect();
-         match crate::ampr_index::build(&listed, time.0) {
-@@ -467,17 +690,163 @@ fn build_mode(
+         .any(|f| f.path.eq_ignore_ascii_case(AMPR_INDEX));
+-    if dump_index || source::imports_ampr(tree.as_mut(), "eboot.bin") {
++    if dump_index || source::imports_ampr(tree, "eboot.bin") {
+         files.retain(|f| !f.path.eq_ignore_ascii_case(AMPR_INDEX));
+         let mut listed: Vec<(String, u64)> =
+             files.iter().map(|f| (f.path.clone(), f.size)).collect();
+@@ -504,17 +727,163 @@ fn build_mode(
              (outer_write::max_inner_blocks() * BLOCK) as f64 / (1u64 << 30) as f64,
          ));
      }
@@ -488,7 +488,7 @@ index 2a12304..34c051e 100644
      if let Some(free) = free_bytes(&request.output_dir) {
          if let Some(message) = shortfall(free, planned + planned / 100) {
              return format_err(format!("{}: {message}", request.output_dir.display()));
-@@ -486,7 +855,7 @@ fn build_mode(
+@@ -523,7 +892,7 @@ fn build_mode(
      let stem = request
          .file_name
          .clone()
@@ -497,17 +497,22 @@ index 2a12304..34c051e 100644
      std::fs::create_dir_all(&request.output_dir)?;
      let final_path = request.output_dir.join(format!("{stem}.pkg"));
      let partial = request.output_dir.join(format!("{stem}.pkg.partial"));
-@@ -502,36 +871,96 @@ fn build_mode(
-         e
-     };
- 
+@@ -534,41 +903,96 @@ fn build_mode(
+             partial.display()
+         ));
+     }
++
 +    // Read too: a compressed image is written in place and read back for its digests.
 +    let mut file = std::fs::OpenOptions::new()
 +        .read(true)
 +        .write(true)
 +        .create_new(true)
 +        .open(&partial)?;
-+    let written = match write_mode(
+     // The `.partial` goes on every way out but success: a write or verify error, a failed
+     // rename, a cancel, a panic. It is armed only once this build has created it.
+-    let mut leftover = Leftover(None);
++    let mut leftover = Leftover(Some(partial.clone()));
++    let written = write_mode(
 +        &prepared,
 +        tree.as_mut(),
 +        &mut file,
@@ -515,22 +520,17 @@ index 2a12304..34c051e 100644
 +        progress,
 +        control,
 +        mode,
-+    ) {
-+        Ok(written) => written,
-+        Err(e) => return Err(cleanup(e)),
-+    };
++    )?;
 +    drop(file);
-+    let report = match verify_written(&prepared, &partial, progress, control) {
-+        Ok(report) => report,
-+        Err(e) => return Err(cleanup(e)),
-+    };
++    let report = verify_written(&prepared, &partial, progress, control)?;
 +    if final_path.exists() {
-+        return Err(cleanup(crate::Error::Format(format!(
++        return format_err(format!(
 +            "output appeared during conversion: {}",
 +            final_path.display()
-+        ))));
++        ));
 +    }
 +    std::fs::rename(&partial, &final_path)?;
++    leftover.keep();
 +    let size = std::fs::metadata(&final_path)?.len();
 +    debug_assert_eq!(size, written);
 +    progress("done");
@@ -559,10 +559,11 @@ index 2a12304..34c051e 100644
 +            f(done, total);
 +        }
 +    };
-+    match verify::verify_streaming(path, &prepared.request.passcode, &mut verify_bytes)? {
-+        report if report.ok() => Ok(report),
-+        report => format_err(format!("the built package failed verification:\n{report}")),
++    let report = verify::verify_streaming(path, &prepared.request.passcode, &mut verify_bytes)?;
++    if !report.ok() {
++        return format_err(format!("the built package failed verification:\n{report}"));
 +    }
++    Ok(report)
 +}
 +
 +/// Write the package into `out` (empty, readable and writable) and return its length.
@@ -586,7 +587,7 @@ index 2a12304..34c051e 100644
 +            .cancel
 +            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
 +    };
-+
+ 
      let written = match mode {
          Mode::Streaming => {
 -            // Read too: a compressed image is written in place and read back for its digests.
@@ -595,6 +596,7 @@ index 2a12304..34c051e 100644
 -                .write(true)
 -                .create_new(true)
 -                .open(&partial)?;
+-            leftover.0 = Some(partial.clone());
              let mut read_range = |path: &str, offset: u64, len: usize| -> Result<Vec<u8>> {
 -                if !sizes.contains_key(path) {
 -                    return format_err(format!(
@@ -621,7 +623,7 @@ index 2a12304..34c051e 100644
              };
              let mut bytes = |done: u64, total: u64| {
                  if let Some(f) = control.bytes.as_deref_mut() {
-@@ -551,45 +980,41 @@ fn build_mode(
+@@ -588,20 +1012,20 @@ fn build_mode(
              let idle = std::sync::atomic::AtomicBool::new(false);
              let cancel = control.cancel.unwrap_or(&idle);
              let stream_request = stream::StreamRequest {
@@ -648,24 +650,16 @@ index 2a12304..34c051e 100644
                  level: request.level,
                  metadata_codec: request.metadata_codec,
              };
-             let written =
--                stream::write_package(&mut file, &stream_request, &mut read_range, &mut p, cancel);
-+                stream::write_package(out, &stream_request, &mut read_range, &mut p, cancel);
-             if let Some(stream::KrakenSpool::File(spool)) = &stream_request.kraken_spool {
-                 std::fs::remove_file(spool).ok();
-             }
--            match written {
--                Ok(package) => package.size,
--                Err(e) => return Err(cleanup(e)),
--            }
-+            written?.size
+@@ -610,18 +1034,19 @@ fn build_mode(
+                 Some(stream::KrakenSpool::File(spool)) => Some(spool.clone()),
+                 _ => None,
+             });
+-            stream::write_package(&mut file, &stream_request, &mut read_range, &mut p, cancel)?.size
++            stream::write_package(out, &stream_request, &mut read_range, &mut p, cancel)?.size
          }
          Mode::InMemory => {
              if cancelled() {
--                return Err(cleanup(crate::Error::Format(
--                    "the build was cancelled".to_string(),
--                )));
-+                return format_err("the build was cancelled");
+                 return format_err("the build was cancelled");
              }
              let mut read = |path: &str| -> Result<Vec<u8>> {
 -                match sizes.get(path) {
@@ -681,7 +675,7 @@ index 2a12304..34c051e 100644
                          Some((repair, original)) => {
                              let mut read = |o: u64, l: usize| tree.read_range(path, o, l);
                              repair.read(*original, 0, size as usize, &mut read)
-@@ -605,7 +1030,7 @@ fn build_mode(
+@@ -637,7 +1062,7 @@ fn build_mode(
              enter(control, Stage::Write);
              progress("writing the inner image");
              let inner = inner::write_with(
@@ -690,7 +684,7 @@ index 2a12304..34c051e 100644
                  &request.passcode,
                  &mut read,
                  crate::stream::image_time(request.image_mode, time),
-@@ -628,7 +1053,7 @@ fn build_mode(
+@@ -660,7 +1085,7 @@ fn build_mode(
                  &naps,
                  seed,
                  request.image_mode,
@@ -699,7 +693,7 @@ index 2a12304..34c051e 100644
                  &request.passcode,
                  crate::stream::image_time(request.image_mode, time),
              )?;
-@@ -655,17 +1080,17 @@ fn build_mode(
+@@ -687,17 +1112,17 @@ fn build_mode(
              progress("writing the container");
              let outer_size = outer.image.len() as u64;
              let playgo = crate::playgo::build(
@@ -723,33 +717,33 @@ index 2a12304..34c051e 100644
                  playgo_chunk: &playgo.chunk_dat,
                  playgo_hash_table: &playgo.hash_table,
                  playgo_ficm: &playgo.ficm,
-@@ -676,10 +1101,10 @@ fn build_mode(
+@@ -708,10 +1133,10 @@ fn build_mode(
                  cnt_offset,
                  seed,
                  passcode: &request.passcode,
--                content_type: cnt_write::content_class(&param_json).0,
-+                content_type: cnt_write::content_class(param_json).0,
+-                content_type: cnt_write::content_class(&param_json, plan.has_eboot()).0,
++                content_type: cnt_write::content_class(param_json, plan.has_eboot()).0,
                  drm_type: crate::cnt_write::drm_type_override()
                      .unwrap_or(crate::cnt_write::LICENSED_DRM_TYPE),
--                content_flags: cnt_write::content_class(&param_json).1,
-+                content_flags: cnt_write::content_class(param_json).1,
+-                content_flags: cnt_write::content_class(&param_json, plan.has_eboot()).1,
++                content_flags: cnt_write::content_class(param_json, plan.has_eboot()).1,
                  inner_size,
              })?;
  
-@@ -707,9 +1132,9 @@ fn build_mode(
+@@ -739,9 +1164,9 @@ fn build_mode(
              let sb_at = outer.superblock_block as usize * BLOCK as usize;
              let manifest = pfsimage::build(&pfsimage::ManifestParams {
                  facts: &cnt.facts,
 -                content_id: &content_id,
--                content_type: cnt_write::content_class(&param_json).0,
+-                content_type: cnt_write::content_class(&param_json, plan.has_eboot()).0,
 -                param_json: &param_json,
 +                content_id,
-+                content_type: cnt_write::content_class(param_json).0,
++                content_type: cnt_write::content_class(param_json, plan.has_eboot()).0,
 +                param_json,
                  content_version,
                  cnt_offset,
                  si_offset: cnt_offset + cnt.facts.container_size,
-@@ -721,7 +1146,7 @@ fn build_mode(
+@@ -753,7 +1178,7 @@ fn build_mode(
                  playgo: &playgo,
                  outer: &outer_layout,
                  naps_len: naps.len() as u64,
@@ -758,7 +752,7 @@ index 2a12304..34c051e 100644
              });
              let members = vec![
                  ("common/etc/naps_meta_18.dat".to_string(), meta_18),
-@@ -740,11 +1165,8 @@ fn build_mode(
+@@ -772,12 +1197,8 @@ fn build_mode(
  
              progress("writing the package");
              {
@@ -767,12 +761,13 @@ index 2a12304..34c051e 100644
 -                    .write(true)
 -                    .create_new(true)
 -                    .open(&partial)?;
+-                leftover.0 = Some(partial.clone());
 +                use std::io::{Seek, Write};
 +                out.seek(std::io::SeekFrom::Start(0))?;
                  out.write_all(&fih)?;
                  out.write_all(&outer.image)?;
                  out.write_all(&cnt.bytes)?;
-@@ -754,42 +1176,7 @@ fn build_mode(
+@@ -787,38 +1208,7 @@ fn build_mode(
              cnt_offset + cnt.bytes.len() as u64 + si.len() as u64
          }
      };
@@ -786,22 +781,18 @@ index 2a12304..34c051e 100644
 -            f(done, total);
 -        }
 -    };
--    let report = match verify::verify_streaming(&partial, &request.passcode, &mut verify_bytes) {
--        Ok(report) if report.ok() => report,
--        Ok(report) => {
--            return Err(cleanup(crate::Error::Format(format!(
--                "the built package failed verification:\n{report}"
--            ))))
--        }
--        Err(e) => return Err(cleanup(e)),
--    };
+-    let report = verify::verify_streaming(&partial, &request.passcode, &mut verify_bytes)?;
+-    if !report.ok() {
+-        return format_err(format!("the built package failed verification:\n{report}"));
+-    }
 -    if final_path.exists() {
--        return Err(cleanup(crate::Error::Format(format!(
+-        return format_err(format!(
 -            "output appeared during conversion: {}",
 -            final_path.display()
--        ))));
+-        ));
 -    }
 -    std::fs::rename(&partial, &final_path)?;
+-    leftover.keep();
 -    let size = std::fs::metadata(&final_path)?.len();
 -    debug_assert_eq!(size, written);
 -    progress("done");
@@ -816,12 +807,25 @@ index 2a12304..34c051e 100644
  }
  
  /// The package's size before it is written: the header block, the outer image the layout
+diff --git a/ps5upload-fpkg/src/source.rs b/ps5upload-fpkg/src/source.rs
+index 9add45f..b505f3c 100644
+--- a/ps5upload-fpkg/src/source.rs
++++ b/ps5upload-fpkg/src/source.rs
+@@ -1315,6 +1315,8 @@ mod tests {
+         send::<crate::exfat::ExFatSource>();
+         send::<crate::ufs2_source::Ufs2Source>();
+         send::<Box<dyn SourceTree>>();
++        // And a prepared build, which goes with its tree.
++        send::<crate::build::Prepared>();
+ 
+         let dir = std::env::temp_dir().join(format!("fpkg-send-{}", std::process::id()));
+         std::fs::create_dir_all(&dir).unwrap();
 diff --git a/ps5upload-fpkg/tests/prepared.rs b/ps5upload-fpkg/tests/prepared.rs
 new file mode 100644
-index 0000000..25c1170
+index 0000000..f6cc99e
 --- /dev/null
 +++ b/ps5upload-fpkg/tests/prepared.rs
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,460 @@
 +//! `prepare` and `write_package`: a build from an open source tree into a file the caller owns,
 +//! and the effective manifest that says what the package carries.
 +
@@ -1237,6 +1241,32 @@ index 0000000..25c1170
 +        prepared.estimated_size(),
 +        report.size
 +    );
++}
++
++/// A dump's own `ampr_emu.index` lists the folder as it was; the package carries one generated
++/// from what it packages, so the manifest says Generated, not Source.
++#[test]
++fn a_dumps_own_ampr_index_is_generated_anew() {
++    let src = TempDir::new("index-src");
++    write_tree(src.path());
++    std::fs::write(src.path().join("ampr_emu.index"), b"stale").unwrap();
++    let mut tree = FolderSource::open(src.path()).unwrap();
++    let prepared = build::prepare(
++        &mut tree,
++        &request(src.path()),
++        &mut BuildControl::default(),
++    )
++    .unwrap();
++    let entry = prepared
++        .manifest()
++        .iter()
++        .find(|e| e.path == "ampr_emu.index")
++        .unwrap();
++    assert_eq!(entry.origin, Origin::Generated);
++    let bytes = prepared.generated_bytes("ampr_emu.index").unwrap();
++    assert_ne!(bytes, b"stale");
++    assert_eq!(bytes.len() as u64, entry.size);
++    assert!(prepared.log().iter().any(|l| l.contains("regenerating")));
 +}
 +
 +/// The manifest serializes for a report.
