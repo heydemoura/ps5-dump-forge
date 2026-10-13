@@ -8,6 +8,11 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let var = |k: &str| std::env::var(k).unwrap_or_default();
+    // UnRAR's Windows code (registry, process tokens, CryptGenRandom, file ACLs) needs advapi32,
+    // which unrar_sys links only powrprof and shell32 beside; the MSVC link fails without it.
+    if var("CARGO_CFG_TARGET_OS") == "windows" {
+        println!("cargo:rustc-link-lib=advapi32");
+    }
     let w = if var("CARGO_CFG_TARGET_OS") == "windows" || var("CARGO_CFG_TARGET_ENV") == "ps5" {
         2
     } else {
