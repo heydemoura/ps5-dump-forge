@@ -113,6 +113,8 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [roots, setRoots] = useState<string[]>([]);
+  // A listing is on its way: what shows is still the previous folder's, so it can't be chosen.
+  const [pending, setPending] = useState(true);
   const seq = useRef(0);
   const box = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLUListElement>(null);
@@ -125,9 +127,11 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
   const go = async (path: string | null, fallBack = false) => {
     const mine = ++seq.current;
     setError(null);
+    setPending(true);
     try {
       const l = await call<Listing>("list_dir", { path });
       if (mine !== seq.current) return;
+      setPending(false);
       setListing(l);
       if (l.path === null) setRoots(l.entries.map((e) => e.path));
       lastDir = l.path;
@@ -135,18 +139,22 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
       if (mine !== seq.current) return;
       // The last folder may be gone (a drive unplugged): start from the drives instead.
       if (fallBack) void go(null);
-      else setError(errorText(e));
+      else {
+        setPending(false);
+        setError(errorText(e));
+      }
     }
   };
 
   useEffect(() => {
-    if (lastDir !== null) {
+    const start = o.start ?? lastDir;
+    if (start !== null) {
       // The crumbs need the roots too.
       call<Listing>("list_dir", { path: null }).then(
         (l) => setRoots(l.entries.map((e) => e.path)),
         () => {},
       );
-      void go(lastDir, true);
+      void go(start, true);
     } else void go(null);
   }, []);
 
@@ -203,6 +211,8 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
         aria-modal="true"
         aria-labelledby="pick-title"
         ref={box}
+        // A click on the dialog's text focuses the box, so Escape and the trap still reach it.
+        tabIndex={-1}
         onKeyDown={onKey}
       >
         <div className="modal-head">
@@ -219,7 +229,8 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
                   /
                 </span>
               )}
-              {i === trail.length - 1 ? (
+              {/* After a failed listing the last crumb stays a button: it tries again. */}
+              {i === trail.length - 1 && !error ? (
                 <span className="here" aria-current="location">
                   {c.label}
                 </span>
@@ -286,7 +297,7 @@ function Picker({ o, done }: { o: PickOptions; done: (path: string | null) => vo
             <button
               type="button"
               className="primary"
-              disabled={here === null}
+              disabled={here === null || pending || error !== null}
               onClick={() => here !== null && done(here)}
             >
               {t.chooseFolder}

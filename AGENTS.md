@@ -238,7 +238,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     UI's LZ4 badge). Sorted by title, ID, version, path. `library_cover` reads `sce_sys/icon0.png`
     (≤ 512 KiB) lazily, one at a time in list order, only for an entry the page lists.
   - **Semantics**: `runtimePlatform()` (`GET /api/session` `platform`) decides. On a computer (`host`)
-    nothing scans until the user chooses a folder (**Choose folder…**; **Refresh** rescans it). A refused
+    nothing scans until the user chooses a folder (**Choose folder**; **Refresh** rescans it). A refused
     or failed newly chosen folder is an error screen with core's message and drops the previous folder and
     list; a failed Refresh keeps the list. On the PS5 the first open scans the server's roots, **Refresh**
     rescans; no picker. Everything lives in memory until the app closes. Cards and rows show the title ID.

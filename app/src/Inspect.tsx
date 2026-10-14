@@ -33,10 +33,13 @@ export function Inspect(props: {
   /** A game the Library opened here; each new `id` is read once. */
   selection?: SourceSelection | null;
 }) {
-  const t = useMessages().inspect;
+  const messages = useMessages();
+  const t = messages.inspect;
   const [source, setSource] = useState<string | null>(null);
   const [ins, setIns] = useState<Inspection | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Why the last delete failed (the backend's words; the lead is rendered in the current language). */
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState("");
   const [view, setView] = useState<View>("files");
@@ -49,6 +52,7 @@ export function Inspect(props: {
     setSource(path);
     setIns(null);
     setError(null);
+    setDeleteError(null);
     setDeleted(null);
     setBusy(true);
     try {
@@ -74,6 +78,7 @@ export function Inspect(props: {
     setIns(null);
     setFilter("");
     setBusy(false);
+    setDeleteError(null);
     setDeleted(path);
     if (visibleRef.current) document.getElementById("i-source")?.focus();
   };
@@ -114,13 +119,13 @@ export function Inspect(props: {
       if (!(await confirmDelete(path, ins.kind === "folder", isArchive(ins.kind)))) return;
       if (mine !== seq.current) return; // another source meanwhile
       setDeleting(true);
-      setError(null);
+      setDeleteError(null);
       await api.deletePath(path);
       // Also when the same source, or one inside it, was picked again meanwhile.
       if (mine === seq.current || (picked.current !== null && isWithin(picked.current, path))) clear(path);
       notifyDeleted(path);
     } catch (e) {
-      if (mine === seq.current) setError(errorText(e));
+      if (mine === seq.current) setDeleteError(errorText(e));
     } finally {
       deletingRef.current = false;
       setDeleting(false);
@@ -165,6 +170,11 @@ export function Inspect(props: {
               )
             }
           />
+          {deleteError && (
+            <p className="bad deleted-note" role="alert">
+              {messages.library.cantDelete} <span className="backend">{deleteError}</span>
+            </p>
+          )}
           {deleted && (
             <p className="muted deleted-note" role="status">
               {t.deleted} <span className="path">{deleted}</span>

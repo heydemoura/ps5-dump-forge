@@ -430,12 +430,7 @@ impl Server {
         &self,
         call: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, Response> {
-        let busy = || {
-            Response::limited(
-                "2 inspections are already running; try again in a moment",
-                1,
-            )
-        };
+        let busy = || Response::limited("2 games are already being read; try again in a moment", 1);
         self.refuse_if_stopping()?;
         let start = Instant::now();
         let mut waits = None;

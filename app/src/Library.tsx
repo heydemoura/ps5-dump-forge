@@ -406,6 +406,7 @@ function Item(props: {
         <div className="library-name">{n}</div>
         <div className="library-sub muted">
           {e.title_id}
+          {e.version && <span>{e.version}</span>}
           {packed && <Lz4Badge />}
         </div>
       </div>
@@ -420,7 +421,12 @@ function Item(props: {
       {box}
       <div>
         <div className="library-name">{n}</div>
-        <div className="library-sub muted">{e.title_id}</div>
+        <div className="library-sub muted">
+          {e.title_id}
+          {e.version && <span>{e.version}</span>}
+        </div>
+        {/* Copies of one game differ only here: the path shows, not just in a tooltip. */}
+        <PathLine path={e.path} />
       </div>
       <div className="library-foot">
         <FormatPill kind={e.kind} />

@@ -178,6 +178,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       const { ins: found, password: opened } = await readSource(path, pw, current);
       if (seq !== sourceSeq.current) return;
       setIns(found);
+      setInsError(null); // an earlier read may have failed (a busy console)
       setPassword(opened);
       if (!name) return;
       const facts = found.lz4 ?? null;
@@ -327,7 +328,10 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       setPatched({ source: src, act: a, result });
       void inspectSource(src, false, null);
     } catch (e) {
-      if (seq === sourceSeq.current) setError(errorText(e));
+      if (seq !== sourceSeq.current) return;
+      setError(errorText(e));
+      // A patch that failed part way may still have changed the folder: show what it holds now.
+      void inspectSource(src, false, null);
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -365,7 +369,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   });
   const start = async () => {
     if (!source || !job || blockReason || submittingRef.current) return;
-    if (!imageTrace && (!target || named.error)) return;
+    if (!imageTrace && (!target || named.error || collides)) return;
     setError(null);
     const request = makeRequest(source);
     submittingRef.current = true;
@@ -376,6 +380,8 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       started.current.add(id);
       props.dispatch({ type: "started", id, request });
       if (!imageTrace) out.next(source, request.output, choice);
+      // A double click's second press lands once the job started: the button rests a moment.
+      await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -408,7 +414,8 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     (j) => !j.result && !j.request?.lz4_in_place && j.request?.source === source && j.request.format === fmt,
   );
   const outputJob = scenario === "pack";
-  const collides = !out.generate && sameJobs.some((j) => j.request?.output === target);
+  // Any unfinished job writing this path, from any source.
+  const collides = !out.generate && props.jobs.some((j) => !j.result && j.request?.output === target);
   const dupe = outputJob && sameJobs.length > 0;
   const formatWarn =
     ins && job ? ins.findings.filter((l) => classify(l).formats?.includes(fmt)).length : 0;
@@ -619,7 +626,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                   className="primary"
                   onClick={folderTrace ? runFolder : start}
                   disabled={
-                    !!blockReason || submitting || (outputJob && (!target || !!named.error))
+                    !!blockReason || submitting || (outputJob && (!target || !!named.error || collides))
                   }
                 >
                   <Icon name="bolt" />

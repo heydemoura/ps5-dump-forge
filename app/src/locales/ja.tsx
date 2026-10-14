@@ -38,7 +38,10 @@ const ja: Messages = {
     close: "閉じる",
     tryAgain: "再試行",
     stopped: "Dump Forge は停止しました",
-    startAgain: "続けるには、このアプリをもう一度起動してください。",
+    startAgain: (ps5) => (ps5 ? "続けるには、PS5 の Dump Forge タイルをもう一度開いてください。" : "続けるには、同じ ps5-dump-forge serve コマンドをもう一度実行してください。"),
+    confirmStop: (web: boolean) => (web ? "Dump Forge を停止しますか？" : "PS5 Dump Forge を終了しますか？"),
+    stopNote: (web, ps5) => (!web ? "実行中のジョブはありません。" : ps5 ? "もう一度起動するには、PS5 の Dump Forge タイルを開いてください。" : "もう一度起動するには、同じ ps5-dump-forge serve コマンドを再実行してください。"),
+    quit: "終了",
     github: (name) => `GitHub の ${name}`,
     queued: "待機中",
     progress: (percent, left) => `${percent}% 完了${left ? `、残り ${left}` : ""}`,
@@ -53,6 +56,7 @@ const ja: Messages = {
     lz4Trace:
       "このパック済みゲームには LZ4 のトレース用ランタイムが入っています。先に「LZ4」タブでアンパックするか、パックし直してください。",
     unreadable: "ビルドできません：このソースを読み込めませんでした（「ソース」を参照）。",
+    noContentId: "fpkg としてビルドできません：このゲームの param.json には、パッケージに必要な Content ID がありません。",
     blocked: (first, more) =>
       more > 0
         ? `ビルドできません：${first}（ほか ${num(more)} 件、「ソース」を参照）。`
@@ -155,7 +159,7 @@ const ja: Messages = {
     leftovers: "残っているファイルとフォルダー",
     found: (n) => `${num(n)} 件`,
     leftoversNote: (app) =>
-      `未完成の出力や展開されたアーカイブで、通常は中断されたジョブの残りです。見覚えのあるものだけを、ジョブが実行されていないときに削除してください。${app} が自動で削除することはありません。`,
+      `未完成の出力で、通常は中断されたジョブの残りです。見覚えのあるものだけを、ジョブが実行されていないときに削除してください。${app} が自動で削除することはありません。`,
     checked: (n) => `確認したフォルダー（${num(n)}）`,
   },
   // JobList.tsx
@@ -238,9 +242,9 @@ const ja: Messages = {
     scanningIn: (name) => `${name} をスキャン中`,
     scanning: "スキャン中",
     cantScanFolder: "このフォルダーをスキャンできません",
-    chooseAnother: "別のフォルダーを選択…",
+    chooseAnother: "別のフォルダーを選択",
     pickPrompt: "スキャンするライブラリのフォルダーを選んでください",
-    choose: "フォルダーを選択…",
+    choose: "フォルダーを選択",
     cantScan: "ライブラリをスキャンできません：",
     cantDelete: "削除できません：",
     deleted: (path) => `${path} を削除しました`,
@@ -344,7 +348,7 @@ const ja: Messages = {
         : `パッチを解除すると、このソースのトレース（${bytes}）が削除されます。先にコピーしてください。`,
     useProfile: "代わりにルールプロファイルを使う",
     profile: "プロファイル",
-    choose: "選択…",
+    choose: "選択",
     profileHint: "パックのルールを記した TOML ファイルです。トレースの代わりに使います。",
     target: "出力形式",
     packInto: "パック先",
@@ -400,8 +404,8 @@ const ja: Messages = {
     loaded: "このソースからトレースを読み込み済みです",
     lockedHint: (bytes) => `このソース自身のトレース（${bytes}）です。別のトレースを選ぶには鍵をクリックしてください。`,
     clear: "クリア",
-    zip: "Zip…",
-    folder: "フォルダー…",
+    zip: "Zip",
+    folder: "フォルダー",
     tracesHint: "「トレースをダウンロード」で取得した amprtrace の zip、または両方のトレースファイルを含むフォルダーを選んでください。",
     useOwn: "ソースのトレースを使う",
     patchResult: (a, n) => a === "patch"
@@ -565,6 +569,7 @@ const ja: Messages = {
         "保存された Dump Forge のコピーが見つかりません（/data/dumpforge/ にも USB ドライブにもありません）。一度 PC から読み込んでください。このアイコン用にコピーが保存されます。",
       timeout:
         "Dump Forge は起動しましたが、30 秒経っても応答がありません。まだ起動中の可能性があります（レストモードから復帰した直後の本体は時間がかかります）。",
+      stopping: "前の Dump Forge がまだ停止中です（ジョブをキャンセルして後片付けをしています）。少し待ってから、もう一度お試しください。",
     },
     loadFailed: (e) => `ページを読み込めませんでした：${e}`,
     noAnswer: "Dump Forge が応答しません",
@@ -644,7 +649,8 @@ const ja: Messages = {
     compression: "圧縮",
     fullVerify: "完全検証",
     fullVerifyHint: "出力の全バイトを読み直して検証します。時間がかかります。",
-    separator: "名前にフォルダーの区切り文字は使えません。フォルダーは「変更…」で指定してください。",
+    separator: "名前にフォルダーの区切り文字は使えません。フォルダーは「変更」で指定してください。",
+    badName: "名前は空にできず、ドットで始めることも、ドットや空白で終えることも、制御文字を含めることもできません。",
     tooLong: (bytes, max, folder) =>
       folder
         ? `長すぎます：${bytes} バイト（上限 ${max} バイト、UTF-8）。`
@@ -655,7 +661,7 @@ const ja: Messages = {
     extractInto: "このフォルダーに展開",
     saveInto: "このフォルダーに保存",
     output: "出力",
-    change: "変更…",
+    change: "変更",
     naming: "名前を生成中…",
     chooseSourceFirst: "先にソースを選んでください",
     fileName: "ファイル名",

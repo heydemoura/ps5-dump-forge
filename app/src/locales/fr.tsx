@@ -39,7 +39,10 @@ const fr: Messages = {
     close: "Fermer",
     tryAgain: "Réessayer",
     stopped: "Dump Forge est arrêté",
-    startAgain: "Pour continuer, relancez cette application.",
+    startAgain: (ps5) => (ps5 ? "Pour continuer, rouvrez la vignette Dump Forge sur la PS5." : "Pour continuer, relancez la même commande ps5-dump-forge serve."),
+    confirmStop: (web: boolean) => (web ? "Arrêter Dump Forge ?" : "Quitter PS5 Dump Forge ?"),
+    stopNote: (web, ps5) => (!web ? "Aucune tâche en cours." : ps5 ? "Pour le relancer, ouvrez la vignette Dump Forge sur la PS5." : "Pour le relancer, exécutez de nouveau la même commande ps5-dump-forge serve."),
+    quit: "Quitter",
     github: (name) => `${name} sur GitHub`,
     queued: "en attente",
     progress: (percent, left) => `${percent} % terminé${left ? `, il reste ${left}` : ""}`,
@@ -54,6 +57,7 @@ const fr: Messages = {
     lz4Trace:
       "Ce jeu empaqueté contient le runtime de traçage LZ4 : dépaquetez-le ou empaquetez-le de nouveau dans l’onglet « LZ4 » d’abord.",
     unreadable: "Création impossible : cette source n’a pas pu être lue (voir « Source »).",
+    noContentId: "Création en fpkg impossible : le param.json de ce jeu n’a pas de Content ID, indispensable à un paquet.",
     blocked: (first, more) =>
       `Création impossible : ${first}${more > 0 ? ` (et ${num(more)} de plus, voir « Source »)` : ""}.`,
     runtime: "Mettre à jour AMPR",
@@ -153,7 +157,7 @@ const fr: Messages = {
     leftovers: "Fichiers et dossiers restants",
     found: (n) => `${num(n)} ${plural(n, { one: "trouvé", many: "trouvés", other: "trouvés" })}`,
     leftoversNote: (app) =>
-      `Des sorties inachevées et des archives décompressées, généralement laissées par des tâches interrompues. Ne supprimez que celles que vous reconnaissez, et seulement quand aucune tâche n’est en cours ; ${app} ne les supprime jamais lui-même.`,
+      `Des sorties inachevées, généralement laissées par des tâches interrompues. Ne supprimez que celles que vous reconnaissez, et seulement quand aucune tâche n’est en cours ; ${app} ne les supprime jamais lui-même.`,
     checked: (n) => `Dossiers vérifiés (${num(n)})`,
   },
   // JobList.tsx
@@ -237,9 +241,9 @@ const fr: Messages = {
     scanningIn: (name) => `Analyse de ${name}`,
     scanning: "Analyse",
     cantScanFolder: "Impossible d’analyser ce dossier",
-    chooseAnother: "Choisir un autre dossier…",
+    chooseAnother: "Choisir un autre dossier",
     pickPrompt: "Choisissez le dossier de votre bibliothèque à analyser",
-    choose: "Choisir un dossier…",
+    choose: "Choisir un dossier",
     cantScan: "Impossible d’analyser la bibliothèque :",
     cantDelete: "Impossible de supprimer :",
     deleted: (path) => `Supprimé : ${path}`,
@@ -325,7 +329,7 @@ const fr: Messages = {
       `${a === "patch" ? "Patcher" : "Retirer le patch"} supprime les traces de cette source (${bytes}) : ${web ? "téléchargez-les d’abord." : "copiez-les d’abord."}`,
     useProfile: "Utiliser plutôt un profil de règles",
     profile: "Profil",
-    choose: "Choisir…",
+    choose: "Choisir",
     profileHint: "Un fichier TOML de règles d’empaquetage, utilisé à la place des traces.",
     target: "Cible",
     packInto: "Empaqueter vers",
@@ -373,8 +377,8 @@ const fr: Messages = {
     loaded: "Les traces sont déjà chargées depuis cette source",
     lockedHint: (bytes) => `Les traces propres à cette source (${bytes}). Cliquez sur le cadenas pour en choisir d’autres.`,
     clear: "Effacer",
-    zip: "Zip…",
-    folder: "Dossier…",
+    zip: "Zip",
+    folder: "Dossier",
     tracesHint: "Choisissez le zip amprtrace obtenu via « Télécharger les traces », ou un dossier contenant les deux fichiers de traces.",
     useOwn: "Utiliser les traces de la source",
     patchResult: (a, n) =>
@@ -535,6 +539,7 @@ const fr: Messages = {
         "Aucune copie enregistrée de Dump Forge n’a été trouvée (ni dans /data/dumpforge/, ni sur un support USB). Chargez-le une fois depuis un PC : il enregistre une copie pour cette icône.",
       timeout:
         "Dump Forge a été lancé mais ne répond toujours pas après 30 secondes. Il est peut-être encore en cours de démarrage (une console qui sort du mode repos est lente).",
+      stopping: "Le Dump Forge précédent est encore en train de s’arrêter (il annule ses tâches et fait le ménage). Patientez un instant, puis réessayez.",
     },
     loadFailed: (e) => `Impossible de charger la page : ${e}`,
     noAnswer: "Dump Forge ne répond pas",
@@ -617,7 +622,8 @@ const fr: Messages = {
     compression: "Compression",
     fullVerify: "Vérification complète",
     fullVerifyHint: "Relit chaque octet pour contrôler la sortie. Plus long.",
-    separator: "Un nom ne peut pas contenir de séparateur de dossiers ; utilisez « Modifier… » pour le dossier.",
+    separator: "Un nom ne peut pas contenir de séparateur de dossiers ; utilisez « Modifier » pour le dossier.",
+    badName: "Un nom ne peut pas être vide, commencer par un point, finir par un point ou une espace, ni contenir de caractères de contrôle.",
     tooLong: (bytes, max, folder) =>
       folder
         ? `Trop long : ${bytes} octets, ${max} au maximum (UTF-8).`
@@ -628,7 +634,7 @@ const fr: Messages = {
     extractInto: "Extraire dans ce dossier",
     saveInto: "Enregistrer dans ce dossier",
     output: "Sortie",
-    change: "Modifier…",
+    change: "Modifier",
     naming: "Nommage…",
     chooseSourceFirst: "Choisissez d’abord une source",
     fileName: "Nom du fichier",

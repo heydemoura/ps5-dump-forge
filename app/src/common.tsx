@@ -62,13 +62,23 @@ export function FormatPill({ kind }: { kind: string }) {
   return <span className={known ? `tag fmt fmt-${hue}` : "tag"}>{kindLabel(kind)}</span>;
 }
 
-/** The image formats' names (no dot) as words in running text. */
-const FORMAT_NAME = /\b(ffpfsc|ffpfs|ffpkg|exfat|fpkg)\b/;
+/** The image formats' names (no dot) as words in running text: not an extension (`.exfat`) nor
+ * part of a longer name (`fpkg-enable`). The character before is matched, not looked behind:
+ * the PS5's WebKit has no lookbehind. */
+const FORMAT_NAME = /(^|[^.\w-])(ffpfsc|ffpfs|ffpkg|exfat|fpkg)(?![\w-])/g;
 
 /** Running text with every format name in bold, so it reads as a name. Only for copy: a path
  * or file name (`game.ffpkg`) keeps its dot and stays plain. */
 export function Prose({ text }: { text: string }) {
-  return <>{text.split(FORMAT_NAME).map((part, i) => (i % 2 ? <b key={i}>{part}</b> : part))}</>;
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const m of text.matchAll(FORMAT_NAME)) {
+    const start = (m.index ?? 0) + m[1].length;
+    parts.push(text.slice(at, start), <b key={start}>{m[2]}</b>);
+    at = start + m[2].length;
+  }
+  parts.push(text.slice(at));
+  return <>{parts}</>;
 }
 
 /** A card's title row: icon + title, actions on the right. */
@@ -294,9 +304,11 @@ export function openOverlay(render: (close: () => void) => ReactNode, onClosed?:
 const FOCUSABLE = 'button:not(:disabled), a[href], input:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 /** An overlay's backdrop and box: Escape and a click outside close it, Tab stays inside (old
- * WebKit has no `inert`). Give the first control `autoFocus`. */
+ * WebKit has no `inert`). Give the first control `autoFocus`. Without `close` (Stopping, has
+ * stopped) it takes no keys or clicks at all: Escape stays the browser's (the PS5's Circle
+ * leaves the page). */
 export function Modal(props: {
-  close: () => void;
+  close?: () => void;
   className: string;
   role?: "dialog" | "alertdialog";
   labelledBy: string;
@@ -305,6 +317,7 @@ export function Modal(props: {
 }) {
   const box = useRef<HTMLDivElement>(null);
   const onKey = (e: KeyboardEvent) => {
+    if (!props.close) return;
     if (e.key === "Escape") {
       e.preventDefault();
       props.close();
@@ -325,7 +338,9 @@ export function Modal(props: {
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) props.close();
+        if (e.target !== e.currentTarget || !props.close) return;
+        e.preventDefault(); // focus stays where it was until the overlay gives it back
+        props.close();
       }}
     >
       <div
@@ -335,6 +350,8 @@ export function Modal(props: {
         aria-labelledby={props.labelledBy}
         aria-describedby={props.describedBy}
         ref={box}
+        // A click on the dialog's text focuses the box, so Escape and the trap still reach it.
+        tabIndex={-1}
         onKeyDown={onKey}
       >
         {props.children}
@@ -458,8 +475,9 @@ export function SourceCard(props: {
       aria-labelledby={headId}
     >
       <CardHead icon="disc" title={t.source} id={headId} focusable>
-        {path && props.actions}
         {path && <PickButtons onPick={props.onPick} />}
+        {/* Last, like the Library's: a destructive button away from the pickers. */}
+        {path && props.actions}
       </CardHead>
       {!path && props.empty ? (
         props.empty
@@ -493,7 +511,7 @@ export function SourceCard(props: {
               )}
             </div>
           ) : (
-            props.error && <p className="bad">{props.error}</p>
+            props.error && <p className="bad backend">{props.error}</p>
           )}
           {ins && <InspectSummary ins={ins} full={props.full} />}
         </>

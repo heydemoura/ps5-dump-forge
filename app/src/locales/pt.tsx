@@ -41,7 +41,10 @@ const pt: Messages = {
     close: "Fechar",
     tryAgain: "Tentar de novo",
     stopped: "O Dump Forge foi parado",
-    startAgain: "Para continuar, inicie este app novamente.",
+    startAgain: (ps5) => (ps5 ? "Para continuar, abra de novo o bloco do Dump Forge no PS5." : "Para continuar, execute de novo o mesmo comando ps5-dump-forge serve."),
+    confirmStop: (web: boolean) => (web ? "Parar o Dump Forge?" : "Sair do PS5 Dump Forge?"),
+    stopNote: (web, ps5) => (!web ? "Nenhuma tarefa em andamento." : ps5 ? "Para iniciá-lo de novo, abra o bloco do Dump Forge no PS5." : "Para iniciá-lo de novo, execute outra vez o mesmo comando ps5-dump-forge serve."),
+    quit: "Sair",
     github: (name) => `${name} no GitHub`,
     queued: "na fila",
     progress: (percent, left) => `${percent}% concluído${left ? `, tempo restante: ${left}` : ""}`,
@@ -56,6 +59,7 @@ const pt: Messages = {
     lz4Trace:
       "Este jogo empacotado traz o runtime de rastreamento do LZ4: desempacote-o ou empacote-o de novo na aba “LZ4” primeiro.",
     unreadable: "Não é possível criar: esta origem não pôde ser lida (veja “Origem”).",
+    noContentId: "Não é possível criar como fpkg: o param.json deste jogo não tem Content ID, que um pacote exige.",
     blocked: (first, more) =>
       `Não é possível criar: ${first}${more > 0 ? ` (e mais ${num(more)}, veja “Origem”)` : ""}.`,
     runtime: "Atualizar AMPR",
@@ -155,7 +159,7 @@ const pt: Messages = {
     leftovers: "Arquivos e pastas restantes",
     found: (n) => `${num(n)} ${plural(n, { one: "encontrado", many: "encontrados", other: "encontrados" })}`,
     leftoversNote: (app) =>
-      `Saídas incompletas e arquivos compactados extraídos, geralmente de tarefas interrompidas. Remova só as que você reconhecer, e só quando nenhuma tarefa estiver em execução; o ${app} nunca as exclui sozinho.`,
+      `Saídas incompletas, geralmente de tarefas interrompidas. Remova só as que você reconhecer, e só quando nenhuma tarefa estiver em execução; o ${app} nunca as exclui sozinho.`,
     checked: (n) => `Pastas verificadas (${num(n)})`,
   },
   // JobList.tsx
@@ -240,9 +244,9 @@ const pt: Messages = {
     scanningIn: (name) => `Escaneando ${name}`,
     scanning: "Escaneando",
     cantScanFolder: "Não é possível escanear esta pasta",
-    chooseAnother: "Escolher outra pasta…",
+    chooseAnother: "Escolher outra pasta",
     pickPrompt: "Escolha uma pasta com a sua biblioteca para escanear",
-    choose: "Escolher pasta…",
+    choose: "Escolher pasta",
     cantScan: "Não é possível escanear a Biblioteca:",
     cantDelete: "Não é possível excluir:",
     deleted: (path) => `Excluído: ${path}`,
@@ -328,7 +332,7 @@ const pt: Messages = {
       `${a === "patch" ? "“Aplicar patch”" : "“Remover patch”"} exclui os rastreamentos desta origem (${bytes}): ${web ? "baixe-os antes." : "copie-os antes."}`,
     useProfile: "Usar um perfil de regras em vez disso",
     profile: "Perfil",
-    choose: "Escolher…",
+    choose: "Escolher",
     profileHint: "Um arquivo TOML com regras de empacotamento, usado no lugar dos rastreamentos.",
     target: "Destino",
     packInto: "Empacotar em",
@@ -376,8 +380,8 @@ const pt: Messages = {
     loaded: "Os rastreamentos já foram carregados desta origem",
     lockedHint: (bytes) => `Os rastreamentos desta origem (${bytes}). Clique no cadeado para escolher outros.`,
     clear: "Limpar",
-    zip: "Zip…",
-    folder: "Pasta…",
+    zip: "Zip",
+    folder: "Pasta",
     tracesHint: "Escolha o zip amprtrace de “Baixar rastreamentos” ou uma pasta com os dois arquivos de rastreamento.",
     useOwn: "Usar os rastreamentos da origem",
     patchResult: (a, n) =>
@@ -541,6 +545,7 @@ const pt: Messages = {
         "Nenhuma cópia salva do Dump Forge foi encontrada (em /data/dumpforge/ ou em uma unidade USB). Carregue-o uma vez a partir de um PC; ele salva uma cópia para este ícone.",
       timeout:
         "O Dump Forge foi iniciado, mas não respondeu depois de 30 segundos. Ele ainda pode estar iniciando (um console saindo do modo de repouso é lento).",
+      stopping: "O Dump Forge anterior ainda está parando (cancelando as tarefas e limpando). Aguarde um pouco e tente de novo.",
     },
     loadFailed: (e) => `Não foi possível carregar a página: ${e}`,
     noAnswer: "O Dump Forge não respondeu",
@@ -623,7 +628,8 @@ const pt: Messages = {
     compression: "Compressão",
     fullVerify: "Verificação completa",
     fullVerifyHint: "Relê cada byte para verificar a saída. Demora mais.",
-    separator: "Um nome não pode conter separador de pastas; use “Alterar…” para a pasta.",
+    separator: "Um nome não pode conter separador de pastas; use “Alterar” para a pasta.",
+    badName: "Um nome não pode ficar em branco, começar com ponto, terminar com ponto ou espaço, nem ter caracteres de controle.",
     tooLong: (bytes, max, folder) =>
       folder
         ? `Longo demais: ${num(bytes)} ${plural(bytes, { one: "byte", many: "bytes", other: "bytes" })}, no máximo ${num(max)} (UTF-8).`
@@ -633,7 +639,7 @@ const pt: Messages = {
     extractInto: "Extrair nesta pasta",
     saveInto: "Salvar nesta pasta",
     output: "Saída",
-    change: "Alterar…",
+    change: "Alterar",
     naming: "Gerando o nome…",
     chooseSourceFirst: "Escolha uma origem primeiro",
     fileName: "Nome do arquivo",

@@ -224,12 +224,16 @@ const STEM_LIMIT: Record<Format, number> = {
 function checkName(name: string, format: Format): { name: string; error?: string } {
   const t = msg().target;
   if (SEPARATORS.test(name)) return { name, error: t.separator };
-  const tooLong = (stem: string) => {
+  const stemError = (stem: string) => {
+    // Blank, hidden (a leading dot: junk filters skip it), a trailing dot or space (dropped on
+    // some filesystems), or a control character: never a name worth writing.
+    if (!stem.trim() || stem.startsWith(".") || /[. ]$/.test(stem) || /[\x00-\x1f\x7f]/.test(stem))
+      return t.badName;
     const bytes = new TextEncoder().encode(stem).length;
     const max = STEM_LIMIT[format];
     return bytes > max ? t.tooLong(bytes, max, FOLDER_FORMATS.includes(format)) : undefined;
   };
-  if (FOLDER_FORMATS.includes(format)) return { name, error: tooLong(name) };
+  if (FOLDER_FORMATS.includes(format)) return { name, error: stemError(name) };
   const dot = name.lastIndexOf(".");
   const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
   let saved: string;
@@ -242,7 +246,7 @@ function checkName(name: string, format: Format): { name: string; error?: string
       error: format === "pkg" ? t.pkgExt(ext) : t.otherExt(ext, kindLabel(format)),
     };
   else saved = `${name}.${format}`;
-  const error = tooLong(saved.slice(0, saved.lastIndexOf(".")));
+  const error = stemError(saved.slice(0, saved.lastIndexOf(".")));
   return error ? { name, error } : { name: saved };
 }
 
@@ -260,6 +264,8 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
   useMessages().target; // the typed name's error is in the current language
   const [output, setOutput] = useState("");
   const [generate, setGenerate] = useState(true);
+  // The latest naming failed (the error went to `onError`): the box stops saying "Naming".
+  const [failed, setFailed] = useState(false);
   // Only the latest output request may land.
   const outputSeq = useRef(0);
   // Bumped when the source, format or naming changes: a file dialog opened before that is
@@ -276,6 +282,7 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
   // Recompute the name, keeping the folder.
   const refresh = async (src: string, fmt: Format, gen = generate, taken = running(jobs)) => {
     const seq = ++outputSeq.current;
+    setFailed(false);
     try {
       const out = gen
         ? await api.generatedOutput(src, fmt, outDir.current, taken, password.current)
@@ -285,7 +292,9 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
       setOutput(out);
     } catch (e) {
       // A locked archive: the screen asks for its password, then `opened` names it.
-      if (seq === outputSeq.current && !isPasswordRequired(errorText(e))) onError(errorText(e));
+      if (seq !== outputSeq.current) return;
+      setFailed(true);
+      if (!isPasswordRequired(errorText(e))) onError(errorText(e));
     }
   };
 
@@ -299,6 +308,7 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
   return {
     generate,
     output,
+    failed,
     dir: outDir.current,
     name,
     named,
@@ -312,6 +322,7 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
       password.current = null;
       outDir.current = dirname(src);
       setOutput("");
+      setFailed(false);
       if (fmt) void refresh(src, fmt);
     },
     /** The source opened, with `pw` (an archive's password, or null): names use it from now
@@ -356,7 +367,8 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
       const choice = choiceSeq.current;
       const t = msg().target;
       const title = FOLDER_FORMATS.includes(format) ? t.extractInto : t.saveInto;
-      const dir = await pick({ directory: true, title });
+      // Opens at the output's folder, not wherever the last browse ended (the game's own folder).
+      const dir = await pick({ directory: true, title, start: outDir.current || undefined });
       if (dir === null || choice !== choiceSeq.current) return;
       outDir.current = dir;
       if (!generate && name) {
@@ -400,7 +412,7 @@ export function OutputField(props: { out: Output; source: string | null; prefix:
           {out.output ? (
             <span className="out-name">{out.name}</span>
           ) : (
-            <span className="muted">{source ? t.naming : t.chooseSourceFirst}</span>
+            <span className="muted">{!source ? t.chooseSourceFirst : out.failed ? "—" : t.naming}</span>
           )}
         </p>
       ) : (

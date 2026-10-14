@@ -25,6 +25,8 @@ export interface PickOptions {
    * The native dialog can't pick both kinds at once (rfd: files or folders), so the app asks
    * which kind first. */
   folderToo?: boolean;
+  /** The folder to open at (else where the last browse ended). */
+  start?: string;
 }
 
 export interface Transport {

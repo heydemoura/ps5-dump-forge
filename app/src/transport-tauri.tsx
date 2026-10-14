@@ -11,9 +11,10 @@ import type { PickOptions, Transport, Unlisten } from "./transport";
 
 async function pick(o: PickOptions): Promise<string | null> {
   const p = o.directory
-    ? await open({ directory: true, title: o.title })
+    ? await open({ directory: true, title: o.title, defaultPath: o.start })
     : await open({
         title: o.title,
+        defaultPath: o.start,
         filters: [{ name: o.filterName ?? o.title, extensions: o.extensions ?? [] }],
       });
   return typeof p === "string" ? p : null;

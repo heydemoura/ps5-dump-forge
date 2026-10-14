@@ -39,7 +39,7 @@ gradient notice bar) and the app icon (near-black navy with a blue edge and an o
 | `--focus` | `#9db6ff` | 2px focus ring on every control (`:focus-visible`) |
 | `--mono` | `ui-monospace, SFMono-Regular, Menlo` | Paths, file names, IDs, param.json, logs |
 | `--tab-lz4`, `--strap` / `--strap-hi` | `#1c1c26`, yellow 12% / 20% | The LZ4 screen tab's ground and straps |
-| `--lz4-ink` / `-ink-hi` / `-soft` | `#ffd84d` / `#ffe27a` / `#e3c766` | LZ4 yellow text: the tab, its pickers, Choose source…, LZ4 job tags, the Library's LZ4 badge |
+| `--lz4-ink` / `-ink-hi` / `-soft` | `#ffd84d` / `#ffe27a` / `#e3c766` | LZ4 yellow text: the tab, its pickers, Choose source, LZ4 job tags, the Library's LZ4 badge |
 | `--lz4-tint` / `-tint-hi` / `-line` | yellow 14% / 22%, ring 50% | Their tint, hover and ring (`--lz4-ink` on tint ≥ 9.3:1, `--lz4-soft` 11.4:1) |
 | `--library-ink` / `-ink-hi` / `-line` | `#a8ed8b` / `#c4f6aa` / green 50% | Library green: its header icon and the selected view button only |
 | `--neon-*` | lime, magenta, cyan 12%; ring lime 38%; ink `#d6e875` | A traced source's `LZ4 (AMPR)` tile |
@@ -110,23 +110,27 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
 
   | Kind | Class | Use |
   |---|---|---|
-  | Primary | `.primary` | White. One per card (Build, Pack, Choose folder… on an empty Library). |
-  | Secondary | default | Dark. Choose…, Change…, Show in Finder (Explorer, folder), download links (`a.button`). |
+  | Primary | `.primary` | White. One per card (Build, Pack, Choose folder on an empty Library). |
+  | Secondary | default | Dark. Choose, Change, Show in Finder (Explorer, folder), download links (`a.button`). |
   | Danger | `.danger` | Red tint. Stop job, Stop jobs and quit, the trash buttons, Yes, delete. |
   | Small | `.small` | Job rows; `.small.icon-only` is a 30px round icon button. |
-  | LZ4 | `.lz4-btn` | Yellow tint, ring and ink: the LZ4 tab's Choose source…. |
+  | LZ4 | `.lz4-btn` | Yellow tint, ring and ink: the LZ4 tab's Choose source. |
   | Help | `.help-btn` | The danger colours on a harmless button: How LZ4 works (experimental, read first). |
   | Neon | `.neon-btn` | Save as profile: the packed tile's static green straps, its label wraps; disabled drops the straps. |
   | Link | `.link` | Quiet text action (Compare formats). |
 - **Inputs**: pill, `--inset` fill, mono for paths. A generated output name shows whole in `.out-box`,
   its folder on the `.out-dir` line below; a file name is never clipped. A typed name that can't work
-  (another image extension, or longer than core's name limit) is refused in `.field-error` under the
-  box, and Build stays off.
+  (another image extension, longer than core's name limit, blank, a leading dot, a trailing dot or
+  space, a control character) is refused in `.field-error` under the box, and Build stays off; so
+  does a name an unfinished job is already writing. **Change** opens the picker at the output's
+  folder.
 - **Right-to-left** (Arabic, `<html dir="rtl">`): the layout mirrors through flexbox and logical
   properties (`margin-inline-*`, `padding-inline-*`, `text-align: start/end`); the few physical
   positions (switch knob, menus, the LZ4 badge, the LZ4 job edge, the select's chevron) have
-  `[dir="rtl"]` overrides at the end of styles.css. Paths, file names and the output name stay
-  left-to-right, isolated from the text around them.
+  `[dir="rtl"]` overrides at the end of styles.css. Paths, file names, the output name, job names,
+  the backend's English (`.backend`: errors and core's checks; job logs) and number + unit values
+  (`.value`, sizes) stay left-to-right, isolated from the text around them; the steps' "›" and the
+  progress bar's bright head mirror.
 - **Language select** (`select.lang-select`, right in the About card's header after a muted
   "Language" label, `.head-lang`): the one dropdown. A native `<select>` drawn as a small pill
   (`button.small`'s 30px and 12.5px, `--inset`, `--line-hi` border, `--focus` ring), `appearance: none`
@@ -142,8 +146,8 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   would refuse disables Build with the reason in a `.note-line.block` beside it.
 - **LZ4 tab** (`Lz4.tsx`): a Source card, then an "LZ4 asset packs" card whose head holds a red
   `.small.help-btn` **How LZ4 works**. The empty Source is `.empty.lz4` (yellow icon and glow): "Choose a
-  game that uses AMPR", an experimental lead and one `.lz4-btn` **Choose source…** with a Game folder… /
-  Image… menu.
+  game that uses AMPR", an experimental lead and one `.lz4-btn` **Choose source** with a Folder /
+  Image/Archive menu.
   - The scenario picker is a full-width `.seg.formats` in LZ4 yellow (`.lz4-y`: unselected `--lz4-soft`,
     chosen tint and ring, disabled plain `--muted`, no icons): **Pack/Unpack** (first, the default
     whenever it applies) and **Trace**. A disabled scenario carries its reason in its tooltip and in one
@@ -154,7 +158,7 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
     `.downloads`); then a `.seg.formats.inner` **Patch** / **Unpatch** picker and a box with what it
     changes, for an image Patch the "Room for the trace" range, and the fakelib warning. A read-only
     image gets one `.note-line.warn` and nothing else. **Pack**: Traces (a zip or a folder; the app's
-    Choose… opens a Zip… / Folder… `.menu`), locked to the source's own traces when they load by
+    Choose opens a Zip / Folder `.menu`), locked to the source's own traces when they load by
     themselves (`.lock-box`: dashed `--line-hi` border, a round lock button; unlocked, a `button.link`
     "Use the source's traces" locks it again), a collapsed `details.fold.rules` "Use a rules profile
     instead", then the Target picker: Folder (the LZ4 packed folder, shown as Folder) | exfat (default) | ffpkg | ffpfs. **Unpack**:
@@ -240,17 +244,18 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
 
 - **Library tab** (`Library.tsx`, `.library`): one card. Head: the green library icon, "Library" (16/600)
   and its count; right (`.library-ctl`, wraps): on a computer the chosen folder (muted `PathLine`),
-  **Refresh**, **Choose folder…**, then the Card / List buttons (`.library-views`, icon-only,
+  **Refresh**, **Choose folder**, then the Card / List buttons (`.library-views`, icon-only,
   `aria-pressed`, selected `--library-ink-hi` on `--raise-hi` with a `--library-line` ring). On the PS5:
   the internal storage's free space first (`.library-storage`: drive icon, "Free **312 GB** of 825 GB"
   in decimal GB, `--muted` 6.5:1 with the free amount in `--fg-2`), then Refresh and the view buttons.
   Under the head the scrolling well (`.library-well`: `--inset`, 14px padding, 160px minimum, height to
-  the viewport, focusable, `aria-label` "Games"); the list scrolls inside it, never the page.
+  the viewport, focusable, `aria-label` "Games"); the list scrolls inside it, never the page. Under
+  900px the well grows with its list and the page scrolls instead (no box to scroll on a phone).
   - **Cards** (`.library-cards`, `minmax(240px, 1fr)` columns, 16px gaps): each card (`--card`, 14px
     radius, no glow, no outline) has a square cover (10px radius, a `padding-top: 100%` box for older
-    WebKit), the name (600, wraps anywhere), the title ID muted, and a foot with the format pill and
-    the actions; the path is the card's tooltip. **List** (`.library-rows`): 48px cover, name and title
-    ID, format pill, path line and actions on one wrapping row. Covers load lazily, one at a time; a
+    WebKit), the name (600, wraps anywhere), the title ID and version muted, the path line (copies
+    of one game differ only there), and a foot with the format pill and the actions. **List** (`.library-rows`): 48px cover, name, title
+    ID and version, format pill, path line and actions on one wrapping row. Covers load lazily, one at a time; a
     placeholder with the disc icon stands in at the same size.
   - **LZ4 badge** (`.lz4-badge`, an entry with ampr_emu packs): "LZ4" in bold `--lz4-ink` on a
     liquid-glass pill: a faint white gradient, a light rim brighter on top, a soft dark text shadow,
@@ -264,9 +269,9 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
     shows an orange "Can’t delete:" tag + the reason.
   - **States**: scanning, a centred spinner and "Scanning <folder name>…" in the well (`role="status"`,
     `aria-busy`). A computer with no folder yet: a centred `.empty` panel with the folder icon, **Pick a
-    folder with your library to scan** and a primary **Choose folder…**. A chosen folder refused or
+    folder with your library to scan** and a primary **Choose folder**. A chosen folder refused or
     failed: the same panel with the red icon, **Can’t scan this folder**, core's message and **Choose
-    another folder…**. A failed Refresh keeps the list under an orange `.tag` "Can’t scan the
+    another folder**. A failed Refresh keeps the list under an orange `.tag` "Can’t scan the
     Library:" + reason. A hit scan limit: an orange tag "Scan limit reached. This list may be incomplete." and a
     "Skipped locations and files" fold. No roots: "No folders are available to scan."
 
@@ -282,14 +287,18 @@ The web build names the product "Dump Forge" (the PS5 tile's name); the desktop 
   (never the viewer's `location`) in `.address` (mono 600 15px `--fg-2`, ellipsized first). It opens
   **How to connect**; no QR code when `/api/qr` fails.
 - **Header controls** (`.top-actions`): "Stop Dump Forge" (`.small`, 14px, power icon) before the
-  GitHub mark; under 900px it shrinks to its icon (the label stays as visually hidden text), as it
+  GitHub mark; under 600px it shrinks to its icon (the label stays as visually hidden text), as it
   does at 900–1049px while the orange `.tag` "Offline, retrying…" (`role="status"`) sits before it.
-  With jobs running it opens the quit modal (Keep running / Stop Dump Forge), then "has stopped" with
-  how to start again; a failed stop turns it into "Couldn't stop Dump Forge" with the reason, Close
-  and Try again (`.danger`).
+  With no job running it stops at once; with jobs it opens the quit modal listing them (Keep
+  running / Stop Dump Forge); if they all finish while it is open, it asks "Stop Dump Forge?" and
+  says how it starts again (the PS5: its tile; a computer's `serve`: run it again). Then "has
+  stopped" with the same. Once Stop is confirmed the dialog takes no keys or clicks:
+  Escape stays the browser's, so the PS5's Circle leaves the page. A failed stop turns it into
+  "Couldn't stop Dump Forge" with the reason, Close and Try again (`.danger`).
 - **Folder and file browser** (`.modal.picker`, 560px): breadcrumbs (`.crumbs`, mono 12px: "Drives",
   then each folder as a `.link`, the current one plain with `aria-current`; long paths wrap, never
-  clipped), then an inset list (`ul.rows.pick-list`, scrolls inside, max 420px): Parent folder (or All
+  clipped, and scroll inside the crumbs once they would push the buttons off screen), then an
+  inset list (`ul.rows.pick-list`, scrolls inside, max 420px): Parent folder (or All
   drives), folders, files with their size (tabular, muted). File mode lists only the accepted
   extensions; zip-or-folder mode (LZ4 Pack Traces) lists folders and `.zip` files. Footer: Cancel and,
   in folder modes, "Choose this folder" (`.primary`). The next browse opens where the last one ended.

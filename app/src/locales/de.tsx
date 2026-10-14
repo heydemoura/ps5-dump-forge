@@ -35,7 +35,10 @@ const de: Messages = {
     close: "Schließen",
     tryAgain: "Erneut versuchen",
     stopped: "Dump Forge wurde beendet",
-    startAgain: "Um fortzufahren, starten Sie diese App erneut.",
+    startAgain: (ps5) => (ps5 ? "Um fortzufahren, öffnen Sie die Kachel Dump Forge auf der PS5 erneut." : "Um fortzufahren, führen Sie denselben Befehl ps5-dump-forge serve erneut aus."),
+    confirmStop: (web: boolean) => (web ? "Dump Forge beenden?" : "PS5 Dump Forge beenden?"),
+    stopNote: (web, ps5) => (!web ? "Es läuft kein Auftrag." : ps5 ? "Zum erneuten Starten öffnen Sie die Kachel Dump Forge auf der PS5." : "Zum erneuten Starten führen Sie denselben Befehl ps5-dump-forge serve noch einmal aus."),
+    quit: "Beenden",
     github: (name) => `${name} auf GitHub`,
     queued: "in der Warteschlange",
     progress: (percent, left) => `${percent} % fertig${left ? `, noch ${left}` : ""}`,
@@ -50,6 +53,7 @@ const de: Messages = {
     lz4Trace:
       "Dieses gepackte Spiel enthält die LZ4-Trace-Runtime: Entpacken oder packen Sie es zuerst im Tab „LZ4“ neu.",
     unreadable: "Erstellen nicht möglich: Diese Quelle konnte nicht gelesen werden (siehe „Quelle“).",
+    noContentId: "Erstellen als fpkg nicht möglich: Die param.json dieses Spiels hat keine Content-ID, die ein Paket braucht.",
     blocked: (first, more) =>
       `Erstellen nicht möglich: ${first}${more > 0 ? ` (und ${num(more)} weitere, siehe „Quelle“)` : ""}.`,
     runtime: "AMPR aktualisieren",
@@ -152,7 +156,7 @@ const de: Messages = {
     leftovers: "Übrig gebliebene Dateien und Ordner",
     found: (n) => `${num(n)} gefunden`,
     leftoversNote: (app) =>
-      `Unfertige Ausgaben und entpackte Archive, meist von abgebrochenen Aufträgen. Entfernen Sie nur die, die Sie kennen, und nur, wenn kein Auftrag läuft; ${app} löscht sie nie selbst.`,
+      `Unfertige Ausgaben, meist von abgebrochenen Aufträgen. Entfernen Sie nur die, die Sie kennen, und nur, wenn kein Auftrag läuft; ${app} löscht sie nie selbst.`,
     checked: (n) => `Geprüfte Ordner (${num(n)})`,
   },
   // JobList.tsx
@@ -236,9 +240,9 @@ const de: Messages = {
     scanningIn: (name) => `${name} wird durchsucht`,
     scanning: "Wird durchsucht",
     cantScanFolder: "Dieser Ordner kann nicht durchsucht werden",
-    chooseAnother: "Anderen Ordner wählen…",
+    chooseAnother: "Anderen Ordner wählen",
     pickPrompt: "Wählen Sie einen Ordner mit Ihrer Bibliothek zum Durchsuchen",
-    choose: "Ordner wählen…",
+    choose: "Ordner wählen",
     cantScan: "Die Bibliothek kann nicht durchsucht werden:",
     cantDelete: "Löschen nicht möglich:",
     deleted: (path) => `Gelöscht: ${path}`,
@@ -336,7 +340,7 @@ const de: Messages = {
         : `Das Entfernen des Patches löscht die Traces dieser Quelle (${bytes}): ${web ? "Laden Sie sie zuerst herunter." : "Kopieren Sie sie zuerst."}`,
     useProfile: "Stattdessen ein Regelprofil verwenden",
     profile: "Profil",
-    choose: "Wählen…",
+    choose: "Wählen",
     profileHint: "Eine TOML-Datei mit Packregeln, die statt Traces verwendet wird.",
     target: "Ziel",
     packInto: "Packen in",
@@ -389,8 +393,8 @@ const de: Messages = {
     loaded: "Traces sind bereits aus dieser Quelle geladen",
     lockedHint: (bytes) => `Die eigenen Traces dieser Quelle (${bytes}). Klicken Sie auf das Schloss, um andere zu wählen.`,
     clear: "Leeren",
-    zip: "Zip…",
-    folder: "Ordner…",
+    zip: "Zip",
+    folder: "Ordner",
     tracesHint: "Wählen Sie die amprtrace-zip aus „Traces herunterladen“ oder einen Ordner mit beiden Trace-Dateien.",
     useOwn: "Traces der Quelle verwenden",
     patchResult: (a, n) => a === "patch"
@@ -555,6 +559,7 @@ const de: Messages = {
         "Keine gespeicherte Kopie von Dump Forge gefunden (weder in /data/dumpforge/ noch auf einem USB-Laufwerk). Laden Sie es einmal von einem PC; es speichert dann eine Kopie für dieses Symbol.",
       timeout:
         "Dump Forge wurde gestartet, antwortet aber nach 30 Sekunden noch nicht. Vielleicht startet es noch (eine Konsole, die aus dem Ruhemodus erwacht, ist langsam).",
+      stopping: "Das vorherige Dump Forge wird noch beendet (es bricht seine Aufträge ab und räumt auf). Warten Sie kurz und versuchen Sie es dann erneut.",
     },
     loadFailed: (e) => `Die Seite konnte nicht geladen werden: ${e}`,
     noAnswer: "Dump Forge hat nicht geantwortet",
@@ -637,7 +642,8 @@ const de: Messages = {
     compression: "Kompression",
     fullVerify: "Vollständige Prüfung",
     fullVerifyHint: "Liest jedes Byte erneut, um die Ausgabe zu prüfen. Dauert länger.",
-    separator: "Ein Name darf kein Ordnertrennzeichen enthalten; den Ordner ändern Sie mit „Ändern…“.",
+    separator: "Ein Name darf kein Ordnertrennzeichen enthalten; den Ordner ändern Sie mit „Ändern“.",
+    badName: "Ein Name darf nicht leer sein, nicht mit einem Punkt beginnen, nicht auf Punkt oder Leerzeichen enden und keine Steuerzeichen enthalten.",
     tooLong: (bytes, max, folder) =>
       folder
         ? `Zu lang: ${bytes} Byte, höchstens ${max} (UTF-8).`
@@ -648,7 +654,7 @@ const de: Messages = {
     extractInto: "In diesen Ordner entpacken",
     saveInto: "In diesem Ordner speichern",
     output: "Ausgabe",
-    change: "Ändern…",
+    change: "Ändern",
     naming: "Name wird ermittelt…",
     chooseSourceFirst: "Zuerst eine Quelle wählen",
     fileName: "Dateiname",

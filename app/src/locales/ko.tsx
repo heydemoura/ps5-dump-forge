@@ -34,7 +34,10 @@ const ko: Messages = {
     close: "닫기",
     tryAgain: "다시 시도",
     stopped: "Dump Forge가 중지되었습니다",
-    startAgain: "계속하려면 이 앱을 다시 실행하세요.",
+    startAgain: (ps5) => (ps5 ? "계속하려면 PS5에서 Dump Forge 타일을 다시 여세요." : "계속하려면 같은 ps5-dump-forge serve 명령을 다시 실행하세요."),
+    confirmStop: (web: boolean) => (web ? "Dump Forge를 중지할까요?" : "PS5 Dump Forge를 종료할까요?"),
+    stopNote: (web, ps5) => (!web ? "실행 중인 작업이 없습니다." : ps5 ? "다시 시작하려면 PS5에서 Dump Forge 타일을 여세요." : "다시 시작하려면 같은 ps5-dump-forge serve 명령을 다시 실행하세요."),
+    quit: "종료",
     github: (name) => `GitHub의 ${name}`,
     queued: "대기 중",
     progress: (percent, left) => `${percent}% 완료${left ? `, ${left} 남음` : ""}`,
@@ -49,6 +52,7 @@ const ko: Messages = {
     lz4Trace:
       "이 패킹된 게임에는 LZ4 트레이스 런타임이 들어 있습니다. 먼저 ‘LZ4’ 탭에서 언패킹하거나 다시 패킹하세요.",
     unreadable: "빌드할 수 없습니다: 이 소스를 읽지 못했습니다(‘소스’ 참고).",
+    noContentId: "fpkg로 빌드할 수 없습니다: 이 게임의 param.json에 패키지에 필요한 Content ID가 없습니다.",
     blocked: (first, more) =>
       `빌드할 수 없습니다: ${first}${more > 0 ? ` (외 ${num(more)}개, ‘소스’ 참고)` : ""}.`,
     runtime: "AMPR 업데이트",
@@ -149,7 +153,7 @@ const ko: Messages = {
     leftovers: "남은 파일과 폴더",
     found: (n) => `${num(n)}개 발견`,
     leftoversNote: (app) =>
-      `완료되지 않은 출력과 압축을 푼 아카이브로, 보통 중단된 작업에서 남은 것입니다. 알아볼 수 있는 것만, 실행 중인 작업이 없을 때 삭제하세요. ${app}는 이를 직접 삭제하지 않습니다.`,
+      `완료되지 않은 출력으로, 보통 중단된 작업에서 남은 것입니다. 알아볼 수 있는 것만, 실행 중인 작업이 없을 때 삭제하세요. ${app}는 이를 직접 삭제하지 않습니다.`,
     checked: (n) => `확인한 폴더(${num(n)})`,
   },
   // JobList.tsx
@@ -232,9 +236,9 @@ const ko: Messages = {
     scanningIn: (name) => `${name} 스캔 중`,
     scanning: "스캔 중",
     cantScanFolder: "이 폴더를 스캔할 수 없습니다",
-    chooseAnother: "다른 폴더 선택…",
+    chooseAnother: "다른 폴더 선택",
     pickPrompt: "스캔할 라이브러리 폴더를 선택하세요",
-    choose: "폴더 선택…",
+    choose: "폴더 선택",
     cantScan: "라이브러리를 스캔할 수 없습니다:",
     cantDelete: "삭제할 수 없습니다:",
     deleted: (path) => `삭제됨: ${path}`,
@@ -331,7 +335,7 @@ const ko: Messages = {
         : `패치를 해제하면 이 소스의 트레이스(${bytes})가 삭제됩니다. 먼저 복사해 두세요.`,
     useProfile: "대신 규칙 프로필 사용",
     profile: "프로필",
-    choose: "선택…",
+    choose: "선택",
     profileHint: "트레이스 대신 사용하는, 패킹 규칙이 담긴 TOML 파일입니다.",
     target: "대상",
     packInto: "패킹 대상",
@@ -383,8 +387,8 @@ const ko: Messages = {
     loaded: "이 소스에서 트레이스를 이미 불러왔습니다",
     lockedHint: (bytes) => `이 소스 자체의 트레이스(${bytes})입니다. 다른 트레이스를 선택하려면 자물쇠를 클릭하세요.`,
     clear: "지우기",
-    zip: "Zip…",
-    folder: "폴더…",
+    zip: "Zip",
+    folder: "폴더",
     tracesHint: "‘트레이스 다운로드’로 받은 amprtrace zip 파일이나, 두 트레이스 파일이 있는 폴더를 선택하세요.",
     useOwn: "소스의 트레이스 사용",
     patchResult: (a, n) => a === "patch"
@@ -548,6 +552,7 @@ const ko: Messages = {
         "저장된 Dump Forge 사본을 찾을 수 없습니다(/data/dumpforge/ 또는 USB 드라이브). PC에서 한 번 로드하면 이 아이콘용 사본이 저장됩니다.",
       timeout:
         "Dump Forge를 시작했지만 30초가 지나도 응답이 없습니다. 아직 시작 중일 수 있습니다(대기 모드에서 깨어나는 콘솔은 느립니다).",
+      stopping: "이전 Dump Forge가 아직 중지되는 중입니다(작업을 취소하고 정리하는 중). 잠시 기다린 후 다시 시도하세요.",
     },
     loadFailed: (e) => `페이지를 불러오지 못했습니다: ${e}`,
     noAnswer: "Dump Forge가 응답하지 않습니다",
@@ -627,7 +632,8 @@ const ko: Messages = {
     compression: "압축",
     fullVerify: "전체 검증",
     fullVerifyHint: "모든 바이트를 다시 읽어 출력을 확인합니다. 시간이 더 걸립니다.",
-    separator: "이름에는 폴더 구분자를 넣을 수 없습니다. 폴더는 ‘변경…’으로 바꾸세요.",
+    separator: "이름에는 폴더 구분자를 넣을 수 없습니다. 폴더는 ‘변경’으로 바꾸세요.",
+    badName: "이름은 비워 둘 수 없으며, 점으로 시작하거나 점이나 공백으로 끝나거나 제어 문자를 포함할 수 없습니다.",
     tooLong: (bytes, max, folder) =>
       folder
         ? `너무 깁니다: ${bytes}바이트, 최대 ${max}바이트(UTF-8).`
@@ -638,7 +644,7 @@ const ko: Messages = {
     extractInto: "이 폴더에 추출",
     saveInto: "이 폴더에 저장",
     output: "출력",
-    change: "변경…",
+    change: "변경",
     naming: "이름 짓는 중…",
     chooseSourceFirst: "먼저 소스를 선택하세요",
     fileName: "파일 이름",

@@ -15,7 +15,7 @@ export interface Deps {
 }
 
 /** Why a launch failed; the page words it (main-http.tsx). */
-export type Failure = "loader" | "missing" | "timeout";
+export type Failure = "loader" | "missing" | "timeout" | "stopping";
 
 /** `up`: the session answered healthy (an AppCache update check is worth it). */
 export type Outcome = { ok: true; up: boolean } | { ok: false; failure: Failure };
@@ -34,6 +34,8 @@ export const SESSION_TIMEOUT_MS = 3000;
 export const LOADER_TIMEOUT_MS = 10000;
 export const POLL_MS = 1000;
 export const START_WAIT_MS = 30000;
+/** A Stop may take this long to cancel its jobs and clean up (http-client's quit wait). */
+export const STOP_WAIT_MS = 120000;
 
 const fail = (failure: Failure): Outcome => ({ ok: false, failure });
 
@@ -103,9 +105,9 @@ export async function session(d: Deps): Promise<SessionState> {
   }
 }
 
-/** Polls the session every second until `want` holds, up to `START_WAIT_MS`. */
-async function waitFor(d: Deps, want: (s: SessionState) => boolean): Promise<boolean> {
-  const end = d.now() + START_WAIT_MS;
+/** Polls the session every second until `want` holds, up to `ms`. */
+async function waitFor(d: Deps, want: (s: SessionState) => boolean, ms = START_WAIT_MS): Promise<boolean> {
+  const end = d.now() + ms;
   for (;;) {
     if (want(await session(d))) return true;
     if (d.now() + POLL_MS > end) return false;
@@ -137,7 +139,7 @@ export async function launch(d: Deps, onStarting: () => void): Promise<Outcome> 
   if (s === "up" || s === "other") return { ok: true, up: s === "up" };
   onStarting();
   // A Stop still cleaning up: a second copy now would only find the port taken and exit.
-  if (s === "stopping" && !(await waitFor(d, (x) => x === "down" || x === "up"))) return fail("timeout");
+  if (s === "stopping" && !(await waitFor(d, (x) => x === "down" || x === "up", STOP_WAIT_MS))) return fail("stopping");
   s = await session(d);
   if (s === "up") return { ok: true, up: true };
   const asked = await requestStart(d);

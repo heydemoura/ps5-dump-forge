@@ -42,7 +42,7 @@ function Connect({ close }: { close: () => void }) {
     <Modal close={close} className="modal card connect-modal" labelledBy="connect-title">
       <div className="modal-head">
         <span className="head-icon">
-          <Icon name="power" />
+          <Icon name="info" />
         </span>
         <h2 id="connect-title">{t.howToConnect}</h2>
       </div>

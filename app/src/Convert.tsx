@@ -21,6 +21,7 @@ import {
   isWithin,
   kindLabel,
   onDeleted,
+  Prose,
   type SourceSelection,
   SourceCard,
 } from "./common";
@@ -142,6 +143,7 @@ export function Convert(props: {
         setInsError(null);
         setInspecting(false);
         setError(null);
+        out.reset(source, null);
       }),
     [source],
   );
@@ -189,11 +191,13 @@ export function Convert(props: {
     ? t.unreadable
     : hard.length > 0
       ? t.blocked(hard[0], hard.length - 1)
-      : lz4Reason;
+      : format === "pkg" && ins && !ins.content_id
+        ? t.noContentId
+        : lz4Reason;
 
   const { target, named } = out;
   const build = async () => {
-    if (!source || !target || named.error || blockReason || inspecting || submittingRef.current) return;
+    if (!source || !target || named.error || blockReason || collides || inspecting || submittingRef.current) return;
     setError(null);
     const request: ConvertRequest = {
       source,
@@ -217,6 +221,8 @@ export function Convert(props: {
       started.current.add(id);
       props.dispatch({ type: "started", id, request });
       out.next(source, request.output, choice);
+      // A double click's second press lands once the job started: the button rests a moment.
+      await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -230,12 +236,15 @@ export function Convert(props: {
   );
   // A typed name that an unfinished job is writing can't be used twice; a generated one
   // moves on to the next free name, so another Build is a second copy.
-  const collides = !out.generate && sameJobs.some((j) => j.request?.output === target);
+  // Any unfinished job writing this path, from any source.
+  const collides = !out.generate && props.jobs.some((j) => !j.result && j.request?.output === target);
   const dupe = source !== null && sameJobs.length > 0;
   const formatWarn = ins
     ? ins.findings.filter((l) => classify(l).formats?.includes(format)).length
     : 0;
   const hasJobs = props.jobs.length > 0;
+  // An unreadable source fails its naming too: Source already says why.
+  const shownError = insError ? null : error;
 
   return (
     <div className={hasJobs ? "screen with-jobs" : "screen"}>
@@ -329,19 +338,21 @@ export function Convert(props: {
             <button
               className="primary"
               onClick={build}
-              disabled={!source || !target || !!named.error || !!blockReason || inspecting || submitting}
+              disabled={!source || !target || !!named.error || !!blockReason || collides || inspecting || submitting}
             >
               <Icon name="bolt" />
               {t.build}
             </button>
           </div>
-          {(blockReason || formatWarn > 0 || dupe || error) && (
+          {(blockReason || formatWarn > 0 || dupe || shownError) && (
             <div className="build-notes">
-              {error && <p className="bad">{error}</p>}
+              {shownError && <p className="bad">{shownError}</p>}
               {blockReason && (
                 <p className="note-line block">
                   <Icon name="alert" />
-                  <span>{blockReason}</span>
+                  <span>
+                    <Prose text={blockReason} />
+                  </span>
                 </p>
               )}
               {!blockReason && formatWarn > 0 && (

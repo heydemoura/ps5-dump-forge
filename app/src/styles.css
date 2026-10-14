@@ -88,6 +88,8 @@ img { display: block; }
    the ring on every focus. */
 :focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 :focus:not(:focus-visible) { outline: none; }
+/* Focus that code moved (a heading after a pick, a dialog clicked inside): no ring around it. */
+[tabindex="-1"]:focus { outline: none; }
 
 .icon { width: 18px; height: 18px; flex: none; }
 .mono, .path { font-family: var(--mono); }
@@ -125,6 +127,8 @@ img { display: block; }
   .topbar-in > .nav::-webkit-scrollbar { display: none; }
   .nav .seg-opt { flex: 1 0 auto; padding: 0 12px; }
   .top-actions button.small { padding: 0 9px; }
+}
+@media (max-width: 599px) {
   .stop-label {
     position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap;
@@ -214,7 +218,8 @@ img.qr { display: block; border-radius: 4px; image-rendering: pixelated; backgro
 @media (max-width: 1000px) { .seg-choice .seg-opt { padding: 0 7px; } }
 /* The image inside a .ffpfsc: a smaller picker under the format's one-liner. */
 .field.inner > .label { margin: 0 0 6px; margin-inline-start: 4px; }
-.seg.formats.inner { display: inline-flex; width: auto; }
+.seg.formats.inner { display: inline-flex; width: auto; max-width: 100%; flex-wrap: wrap; }
+@media (max-width: 599px) { .seg.formats.inner { border-radius: 16px; } }
 .field.inner > .hint { margin: 6px 0 0; margin-inline-start: 4px; }
 .seg-choice .seg-opt .icon { width: 15px; height: 15px; }
 /* The .ffpfsc compression level: a native range input in the accent colour. */
@@ -244,6 +249,7 @@ img.qr { display: block; border-radius: 4px; image-rendering: pixelated; backgro
   max-width: 1200px; margin: 0 auto; padding: 16px 28px 32px;
   display: flex; flex-direction: column; gap: 16px;
 }
+@media (max-width: 599px) { .screen { padding: 12px 12px 24px; } }
 /* Convert, while a job queue shows: the screen is at least the rest of the window tall, so the
    queue (.card.jobs) grows to the bottom instead of leaving blank space under short cards. If
    the cards plus the queue's own minimum are taller than that, the screen grows past it and the
@@ -371,7 +377,7 @@ select.lang-select option { background: var(--card); color: var(--fg); }
 .switch input:focus:not(:focus-visible) + .switch-track { outline: none; }
 /* A refused switch: the track dims, the label keeps its contrast (the reason sits below it). */
 .switch:has(input:disabled) { cursor: not-allowed; }
-.switch input:disabled + .switch-track { opacity: .4; }
+.switch input:disabled + .switch-track { opacity: .4; cursor: not-allowed; }
 /* "Remove backport", "Full verification" and the LZ4 tab's action settings: each in its own
    inset box, apart from the one-liners around it. */
 .field.backport, .field.lz4, .field.verify {
@@ -555,6 +561,7 @@ button.link .icon { width: 15px; height: 15px; }
 .tile dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .value { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .value.mono { font-size: 15px; font-weight: 500; }
+@media (max-width: 439px) { .tiles .value { font-size: 15px; } }
 .tile.wide { grid-column: 1 / -1; }
 .tile.wide .value.mono { font-size: 14px; }
 .note { flex-basis: 100%; font-size: 11.5px; line-height: 1.35; color: var(--muted); }
@@ -650,9 +657,9 @@ ul.findings li.info .icon { color: var(--accent-ink); }
 /* An LZ4 tab job (pack, unpack, trace, unpatch): a yellow edge and its LZ4 tag. */
 .job.lz4 { padding-inline-start: 12px; box-shadow: inset 3px 0 0 var(--lz4-line); }
 .tag.lz4 { background: var(--lz4-tint); color: var(--lz4-ink); font-weight: 600; }
-.job-head { display: flex; align-items: flex-start; gap: 10px; }
+.job-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 10px; }
 .job-head > .tag { margin-top: 1px; }
-.job-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.job-name { flex: 1 1 160px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .job-name strong { font-size: 13.5px; font-weight: 600; line-height: 1.35; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .job-name .pathline { font-size: 11.5px; }
 /* The bar's wrapper. While the job runs, a soft light band sweeps its filled
@@ -748,13 +755,15 @@ table.files td.size { text-align: end; white-space: nowrap; color: var(--muted);
 pre.code { padding: 14px 16px; }
 
 /* ---------- Quit prompt ---------- */
+/* A dialog taller than the screen (a landscape phone, iOS's 100vh past the toolbars): the
+   backdrop scrolls, and the dialog's auto margins centre it only while it fits. */
 .modal-backdrop {
   position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 10; padding: 16px;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; overflow-y: auto;
   background: rgba(5, 5, 10, 0.62);
   -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
 }
-.modal { width: 440px; max-width: 100%; padding: 22px 24px; }
+.modal { width: 440px; max-width: 100%; margin: auto; padding: 22px 24px; }
 .modal-head { display: flex; align-items: center; gap: 10px; min-height: 28px; }
 .modal-head h2 { font-size: 16px; font-weight: 600; }
 .modal p { margin: 10px 0 20px; font-size: 13.5px; }
@@ -875,7 +884,8 @@ ul.features li + li { margin-top: 4px; }
 .out-box.path-shown { margin-top: 10px; color: var(--fg-2); }
 /* The folder browser: the quit modal's frame, wider, its list in an inset well. */
 .modal.picker { width: 560px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
-.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin: 12px 0 10px; font: 12px var(--mono); }
+/* A deep path's crumbs scroll inside themselves: the list and Choose this folder stay on screen. */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin: 12px 0 10px; font: 12px var(--mono); flex: 0 1 auto; min-height: 20px; overflow-y: auto; }
 .crumbs button.link { margin: 0; padding: 2px; font: inherit; white-space: normal; overflow-wrap: break-word; overflow-wrap: anywhere; text-align: start; }
 .crumbs .here { color: var(--fg); overflow-wrap: break-word; overflow-wrap: anywhere; }
 ul.rows.pick-list {
@@ -917,9 +927,11 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
   margin-top: 4px; padding: 14px; border-radius: 12px; background: var(--inset);
   max-height: calc(100vh - var(--top) - 150px); min-height: 160px; overflow: auto;
 }
+@media (max-width: 899px) { .library-well { max-height: none; overflow: visible; } }
 .library-well:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .library-busy { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 48px 0; }
 .library-msg { margin: 0 0 10px; }
+.library-msg .tag { white-space: normal; height: auto; min-height: 22px; padding: 2px 9px; }
 .library-note { margin: 12px 0 0; font-size: 12px; }
 .library-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 .library-card { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 14px; background: var(--card); min-width: 0; }
@@ -928,6 +940,8 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
 .library-card .library-cover { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 10px; }
 .library-card .library-cover.none .icon { width: 40px; height: 40px; }
 .library-name { font-weight: 600; line-height: 1.3; overflow-wrap: break-word; overflow-wrap: anywhere; }
+.library-card .pathline { margin: 4px 0 0; }
+.head-actions > .danger.icon-only { margin-inline-start: 8px; }
 .library-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; }
 .library-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
 .library-actions { display: inline-flex; gap: 6px; }
@@ -977,6 +991,34 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
 [dir="rtl"] .job.lz4 { box-shadow: inset -3px 0 0 var(--lz4-line); }
 [dir="rtl"] select.lang-select { padding: 0 12px 0 32px; background-position: left 10px center; }
 [dir="rtl"] .path:not(.out-dir), [dir="rtl"] .pathline, [dir="rtl"] input.mono, [dir="rtl"] .path-shown,
-[dir="rtl"] .pick-name, [dir="rtl"] .crumbs, [dir="rtl"] .out-name { direction: ltr; unicode-bidi: isolate; }
+[dir="rtl"] .pick-name, [dir="rtl"] .crumbs, [dir="rtl"] .out-name, [dir="rtl"] .job-name strong { direction: ltr; unicode-bidi: isolate; }
+/* Names in the picker stay beside their icon (on the right). */
+[dir="rtl"] .pick-name { text-align: right; }
+/* Errors and core's checks (`.backend`) take their direction from their own text: the backend's
+   English reads left to right, the client's own (translated) messages stay right to left. Job
+   logs and number + unit values ("9.00+", "1.4 MiB") read left to right; values keep the
+   column's alignment. */
+[dir="rtl"] .backend { unicode-bidi: plaintext; text-align: start; }
+[dir="rtl"] pre.log { direction: ltr; unicode-bidi: isolate; text-align: left; }
+.error-box > .backend { display: block; }
+[dir="rtl"] .value, [dir="rtl"] td.size { direction: ltr; unicode-bidi: isolate; text-align: right; }
+/* The steps run right to left: their "›" points the same way, and the bar's bright head leads. */
+/* The "›" is isolated left to right first, so the bidi mirroring an engine may or may not apply
+   is off everywhere; the flip is then the one mirroring. */
+[dir="rtl"] ol.steps .sep { display: inline-block; direction: ltr; unicode-bidi: isolate; transform: scaleX(-1); }
+[dir="rtl"] progress::-webkit-progress-value { background: linear-gradient(270deg, #232c8f, #3d6bff 70%, #a8bfff); }
+[dir="rtl"] progress::-moz-progress-bar { background: linear-gradient(270deg, #232c8f, #3d6bff 70%, #a8bfff); }
+
+/* Korean breaks lines between words, not inside them. */
+:lang(ko) body { word-break: keep-all; }
 /* A collapsed fold's chevron points at the text that follows it. */
 [dir="rtl"] details.fold:not([open]) > summary::before { transform: rotate(135deg); }
+
+/* Touch (a phone or tablet through the QR code): small controls grow to a finger's size and
+   the Library's delete moves further from its neighbours. */
+@media (pointer: coarse) {
+  button.small, .seg-opt { height: 38px; }
+  button.small.icon-only, .gh-link { width: 38px; height: 38px; }
+  .library-actions { gap: 10px; }
+  .address-btn { padding: 8px 0; }
+}

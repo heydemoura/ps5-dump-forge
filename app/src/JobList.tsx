@@ -272,7 +272,7 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
             {result.Ok.checks.map((c, i) => (
               <li key={i}>
                 <Icon name="check" />
-                <span>{c}</span>
+                <span className="backend">{c}</span>
               </li>
             ))}
           </ul>
@@ -361,11 +361,11 @@ function clock(ms: number): string {
 function FailureText({ err, format }: { err: string; format?: Format }) {
   const t = useMessages().jobs;
   const pre = /^preflight failed:\n?/.exec(err);
-  if (!pre) return <p className="error-box">{err}</p>;
+  if (!pre) return <p className="error-box backend">{err}</p>;
   return (
     <div className="error-box">
       <strong className="error-title">{format ? t.cantBuildAs(kindLabel(format)) : t.cantBuild}</strong>
-      {err.slice(pre[0].length)}
+      <span className="backend">{err.slice(pre[0].length)}</span>
     </div>
   );
 }

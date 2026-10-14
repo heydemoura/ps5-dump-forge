@@ -5,9 +5,9 @@
 
 import { useEffect, useReducer, useRef, useState } from "react";
 
-import { api, APP_NAME, errorText, events, prettyDuration, serverAddress, useOffline, web } from "./api";
+import { api, APP_NAME, errorText, events, prettyDuration, runtimePlatform, serverAddress, useOffline, web } from "./api";
 import logo from "./assets/logo.png";
-import { basename, closeOverlays, dirname, panelId, tabId, TabList, type SourceSelection } from "./common";
+import { basename, closeOverlays, dirname, Modal, panelId, tabId, TabList, type SourceSelection } from "./common";
 import { Convert } from "./Convert";
 import { Formats, openConnect } from "./Formats";
 import { useMessages } from "./i18n";
@@ -37,6 +37,11 @@ export function App() {
     setTab(to);
     document.getElementById(tabId("screen", to))?.focus();
   };
+  // http build: the payload on a PS5 (its tile starts it again), or `serve` on a computer.
+  const [ps5, setPs5] = useState(true);
+  useEffect(() => {
+    if (web) runtimePlatform().then((p) => setPs5(p === "ps5"), () => {});
+  }, []);
   // The server's host:port (http build), read once before the app rendered.
   const address = serverAddress();
 
@@ -77,6 +82,17 @@ export function App() {
   };
   // http build: stopping the payload asks first only while jobs run.
   const askStop = () => (active > 0 ? setClosing("ask") : void quit());
+  // Focus goes back to Stop when its prompt closes.
+  const stopButton = useRef<HTMLButtonElement>(null);
+  const wasClosing = useRef(false);
+  useEffect(() => {
+    if (closing === null && wasClosing.current) stopButton.current?.focus();
+    wasClosing.current = closing !== null;
+  }, [closing]);
+  // Escape, a click outside and Keep running/Close: only while a question is up. Once Stop is
+  // confirmed (Stopping, has stopped) the dialog takes no keys: the browser keeps its own.
+  const dismiss = () => setClosing(null);
+  const dismissable = closing === "ask" || closing === "failed";
 
   // Folders this session wrote outputs to: interrupted jobs leave `.part` files there.
   const [outputDirs, setOutputDirs] = useState<string[]>([]);
@@ -157,7 +173,7 @@ export function App() {
                 </span>
               )}
               {web && (
-                <button className="small" onClick={askStop}>
+                <button className="small" ref={stopButton} onClick={askStop}>
                   <Icon name="power" />
                   <span className="stop-label">{t.stop}</span>
                 </button>
@@ -225,90 +241,109 @@ export function App() {
       </div>
 
       {closing && (
-        <div className="modal-backdrop">
-          <div
-            className="modal card"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="quit-title"
-            aria-describedby="quit-text"
-          >
-            {closing === "ask" ? (
-              <>
-                <div className="modal-head">
-                  <span className="head-icon warn">
-                    <Icon name="alert" />
-                  </span>
-                  <h2 id="quit-title">{t.stillRunning(unfinished.length)}</h2>
-                </div>
-                <div id="quit-text">
-                  <ul className="quit-jobs">
-                    {unfinished.map((j) => (
-                      <li key={j.id}>
-                        <span className="quit-name">
-                          {j.request ? basename(j.request.output) : t.job(j.id)}
-                        </span>
-                        <span className="muted">{jobState(j, t)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="muted">{t.quitNote(web, unfinished.length)}</p>
-                </div>
-                <div className="row end">
-                  <button autoFocus onClick={() => setClosing(null)}>
-                    {t.keepRunning}
-                  </button>
-                  <button className="danger" onClick={quit}>
-                    {web ? t.stop : t.stopAndQuit(unfinished.length)}
-                  </button>
-                </div>
-              </>
-            ) : closing === "stopping" ? (
+        <Modal
+          close={dismissable ? dismiss : undefined}
+          className="modal card"
+          role="alertdialog"
+          labelledBy="quit-title"
+          describedBy="quit-text"
+        >
+          {closing === "ask" && unfinished.length === 0 ? (
+            <>
               <div className="modal-head">
-                <span className="spinner" aria-hidden="true" />
-                <h2 id="quit-title">
-                  <span id="quit-text">
-                    {active > 0 || !web ? t.stoppingJobs : t.stoppingForge}
-                  </span>
+                <span className="head-icon warn">
+                  <Icon name="power" />
+                </span>
+                <h2 id="quit-title">{t.confirmStop(web)}</h2>
+              </div>
+              <p className="muted" id="quit-text">
+                {t.stopNote(web, ps5)}
+              </p>
+              <div className="row end">
+                <button autoFocus onClick={dismiss}>
+                  {t.keepRunning}
+                </button>
+                <button className="danger" onClick={quit}>
+                  {web ? t.stop : t.quit}
+                </button>
+              </div>
+            </>
+          ) : closing === "ask" ? (
+            <>
+              <div className="modal-head">
+                <span className="head-icon warn">
+                  <Icon name="alert" />
+                </span>
+                <h2 id="quit-title">{t.stillRunning(unfinished.length)}</h2>
+              </div>
+              <div id="quit-text">
+                <ul className="quit-jobs">
+                  {unfinished.map((j) => (
+                    <li key={j.id}>
+                      <span className="quit-name">
+                        {j.request ? basename(j.request.output) : t.job(j.id)}
+                      </span>
+                      <span className="muted">{jobState(j, t)}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="muted">{t.quitNote(web, unfinished.length)}</p>
+              </div>
+              <div className="row end">
+                <button autoFocus onClick={dismiss}>
+                  {t.keepRunning}
+                </button>
+                <button className="danger" onClick={quit}>
+                  {web ? t.stop : t.stopAndQuit(unfinished.length)}
+                </button>
+              </div>
+            </>
+          ) : closing === "stopping" ? (
+            <div className="modal-head">
+              <span className="spinner" aria-hidden="true" />
+              {/* Its button is gone: focus moves here, inside the dialog (old WebKit has no inert). */}
+              <h2 id="quit-title" tabIndex={-1} ref={(el) => el?.focus()}>
+                <span id="quit-text">
+                  {active > 0 || !web ? t.stoppingJobs : t.stoppingForge}
+                </span>
+              </h2>
+            </div>
+          ) : closing === "failed" ? (
+            <>
+              <div className="modal-head">
+                <span className="head-icon warn">
+                  <Icon name="alert" />
+                </span>
+                <h2 id="quit-title">{t.couldntStop}</h2>
+              </div>
+              <p className="muted" id="quit-text">
+                {quitError}
+              </p>
+              <div className="row end">
+                <button autoFocus onClick={dismiss}>
+                  {t.close}
+                </button>
+                <button className="danger" onClick={quit}>
+                  {t.tryAgain}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="modal-head">
+                <span className="head-icon">
+                  <Icon name="power" />
+                </span>
+                <h2 id="quit-title" tabIndex={-1} ref={(el) => el?.focus()}>
+                  {t.stopped}
                 </h2>
               </div>
-            ) : closing === "failed" ? (
-              <>
-                <div className="modal-head">
-                  <span className="head-icon warn">
-                    <Icon name="alert" />
-                  </span>
-                  <h2 id="quit-title">{t.couldntStop}</h2>
-                </div>
-                <p className="muted" id="quit-text">
-                  {quitError}
-                </p>
-                <div className="row end">
-                  <button autoFocus onClick={() => setClosing(null)}>
-                    {t.close}
-                  </button>
-                  <button className="danger" onClick={quit}>
-                    {t.tryAgain}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="modal-head">
-                  <span className="head-icon">
-                    <Icon name="power" />
-                  </span>
-                  <h2 id="quit-title" tabIndex={-1} ref={(el) => el?.focus()}>
-                    {t.stopped}
-                  </h2>
-                </div>
-                <p className="muted" id="quit-text">
-                  {t.startAgain}
-                </p>
-              </>
-            )}
-          </div>
-        </div>
+              <p className="muted" id="quit-text">
+                {t.startAgain(ps5)}
+              </p>
+            </>
+          )}
+        </Modal>
       )}
     </div>
   );

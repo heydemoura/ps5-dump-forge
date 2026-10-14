@@ -18,7 +18,7 @@ export interface JobsSnapshot {
 
 const FAST_MS = 1000; // while a job is unfinished
 const SLOW_MS = 5000;
-const MAX_BACKOFF_MS = 30000;
+const MAX_BACKOFF_MS = 10000; // back within seconds once the payload answers again
 const POLL_TIMEOUT_MS = 15000;
 
 // ---------- the client's own messages ----------

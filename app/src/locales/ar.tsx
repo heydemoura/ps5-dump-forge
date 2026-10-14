@@ -5,9 +5,9 @@
 import { dotted, num, plural } from "../i18n";
 import type { Messages } from "./en";
 
-/** A runtime value (path, file or folder name, URL, backend text) isolated from the Arabic around it;
- * FSI takes its direction from the value itself, so a path stays left-to-right. */
-const iso = (v: string) => `\u2068${v}\u2069`;
+/** A runtime value (path, file or folder name, URL, backend text) isolated left-to-right (LRI…PDI)
+ * from the Arabic around it: a path stays in its order even when a folder name is Arabic. */
+const iso = (v: string) => `\u2066${v}\u2069`;
 
 /** A flat image holds the game's files as they are: about as large as the game. */
 const FLAT = "مساوٍ لحجم اللعبة";
@@ -70,7 +70,10 @@ const ar: Messages = {
     close: "إغلاق",
     tryAgain: "إعادة المحاولة",
     stopped: "توقّف Dump Forge",
-    startAgain: "للمتابعة، أعد تشغيل هذا التطبيق.",
+    startAgain: (ps5) => (ps5 ? "للمتابعة، افتح لوحة Dump Forge على PS5 مرة أخرى." : "للمتابعة، شغّل أمر ⁦ps5-dump-forge serve⁩ نفسه مرة أخرى."),
+    confirmStop: (web: boolean) => (web ? "إيقاف Dump Forge؟" : "إنهاء PS5 Dump Forge؟"),
+    stopNote: (web, ps5) => (!web ? "لا توجد مهمة قيد التشغيل." : ps5 ? "لتشغيله مرة أخرى، افتح لوحة Dump Forge على PS5." : "لتشغيله مرة أخرى، شغّل أمر ⁦ps5-dump-forge serve⁩ نفسه من جديد."),
+    quit: "إنهاء",
     github: (name) => `${iso(name)} على GitHub`,
     queued: "في الانتظار",
     progress: (percent, left) => `اكتمل ${percent}%${left ? `، المتبقي ${left}` : ""}`,
@@ -85,6 +88,7 @@ const ar: Messages = {
     lz4Trace:
       "تحمل هذه اللعبة المحزومة بيئة تشغيل التتبّع الخاصة بـ LZ4: فُكّ حزمها أو أعد حزمها أولًا في تبويب «LZ4».",
     unreadable: "لا يمكن البناء: تعذّرت قراءة هذا المصدر (راجع «المصدر»).",
+    noContentId: "لا يمكن البناء بصيغة fpkg: لا يحتوي ⁦param.json⁩ لهذه اللعبة على Content ID، وهو ما تحتاجه الحزمة.",
     blocked: (first, more) =>
       `لا يمكن البناء: ${iso(first)}${more > 0 ? ` (بالإضافة إلى ${count(more, { one: "ملاحظة أخرى", two: "ملاحظتين أخريين", few: "ملاحظات أخرى", many: "ملاحظةً أخرى", other: "ملاحظة أخرى" })}، راجع «المصدر»)` : ""}.`,
     runtime: "تحديث AMPR",
@@ -195,7 +199,7 @@ const ar: Messages = {
         other: `عُثر على ${num(n)} عنصر`,
       }),
     leftoversNote: (app) =>
-      `نواتج غير مكتملة وأرشيفات مفكوكة، عادةً من مهام توقفت قبل انتهائها. لا تحذف إلا ما تعرفه منها، وفقط حين لا تعمل أي مهمة؛ لا يحذفها ${app} من تلقاء نفسه أبدًا.`,
+      `نواتج غير مكتملة، عادةً من مهام توقفت قبل انتهائها. لا تحذف إلا ما تعرفه منها، وفقط حين لا تعمل أي مهمة؛ لا يحذفها ${app} من تلقاء نفسه أبدًا.`,
     checked: (n) => `المجلدات التي فُحصت (${num(n)})`,
   },
   // JobList.tsx
@@ -264,7 +268,7 @@ const ar: Messages = {
     from: "من ",
     left: (d) => `المتبقي ${d}`,
     inStep: (time) => `${time} في هذه الخطوة`,
-    result: (bytes, n) => `${bytes}، ${count(n, FILES)} ←`,
+    result: (bytes, n) => `${iso(bytes)}، ${count(n, FILES)} ←`,
     outputPath: "مسار الناتج",
     checks: "الاختبارات",
     verifiedPlain: (n) =>
@@ -295,9 +299,9 @@ const ar: Messages = {
     scanningIn: (name) => `جارٍ مسح ${iso(name)}`,
     scanning: "جارٍ المسح",
     cantScanFolder: "تعذّر مسح هذا المجلد",
-    chooseAnother: "اختيار مجلد آخر…",
+    chooseAnother: "اختيار مجلد آخر",
     pickPrompt: "اختر مجلدًا يحتوي على مكتبتك لمسحه",
-    choose: "اختيار مجلد…",
+    choose: "اختيار مجلد",
     cantScan: "تعذّر مسح «المكتبة»:",
     cantDelete: "تعذّر الحذف:",
     deleted: (path) => `تم حذف ${iso(path)}`,
@@ -311,7 +315,7 @@ const ar: Messages = {
     storageTip: "المساحة الحرة في التخزين الداخلي لجهاز PS5 (⁦/data⁩)، وقت آخر مسح",
     free: (free, total) => (
       <>
-        متاح <b>{free}</b> من {total}
+        متاح <b>{iso(free)}</b> من {iso(total)}
       </>
     ),
     refresh: "تحديث",
@@ -400,7 +404,7 @@ const ar: Messages = {
           : `يحذف «إلغاء الترقيع» بيانات تتبّع هذا المصدر (${bytes}): انسخها أولًا.`,
     useProfile: "استخدام ملف تعريف قواعد بدلًا منها",
     profile: "ملف التعريف",
-    choose: "اختيار…",
+    choose: "اختيار",
     profileHint: "ملف TOML بقواعد الحزم، يُستخدم بدلًا من بيانات التتبّع.",
     target: "الهدف",
     packInto: "الحزم إلى",
@@ -436,7 +440,7 @@ const ar: Messages = {
     ownRules: "يحزم الملفات التي قرأتها اللعبة في آخر جلسة تتبّع لها؛ وتبقى الملفات التي يفتحها المحرك مباشرة غير محزومة.",
     guessRules: "لا توجد بيانات تتبّع: يحزم وفق تخمين مدمج أقل موثوقية. نفّذ التتبّع أولًا، أو اختر بيانات تتبّع أو ملف تعريف.",
     recorded: "بيانات التتبّع المسجّلة",
-    recordedHint: (bytes) => `⁦ampr_commands.bin⁩ (${bytes}): يستخدم «حزم» بيانات التتبّع هذه.`,
+    recordedHint: (bytes) => `⁦ampr_commands.bin⁩ (${iso(bytes)}): يستخدم «حزم» بيانات التتبّع هذه.`,
     downloadHint: "أغلق اللعبة وانتظر دقيقة، ثم نزّل من متصفح كمبيوتر. واختر ملف zip هناك في «الحزم/فك الحزم» ← «بيانات التتبّع».",
     download: (bytes, zip) => `تنزيل بيانات التتبّع (${bytes}) باسم ${iso(zip)}`,
     missingIndex: "لا يوجد ⁦ampr_emu.index⁩ في هذا المصدر: يحتاج «حزم» إليه بجوار ⁦ampr_commands.bin⁩.",
@@ -452,10 +456,10 @@ const ar: Messages = {
     optionalTraces: "بيانات التتبّع (اختياري)",
     unlock: "إلغاء القفل لاختيار بيانات تتبّع أخرى",
     loaded: "بيانات التتبّع محمّلة بالفعل من هذا المصدر",
-    lockedHint: (bytes) => `بيانات تتبّع هذا المصدر نفسه (${bytes}). انقر القفل لاختيار غيرها.`,
+    lockedHint: (bytes) => `بيانات تتبّع هذا المصدر نفسه (${iso(bytes)}). انقر القفل لاختيار غيرها.`,
     clear: "إزالة",
-    zip: "Zip…",
-    folder: "مجلد…",
+    zip: "Zip",
+    folder: "مجلد",
     tracesHint: "اختر ملف ⁦amprtrace⁩ بصيغة zip من «تنزيل بيانات التتبّع»، أو مجلدًا يحتوي على ملفي التتبّع.",
     useOwn: "استخدام بيانات تتبّع المصدر",
     patchResult: (a, n) => a === "patch"
@@ -624,6 +628,7 @@ const ar: Messages = {
         "لم يُعثر على نسخة محفوظة من Dump Forge (في ⁦/data/dumpforge/⁩ أو على وحدة USB). حمّله مرة واحدة من كمبيوتر؛ وسيحفظ نسخة لتشغيله من هذه الأيقونة.",
       timeout:
         "بدأ تشغيل Dump Forge لكنه لم يستجب بعد 30 ثانية. ربما لا يزال قيد البدء (يكون الجهاز بطيئًا عند استيقاظه من وضع الراحة).",
+      stopping: "لا يزال Dump Forge السابق قيد الإيقاف (يلغي مهامه وينظّف). انتظر قليلًا ثم أعد المحاولة.",
     },
     loadFailed: (e) => `تعذّر تحميل الصفحة: ${iso(e)}`,
     noAnswer: "لم يستجب Dump Forge",
@@ -706,18 +711,19 @@ const ar: Messages = {
     compression: "الضغط",
     fullVerify: "تحقق كامل",
     fullVerifyHint: "يعيد قراءة كل بايت للتحقق من الناتج. يستغرق وقتًا أطول.",
-    separator: "لا يمكن أن يحتوي الاسم على فاصل مجلدات؛ استخدم «تغيير…» لاختيار المجلد.",
+    separator: "لا يمكن أن يحتوي الاسم على فاصل مجلدات؛ استخدم «تغيير» لاختيار المجلد.",
+    badName: "لا يمكن أن يكون الاسم فارغًا أو أن يبدأ بنقطة أو ينتهي بنقطة أو مسافة أو أن يحتوي على محارف تحكم.",
     tooLong: (bytes, max, folder) =>
       folder
         ? `طويل جدًا: ${count(bytes, { one: "بايت واحد", two: "بايتان", few: "بايتات", many: "بايتًا", other: "بايت" })}، والحد الأقصى ${max} (UTF-8).`
         : `طويل جدًا: ${count(bytes, { one: "بايت واحد", two: "بايتان", few: "بايتات", many: "بايتًا", other: "بايت" })} قبل الامتداد، والحد الأقصى ${max} (UTF-8).`,
-    pkgExt: (ext) => `ينتهي بـ .${ext}، لكن fpkg يُحفظ بامتداد .pkg: الامتداد هو ما يحدد برنامج التشغيل.`,
+    pkgExt: (ext) => `ينتهي بـ ${iso(`.${ext}`)}، لكن fpkg يُحفظ بامتداد ${iso(".pkg")}: الامتداد هو ما يحدد برنامج التشغيل.`,
     otherExt: (ext, target) =>
-      `ينتهي بـ .${ext}، لكن الهدف ${target}: الامتداد هو ما يحدد برنامج التشغيل.`,
+      `ينتهي بـ ${iso(`.${ext}`)}، لكن الهدف ${target}: الامتداد هو ما يحدد برنامج التشغيل.`,
     extractInto: "الاستخراج إلى هذا المجلد",
     saveInto: "الحفظ في هذا المجلد",
     output: "الناتج",
-    change: "تغيير…",
+    change: "تغيير",
     naming: "جارٍ اختيار الاسم…",
     chooseSourceFirst: "اختر مصدرًا أولًا",
     fileName: "اسم الملف",
