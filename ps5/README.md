@@ -57,7 +57,10 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
   old path) still starts the saved copy. Nothing walks through it: the Library doesn't follow links, the
   self copy, tile and logs use `/data/dumpforge`. `ps5/test-entry.sh` covers rename, link, link added
   later, both folders, and a refused rename.
-- `compat.c`: `statfs@FBSD_1.0` / `fstatfs@FBSD_1.0` forwarders (outside `shim/`). `launcher.c`: registers
+- `compat.c`: `statfs@FBSD_1.0` / `fstatfs@FBSD_1.0` forwarders (outside `shim/`), and
+  `--wrap=cpuset_getaffinity`: the PS5 refuses the process-level query std's `available_parallelism`
+  makes (ERANGE; std then said 16 CPUs from `sysconf`), so it is answered from the thread's mask (a
+  payload gets 5, `0xea00`) and every pool, the vendored crates' included, is sized by it. `launcher.c`: registers
   the tile (after ps5-ai-cli's launcher).
 - `shim/`, `x86_64-ps5-freebsd.json`, `prepare-rust-std.py`: copied unchanged from ps5-ai-cli `eb1d494`
   (GPL-3.0-or-later, `shim/UPSTREAM`): FreeBSD 11 `.symver` stat/readdir/kevent, raw-syscall `--wrap`s for
@@ -84,7 +87,9 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
   per 1 MiB chunk), 16 handler
   threads (then 503), 8 unfinished jobs (then 429), 2 inspections or naming requests at once (429,
   `Retry-After: 1`), 32 finished jobs and 200 log lines each kept, `list_dir` 10,000 entries (`truncated`),
-  `stale_parts` 1,000. `compression_threads: null` is `max(1, cores − 1)`.
+  `stale_parts` 1,000. `compression_threads: null` is `max(1, cores − 1)`; on the PS5
+  `cores` is the payload's 5 CPUs (`compat.c`) and two are left free (3 workers), for the console's
+  browser.
 - Errors are `{"error": "<text>"}` with 400 / 404 / 409 (stopping, a path a job uses) / 413 / 429 / 500 (`self_update`: 502 / 503); core errors are the
   Tauri commands' `format!("{e:#}")`. API replies are `Cache-Control: no-store`; `index.html` and the
   AppCache manifest `no-cache`; hashed `assets/*` a year, immutable.

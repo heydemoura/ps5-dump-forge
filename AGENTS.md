@@ -41,12 +41,16 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   the PS5 payload included), `parts.rs` multi-part naming, `stream.rs` the `Reader`. Glue: `core/src/archive.rs` (`ArchiveTree`), `inspect.rs`,
   `library::archive_game_root`. Licence: `vendor/LICENSE-UnRAR.txt`, `vendor/LICENSE-UnRAR-exception.md` (copied into every release).
 - `crates/ps5-dump-forge-cli`: binary `ps5-dump-forge` (`inspect`, `convert`, `serve`), JSON-lines events.
+- `crates/ps5-dump-forge-ps5`: the payload's global allocator (`Pool`, installed by the CLI only for
+  the PS5): freed blocks of 64 B..4 MiB kept in power-of-two classes, since the PS5 libc serializes
+  every malloc across threads (a `.pkg`'s Kraken pool: 12.7 → 49.3 MB/s at 4 threads).
 - `crates/ps5-dump-forge-server`: `serve`, std-only HTTP/1.1 (`http.rs`), routes mirroring the Tauri commands
   (`api.rs`), job table for polling (`table.rs`), roots (`paths.rs`), PS5 tile (`tile.rs`), self copy
   (`self_copy.rs`), `debug.rs` (PS5 only, with `FORGE_DEBUG_API`). `build.rs` embeds `app/dist-http` and the
   self copy.
 - `ps5/`: the payload's Docker harness: `Dockerfile`, `build.sh`, `linker.sh`, `entry.c` (launch modes,
-  logs, `ps5_notify`), `compat.c` (statfs symvers), `launcher.c` (tile registration), `icon0.png`,
+  logs, `ps5_notify`), `compat.c` (statfs symvers; `cpuset_getaffinity` answered per thread, so std sees the 5 CPUs
+  a payload may use, not 16), `launcher.c` (tile registration), `icon0.png`,
   `test-entry.sh`; `shim/` + `x86_64-ps5-freebsd.json` + `prepare-rust-std.py` are ps5-ai-cli's, byte-identical.
 - `app/`: React/TS/Vite UI; `app/src-tauri` is the `ps5-dump-forge-gui` crate (binary `Forge`,
   bundled as "PS5 Dump Forge" via `mainBinaryName`; Linux's `tauri.linux.conf.json` names it
@@ -288,7 +292,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   the system languages). Defaults: Convert's target
   fpkg (`.pkg`), exfat for a `.pkg` source (by user decision; picker order Folder, fpkg, exfat, ffpfsc, ffpkg,
   ffpfs), exFAT inside a `.ffpfsc` at zlib
-  level 6, all cores for compression (`serve`: cores − 1), `.pkg` Kraken level `fast` (also `balanced`,
+  level 6, all cores for compression (`serve`: cores − 1; PS5: its 5 CPUs − 2), `.pkg` Kraken level `fast` (also `balanced`,
   `smallest`, and `stored`: every block raw, the fallback for a console that won't start a compressed
   package; tests use `fast` only), no extra free space beyond each format's built-in spare, output next
   to the source (an empty output `dir` is the source's folder, never the process's working directory).

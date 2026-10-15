@@ -271,6 +271,14 @@ fn put_array(out: &mut Vec<u8>, data: &[u8]) {
     put_raw_array(out, data);
 }
 
+/// The bytes [`put_array`] writes for `data`, without coding it.
+fn array_len(data: &[u8]) -> usize {
+    match huff::encoded_len(data) {
+        Some(n) if n + 5 < data.len() + 3 => n + 5,
+        _ => data.len() + 3,
+    }
+}
+
 // ─────────────────────────────── encoder ───────────────────────────────
 
 const HASH_BITS: u32 = 16;
@@ -564,7 +572,17 @@ struct Streams {
 /// Commands, offsets, lengths and literals for `cmds` over `buf[from..end]`, with the three
 /// recent offsets tracked as the decoder does.
 fn streams(buf: &[u8], from: usize, end: usize, cmds: &[Cmd]) -> Streams {
-    let mut s = Streams::default();
+    // Reserved whole, so no array reallocates as it grows (see `huff::huffman_lengths`).
+    let n = cmds.len();
+    let mut s = Streams {
+        lits: Vec::with_capacity(end - from),
+        delta_lits: Vec::with_capacity(end - from),
+        cmd_bytes: Vec::with_capacity(n),
+        offs_codes: Vec::with_capacity(n),
+        offs_bits: Vec::with_capacity(n),
+        lens: Vec::with_capacity(2 * n + 1),
+        escapes: Vec::new(),
+    };
     let mut recent = [8usize; 3];
     let push_len = |v: usize, s: &mut Streams| {
         let p = v - 3;
@@ -617,11 +635,7 @@ fn streams(buf: &[u8], from: usize, end: usize, cmds: &[Cmd]) -> Streams {
 /// Roughly the bytes a half's streams code to: each array as `put_array` stores it (literals in
 /// the smaller mode), plus the offset bits and length escapes.
 fn coded_size(s: &Streams) -> usize {
-    let array = |d: &[u8]| {
-        let mut o = Vec::new();
-        put_array(&mut o, d);
-        o.len()
-    };
+    let array = array_len;
     let bits: usize = s.offs_bits.iter().map(|b| b.1 as usize).sum();
     array(&s.lits).min(array(&s.delta_lits))
         + array(&s.cmd_bytes)
@@ -961,7 +975,13 @@ fn encode_half(
         return None;
     }
     // The offset bits alternate between the forward and backward streams.
-    let (mut fwd, mut bwd) = (BitWriter::default(), BitWriter::default());
+    // At most 18 bits an offset, every other one each way.
+    let cap = (offs_bits.len() / 2 + 1) * 18 / 8 + 8;
+    let writer = || BitWriter {
+        bytes: Vec::with_capacity(cap),
+        ..Default::default()
+    };
+    let (mut fwd, mut bwd) = (writer(), writer());
     for (k, (v, n)) in offs_bits.iter().enumerate() {
         if k % 2 == 0 {
             fwd.put(*v, *n);
@@ -1001,11 +1021,8 @@ fn encode_half(
     }
     // Literal mode 0 when delta-coding makes the literals smaller: structured data (vertices,
     // tables) often repeats with small differences at the distance it last matched.
-    let (mut raw_lits, mut sub_lits) = (Vec::new(), Vec::new());
-    put_array(&mut raw_lits, &lits);
-    put_array(&mut sub_lits, &delta_lits);
-    let delta = sub_lits.len() < raw_lits.len();
-    out.extend(if delta { sub_lits } else { raw_lits });
+    let delta = array_len(&delta_lits) < array_len(&lits);
+    put_array(&mut out, if delta { &delta_lits } else { &lits });
     put_array(&mut out, &cmd_bytes);
     put_array(&mut out, &offs_codes);
     put_array(&mut out, &lens);

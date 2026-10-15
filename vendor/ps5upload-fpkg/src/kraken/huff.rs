@@ -68,24 +68,39 @@ fn code_lengths(freq: &[u32; 256]) -> [u8; 256] {
     }
 }
 
+/// Nodes merge lightest first, ties by node index (leaves first, in symbol order). The leaves are
+/// sorted once and merged nodes come out in that same order, so two queues make the merges a heap
+/// would, with no allocation: on the PS5 every malloc serializes the compression threads.
 fn huffman_lengths(f: &[u32; 256]) -> [u8; 256] {
-    use std::{cmp::Reverse, collections::BinaryHeap};
-    let mut parent: Vec<usize> = Vec::with_capacity(512);
+    let mut parent = [usize::MAX; 511];
     let mut leaf = [usize::MAX; 256];
-    let mut heap = BinaryHeap::new();
+    let mut leaves = [(0u64, 0usize); 256];
+    let mut n = 0;
     for (s, &w) in f.iter().enumerate().filter(|(_, w)| **w > 0) {
-        leaf[s] = parent.len();
-        heap.push(Reverse((u64::from(w), parent.len())));
-        parent.push(usize::MAX);
+        leaf[s] = n;
+        leaves[n] = (u64::from(w), n);
+        n += 1;
     }
-    while heap.len() > 1 {
-        let Reverse((wa, a)) = heap.pop().unwrap();
-        let Reverse((wb, b)) = heap.pop().unwrap();
-        let n = parent.len();
-        parent.push(usize::MAX);
-        parent[a] = n;
-        parent[b] = n;
-        heap.push(Reverse((wa + wb, n)));
+    let leaves = &mut leaves[..n];
+    leaves.sort_unstable();
+    let mut merged = [(0u64, 0usize); 255];
+    let (mut li, mut mi, mut mn) = (0, 0, 0);
+    let take = |li: &mut usize, mi: &mut usize, mn: usize, merged: &[(u64, usize)]| {
+        if *li < n && (*mi >= mn || leaves[*li] < merged[*mi]) {
+            *li += 1;
+            leaves[*li - 1]
+        } else {
+            *mi += 1;
+            merged[*mi - 1]
+        }
+    };
+    while (n - li) + (mn - mi) > 1 {
+        let (wa, a) = take(&mut li, &mut mi, mn, &merged);
+        let (wb, b) = take(&mut li, &mut mi, mn, &merged);
+        parent[a] = n + mn;
+        parent[b] = n + mn;
+        merged[mn] = (wa + wb, n + mn);
+        mn += 1;
     }
     let mut lens = [0u8; 256];
     for (s, &node) in leaf.iter().enumerate().filter(|(_, n)| **n != usize::MAX) {
@@ -169,15 +184,24 @@ fn table(lens: &[u8; 256], fb: u32) -> Option<Vec<u8>> {
     Some(w.finish())
 }
 
-/// A type-2 array body (everything after the 5-byte header), or `None` when the data is under
-/// [`MIN_ARRAY`] or too large. The caller keeps it only if it beats the raw array.
-pub(super) fn encode(data: &[u8]) -> Option<Vec<u8>> {
+/// Code lengths, the smallest table, and each stream's symbol counts (symbol `i` goes to stream
+/// `i % 3`).
+type Plan = ([u8; 256], Vec<u8>, [[u32; 256]; 3]);
+
+/// [`Plan`] for `data`, or `None` when it is under [`MIN_ARRAY`] or too large.
+fn plan(data: &[u8]) -> Option<Plan> {
     if data.len() < MIN_ARRAY || data.len() > 0x4_0000 {
         return None;
     }
+    let mut per_stream = [[0u32; 256]; 3];
+    for (i, &b) in data.iter().enumerate() {
+        per_stream[i % 3][b as usize] += 1;
+    }
     let mut freq = [0u32; 256];
-    for &b in data {
-        freq[b as usize] += 1;
+    for s in &per_stream {
+        for (f, &n) in freq.iter_mut().zip(s) {
+            *f += n;
+        }
     }
     if freq.iter().filter(|&&f| f > 0).count() < 2 {
         // The full table needs two symbols; one symbol gets a never-used partner.
@@ -187,8 +211,36 @@ pub(super) fn encode(data: &[u8]) -> Option<Vec<u8>> {
     let table = (0..4)
         .filter_map(|fb| table(&lens, fb))
         .min_by_key(Vec::len)?;
+    Some((lens, table, per_stream))
+}
+
+/// The bytes a stream of these symbol counts codes to.
+fn stream_len(counts: &[u32; 256], lens: &[u8; 256]) -> usize {
+    let bits: u64 = counts
+        .iter()
+        .zip(lens)
+        .map(|(&n, &l)| u64::from(n) * u64::from(l))
+        .sum();
+    bits.div_ceil(8) as usize
+}
+
+/// The length [`encode`] returns for `data`, without coding it.
+pub(super) fn encoded_len(data: &[u8]) -> Option<usize> {
+    let (lens, table, per_stream) = plan(data)?;
+    let [a, b, c] = per_stream.map(|s| stream_len(&s, &lens));
+    (a <= 0xFFFF).then_some(table.len() + 2 + a + b + c)
+}
+
+/// A type-2 array body (everything after the 5-byte header), or `None` when the data is under
+/// [`MIN_ARRAY`] or too large. The caller keeps it only if it beats the raw array.
+pub(super) fn encode(data: &[u8]) -> Option<Vec<u8>> {
+    let (lens, table, per_stream) = plan(data)?;
     let codes = canonical(&lens);
-    let mut s: [LsbWriter; 3] = Default::default();
+    // Each stream reserved whole, so it never reallocates (see `huffman_lengths`).
+    let mut s: [LsbWriter; 3] = std::array::from_fn(|k| LsbWriter {
+        bytes: Vec::with_capacity(stream_len(&per_stream[k], &lens)),
+        ..Default::default()
+    });
     for (i, &b) in data.iter().enumerate() {
         let (c, l) = codes[b as usize];
         s[i % 3].put(c, l);
@@ -198,6 +250,7 @@ pub(super) fn encode(data: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let mut out = table;
+    out.reserve(2 + a.len() + b.len() + c.len());
     out.extend_from_slice(&(a.len() as u16).to_le_bytes());
     out.extend(a);
     out.extend(c);
@@ -410,6 +463,66 @@ pub(super) fn decode(src: &[u8], n: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two-queue merge gives a heap's lengths, and `encoded_len` is what `encode` writes,
+    /// on flat, skewed, two-symbol and single-symbol arrays.
+    #[test]
+    fn lengths_and_sizes_match_the_heap_and_the_coder() {
+        fn heap_lengths(f: &[u32; 256]) -> [u8; 256] {
+            use std::{cmp::Reverse, collections::BinaryHeap};
+            let (mut parent, mut leaf, mut heap) =
+                (Vec::new(), [usize::MAX; 256], BinaryHeap::new());
+            for (s, &w) in f.iter().enumerate().filter(|(_, w)| **w > 0) {
+                leaf[s] = parent.len();
+                heap.push(Reverse((u64::from(w), parent.len())));
+                parent.push(usize::MAX);
+            }
+            while heap.len() > 1 {
+                let (Reverse((wa, a)), Reverse((wb, b))) =
+                    (heap.pop().unwrap(), heap.pop().unwrap());
+                let n = parent.len();
+                parent.push(usize::MAX);
+                (parent[a], parent[b]) = (n, n);
+                heap.push(Reverse((wa + wb, n)));
+            }
+            let mut lens = [0u8; 256];
+            for (s, &node) in leaf.iter().enumerate().filter(|(_, n)| **n != usize::MAX) {
+                let (mut x, mut d) = (node, 0);
+                while parent[x] != usize::MAX {
+                    (x, d) = (parent[x], d + 1);
+                }
+                lens[s] = d;
+            }
+            lens
+        }
+        let mut x = 0x9e37_79b9u32;
+        let mut rand = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        for case in 0..200 {
+            let n = 256 + (rand() as usize % 20_000);
+            let data: Vec<u8> = (0..n)
+                .map(|_| match case % 4 {
+                    0 => rand() as u8,
+                    1 => (rand() % 7) as u8 * (rand() % 3) as u8,
+                    2 => [3, 200][(rand() % 9 == 0) as usize],
+                    _ => 42,
+                })
+                .collect();
+            let mut freq = [0u32; 256];
+            data.iter().for_each(|&b| freq[b as usize] += 1);
+            freq[(rand() % 256) as usize] += rand() % 3;
+            assert_eq!(huffman_lengths(&freq), heap_lengths(&freq), "case {case}");
+            assert_eq!(
+                encoded_len(&data),
+                encode(&data).map(|e| e.len()),
+                "case {case}"
+            );
+        }
+    }
 
     /// A sparse table whose 4-bit length field says 16, past the longest code (11): an error,
     /// not an index past the table.

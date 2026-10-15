@@ -22,5 +22,5 @@ mapfile -t wraps < /work/ps5/shim/syscalls.link
 # (static) are for UnRAR's C++ (unrar_sys).
 exec "$PS5_PAYLOAD_SDK/bin/prospero-clang" "${args[@]}" \
   "$obj/freebsd11.o" "$obj/syscalls.o" "$obj/entry.o" "$obj/compat.o" "$obj/launcher.o" "${wraps[@]}" \
-  -Wl,--wrap=main -Wl,--wrap=fcntl -Wl,--wrap=sysctl -Wl,--error-limit=0 \
+  -Wl,--wrap=main -Wl,--wrap=fcntl -Wl,--wrap=sysctl -Wl,--wrap=cpuset_getaffinity -Wl,--error-limit=0 \
   -ldl -lc++ -lc++abi -lunwind -lc -lkernel_web -lSceLibcInternal -lSceNet -lSceSystemService -lSceAppInstUtil

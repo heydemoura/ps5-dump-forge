@@ -468,6 +468,11 @@ fn default_output(
 #[used]
 static VERSION_MARKER: &&[u8] = &ps5_dump_forge_server::VERSION_MARKER;
 
+// The PS5 libc serializes every malloc across threads (ps5-dump-forge-ps5's docs).
+#[cfg(target_env = "ps5")]
+#[global_allocator]
+static ALLOC: ps5_dump_forge_ps5::Pool = ps5_dump_forge_ps5::Pool;
+
 // The PS5 kernel fills FreeBSD 11 structs; libc's default FreeBSD 12 layouts read every field
 // at the wrong offset (found on hardware: every path looked like neither a file nor a folder).
 // ps5/build.sh selects the FreeBSD 11 ABI; these fail the build if that is ever lost.

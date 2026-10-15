@@ -81,6 +81,9 @@ struct ScanReply<'a> {
     storage: Option<Storage>,
 }
 
+/// Cores a default job leaves to the server (and on the PS5, the console's browser).
+const SPARE_CORES: usize = if cfg!(target_env = "ps5") { 2 } else { 1 };
+
 /// A lock that survives a panic elsewhere (the data stays consistent per call).
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -580,9 +583,11 @@ impl Server {
     fn start_job(&self, body: &[u8]) -> Reply {
         let mut request = parse::<StartArg>(body)?.request;
         readable(&request.source)?;
-        // Below the core count by default, so the server stays responsive.
+        // Below the core count by default, so the server stays responsive; on the PS5 by two,
+        // since its browser shares the payload's 5 CPUs (3 workers made a `.pkg` 4% slower
+        // than 4, with the page usable again).
         request.compression_threads = Some(match request.compression_threads {
-            None => self.cores.saturating_sub(1).max(1),
+            None => self.cores.saturating_sub(SPARE_CORES).max(1),
             Some(n) => n.clamp(1, self.cores),
         });
         let _admission = lock(&self.admission);

@@ -140,8 +140,8 @@ impl Sealed {
 }
 
 /// Threads that hash whole slices, one per core up to [`POOL_MAX`], fed through a bounded queue;
-/// their buffers are reused. At most `3 × threads` slices exist at once (queued, being hashed,
-/// spare): 192 MiB at 8 threads, which still hash ~19 GB/s, past any disk.
+/// their buffers are reused. At most `2 × threads + POOL_MAX` slices exist at once (queued,
+/// being hashed, spare): 192 MiB at 8 threads, which still hash ~19 GB/s, past any disk.
 struct Pool {
     jobs: SyncSender<(Vec<u8>, SyncSender<blake3::Hash>)>,
     spare: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -162,7 +162,10 @@ fn pool() -> &'static Pool {
         let (jobs, queue) = sync_channel::<Job>(threads);
         let queue = Arc::new(Mutex::new(queue));
         let spare = Arc::new(Mutex::new(Vec::new()));
-        let keep = threads;
+        // Spares by the most threads, not these: on the PS5 (5 CPUs) 5 spares made a `.pkg`
+        // build half as fast (4.6 GB in its first 3 min of compress, 7.4 with 8), likely as
+        // fresh 8 MiB slices page-fault through a libc that serializes every thread.
+        let keep = POOL_MAX;
         for i in 0..threads {
             let (queue, spare) = (queue.clone(), spare.clone());
             // ponytail: workers live as long as the process (the pool is static). If none

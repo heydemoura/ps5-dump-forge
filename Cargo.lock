@@ -2476,6 +2476,7 @@ dependencies = [
  "anyhow",
  "libc",
  "ps5-dump-forge-core",
+ "ps5-dump-forge-ps5",
  "ps5-dump-forge-server",
  "serde_json",
 ]
@@ -2549,6 +2550,10 @@ dependencies = [
  "ps5-dump-forge-ufs2",
  "ps5upload-fpkg",
 ]
+
+[[package]]
+name = "ps5-dump-forge-ps5"
+version = "0.1.1"
 
 [[package]]
 name = "ps5-dump-forge-server"
