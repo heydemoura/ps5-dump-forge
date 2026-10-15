@@ -165,6 +165,7 @@ fn session_and_headers() {
     assert_eq!(v["platform"], "host");
     assert_eq!(v["stopping"], false);
     assert_eq!(v["self_copy"], "none"); // a host build carries no copy of itself
+    assert_eq!(v["handover"], true); // it takes quit {"if_idle": true}
     assert_eq!(v["instance"].as_str().unwrap().len(), 16);
     assert_eq!(v["separator"], std::path::MAIN_SEPARATOR_STR);
     assert_eq!(v["url"], format!("http://{}", srv.addr));
@@ -680,18 +681,7 @@ fn quit_closes_admission() {
 fn port_in_use() {
     let root = dir("inuse");
     let (notes, exits) = (Log::default(), Log::default());
-    // Another copy of the server: "already running", success.
-    let forge = TcpListener::bind("0.0.0.0:0").unwrap();
-    let port = forge.local_addr().unwrap().port();
-    let opts = options(&root, &notes, &exits);
-    std::thread::spawn(move || serve_on(forge, opts));
-    wait(|| !notes.lock().unwrap().is_empty());
-    let mut opts = options(&root, &notes, &exits);
-    opts.port = port;
-    serve(opts).unwrap();
-    let last = notes.lock().unwrap().last().unwrap().clone();
-    assert!(last.contains("already running at http://"), "{last}");
-    // Anything else: an error.
+    // Another copy of the server is taken over (`handover`); anything else: an error.
     let other = TcpListener::bind("0.0.0.0:0").unwrap();
     let port = other.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -730,5 +720,344 @@ fn port_in_use() {
         start.elapsed() < Duration::from_secs(5),
         "{:?}",
         start.elapsed()
+    );
+}
+
+/// `quit {"if_idle": true}` (a newer copy taking over) waits for an open trace download, then
+/// quits as `quit` does.
+#[test]
+fn quit_if_idle_waits_for_trace_downloads() {
+    let srv = start("quit-idle");
+    let game = srv.root.join("game");
+    self::game(&game);
+    // Far more than the socket buffers hold, so the body is still streaming.
+    write(&game, "ampr_commands.bin", &vec![0x5au8; 40 << 20]);
+    write(&game, "ampr_emu.index", b"idx");
+    let mut stream = TcpStream::connect(srv.addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    stream.write_all(traces_request(&game).as_bytes()).unwrap();
+    let mut reply = vec![0u8; 4096];
+    let n = stream.read(&mut reply).unwrap();
+    assert!(reply[..n].starts_with(b"HTTP/1.1 200 OK\r\n"));
+    let idle = json!({ "if_idle": true });
+    let (status, v) = srv.post("/api/quit", idle.clone());
+    assert_eq!(status, 409, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("trace download"),
+        "{v}"
+    );
+    assert_eq!(srv.get("/api/session").1["stopping"], false);
+    // The client gives up: the server's next write fails and frees the stream's place.
+    drop(stream);
+    let mut last = (0, Value::Null);
+    wait(|| {
+        last = srv.post("/api/quit", idle.clone());
+        last.0 != 409
+    });
+    assert_eq!(last, (200, json!({})));
+    wait(|| !srv.exits.lock().unwrap().is_empty());
+    assert_eq!(*srv.exits.lock().unwrap(), [0]);
+    assert_eq!(srv.get("/api/session").1["stopping"], true);
+}
+
+/// One request head (and its `Content-Length` body) off a raw connection.
+fn read_request(s: &mut TcpStream) -> String {
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let (mut got, mut buf) = (Vec::new(), [0u8; 4096]);
+    loop {
+        let text = String::from_utf8_lossy(&got).into_owned();
+        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+            let length: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .map_or(0, |n| n.trim().parse().unwrap());
+            if body.len() >= length {
+                return text;
+            }
+        }
+        match s.read(&mut buf) {
+            Ok(0) | Err(_) => return text,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+}
+
+/// A fake elfldr: answers every connection with `reply` and records each request.
+fn fake_elfldr(reply: &'static str) -> (SocketAddr, Log<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log = Log::default();
+    let seen = log.clone();
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            seen.lock().unwrap().push(read_request(&mut s));
+            let _ = s.write_all(reply.as_bytes());
+        }
+    });
+    (addr, log)
+}
+
+/// `POST /api/self_update` asks elfldr for the release's PS5 ELF (`args`/`pipe` inside the
+/// percent-encoded `uri`), and reports what elfldr answered.
+#[test]
+fn self_update_through_elfldr() {
+    let newer = json!({ "version": "999.0.0" });
+    let srv = start("update-host");
+    assert_eq!(srv.post("/api/self_update", newer.clone()).0, 404);
+    assert_eq!(srv.get("/api/elfldr").0, 404);
+
+    let ps5 = |name: &str, elfldr: SocketAddr| {
+        start_with(name, move |o| {
+            o.platform = Platform::Ps5;
+            o.elfldr = elfldr;
+        })
+    };
+    // Nothing on the port.
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = closed.local_addr().unwrap();
+    drop(closed);
+    let srv = ps5("update-none", addr);
+    assert_eq!(srv.get("/api/elfldr"), (200, json!({ "up": false })));
+    let (status, v) = srv.post("/api/self_update", newer.clone());
+    assert_eq!(status, 503, "{v}");
+    assert_eq!(
+        v["error"],
+        format!(
+            "elfldr isn't running on port {}: load it, then try again",
+            addr.port()
+        )
+    );
+
+    // Something listening is up (the backlog accepts; nothing is read or sent).
+    let listening = TcpListener::bind("127.0.0.1:0").unwrap();
+    let srv = ps5("update-up", listening.local_addr().unwrap());
+    assert_eq!(srv.get("/api/elfldr"), (200, json!({ "up": true })));
+
+    let (addr, log) = fake_elfldr("HTTP/1.1 200 OK\r\n\r\n");
+    let srv = ps5("update-ok", addr);
+    assert_eq!(
+        srv.post("/api/self_update", newer.clone()),
+        (200, json!({}))
+    );
+    let uri = "https%3A%2F%2Fgithub.com%2Fquer3q%2Fps5-dump-forge%2Freleases%2Fdownload%2Fv999.0.0\
+               %2Fps5-dump-forge-999.0.0-ps5.elf%3Fargs%3Dserve%26pipe%3D0";
+    assert_eq!(
+        *log.lock().unwrap(),
+        [format!(
+            "GET /?uri={uri} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+        )]
+    );
+    // The server keeps serving until the new copy takes over.
+    assert_eq!(srv.get("/api/session").1["stopping"], false);
+    assert!(srv.exits.lock().unwrap().is_empty());
+    // Old or malformed versions never reach elfldr.
+    assert_eq!(
+        srv.post("/api/self_update", json!({ "version": "0.0.1" }))
+            .0,
+        400
+    );
+    assert_eq!(log.lock().unwrap().len(), 1);
+
+    let (addr, _) = fake_elfldr(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n[elfldr.elf] Error reading HTTP payload\r\n",
+    );
+    let srv = ps5("update-error", addr);
+    let (status, v) = srv.post("/api/self_update", newer.clone());
+    assert_eq!(status, 502, "{v}");
+    assert_eq!(
+        v["error"],
+        "elfldr couldn't download or start v999.0.0: [elfldr.elf] Error reading HTTP payload"
+    );
+    // A refused update keeps this server serving.
+    assert_eq!(srv.get("/api/session").1["stopping"], false);
+    assert!(srv.exits.lock().unwrap().is_empty());
+
+    let (addr, _) = fake_elfldr("HTTP/1.1 404 Not Found\r\n\r\n");
+    let (status, v) = ps5("update-refused", addr).post("/api/self_update", newer);
+    assert_eq!(status, 502, "{v}");
+    assert_eq!(v["error"], "elfldr refused the request");
+}
+
+/// A fake older copy of the server on a port of its own: `GET /api/session` gets `session`
+/// without its `jobs`, `GET /api/jobs` gets `{jobs}`, `POST /api/quit` gets `quit` (200: it
+/// then closes its port, as an exiting server does).
+fn old_forge(session: Value, quit: u16) -> (u16, Log<String>) {
+    let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let log = Log::default();
+    let seen = log.clone();
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            let request = read_request(&mut s);
+            seen.lock().unwrap().push(request.clone());
+            let (status, body) = if request.starts_with("POST /api/quit ") {
+                (quit, json!({}))
+            } else if request.starts_with("GET /api/jobs ") {
+                (200, json!({ "jobs": session["jobs"] }))
+            } else {
+                let mut session = session.clone();
+                session.as_object_mut().unwrap().remove("jobs");
+                (200, session)
+            };
+            let body = body.to_string();
+            let _ = write!(
+                s,
+                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            drop(s);
+            if status == 200 && request.starts_with("POST /api/quit ") {
+                break; // the listener closes with the thread
+            }
+        }
+    });
+    (port, log)
+}
+
+/// A copy started while another (any version) serves: it takes the port over when that one is
+/// idle (`if_idle`, or for one without `handover` its job list); else it leaves it serving, with
+/// a notice.
+#[test]
+fn handover() {
+    let root = dir("handover");
+    let current = env!("CARGO_PKG_VERSION");
+    // `jobs` is what the fake answers `GET /api/jobs` with (left out of its session).
+    let old = |handover: bool| {
+        let mut v = json!({ "app": "ps5-dump-forge", "version": "0.0.1", "jobs": [] });
+        if handover {
+            v["handover"] = json!(true);
+        }
+        v
+    };
+    let run = |session: Value, quit: u16| {
+        let (port, log) = old_forge(session, quit);
+        let (notes, exits) = (Log::default(), Log::default());
+        let mut opts = options(&root, &notes, &exits);
+        opts.port = port;
+        (port, log, notes, opts)
+    };
+    let posts = |log: &Log<String>| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.starts_with("POST "))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    // Older and idle: asked to quit if idle, then this one serves on its port.
+    let (port, log, notes, opts) = run(old(true), 200);
+    std::thread::spawn(move || serve(opts));
+    wait(|| {
+        notes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|n| n.contains("open http://"))
+    });
+    let posted = posts(&log);
+    assert_eq!(posted.len(), 1);
+    assert!(
+        posted[0].starts_with("POST /api/quit HTTP/1.1\r\n"),
+        "{}",
+        posted[0]
+    );
+    assert!(
+        posted[0].ends_with("\r\n\r\n{\"if_idle\":true}"),
+        "{}",
+        posted[0]
+    );
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let (status, _, body) = exchange(addr, b"GET /api/session HTTP/1.1\r\nHost: x\r\n\r\n");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (status, &v["version"], &v["handover"]),
+        (200, &json!(current), &json!(true))
+    );
+
+    // Older and busy: it keeps serving.
+    let (_, _, notes, opts) = run(old(true), 409);
+    serve(opts).unwrap();
+    let last = notes.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        last,
+        "Can't close Dump Forge - some jobs are still running."
+    );
+
+    // Older without `handover` (it would cancel its jobs): asked to quit (plain) only when its
+    // job list shows every job finished, then this one serves on its port.
+    // A long finished history (past the 64 KiB other replies are held to) is still read whole.
+    let mut idle = old(false);
+    idle["jobs"] = json!([{ "id": 1, "done": { "Ok": null }, "log": ["x".repeat(200 * 1024)] }]);
+    let (port, log, notes, opts) = run(idle, 200);
+    std::thread::spawn(move || serve(opts));
+    wait(|| {
+        notes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|n| n.contains("open http://"))
+    });
+    let posted = posts(&log);
+    assert_eq!(posted.len(), 1);
+    assert!(posted[0].ends_with("\r\n\r\n{}"), "{}", posted[0]);
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.starts_with("GET /api/jobs "))
+    );
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let (status, _, _) = exchange(addr, b"GET /api/session HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert_eq!(status, 200);
+
+    // ... but a job still running (no `done`), or no job list: never asked, it keeps serving.
+    for jobs in [json!([{ "id": 1, "done": null }]), json!(null)] {
+        let mut busy = old(false);
+        busy["jobs"] = jobs;
+        let (_, log, notes, opts) = run(busy, 200);
+        serve(opts).unwrap();
+        let last = notes.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            last,
+            "Can't close Dump Forge - some jobs are still running."
+        );
+        assert!(posts(&log).is_empty());
+    }
+
+    // The same version (a copy pushed again) and a newer one: taken over too.
+    for version in [current, "999.0.0"] {
+        let mut running = old(true);
+        running["version"] = json!(version);
+        let (port, log, notes, opts) = run(running, 200);
+        std::thread::spawn(move || serve(opts));
+        wait(|| {
+            notes
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|n| n.contains("open http://"))
+        });
+        assert_eq!(posts(&log).len(), 1);
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let (status, _, _) = exchange(addr, b"GET /api/session HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert_eq!(status, 200);
+    }
+
+    // A start that couldn't serve (no usable --root) never stops the running copy.
+    let (_, log, _, mut opts) = run(old(true), 200);
+    opts.roots = vec![root.join("missing")];
+    assert!(serve(opts).is_err());
+    assert!(posts(&log).is_empty());
+
+    // A quit that fails otherwise: an error, and the notice.
+    let (_, _, notes, opts) = run(old(true), 500);
+    assert!(serve(opts).is_err());
+    let last = notes.lock().unwrap().last().unwrap().clone();
+    assert_eq!(
+        last,
+        format!("Dump Forge v{current} could not take over from v0.0.1")
     );
 }

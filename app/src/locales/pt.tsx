@@ -650,6 +650,19 @@ const pt: Messages = {
   },
   // transport-tauri.tsx: the native save dialog
   tauri: { saveProfile: "Salvar como perfil", profileFilter: "Perfil LZ4 (TOML)" },
+  // UpdateToast.tsx
+  update: {
+    available: (v) => `v${v} está disponível`,
+    update: "Atualizar",
+    later: "Mais tarde",
+    updating: "Atualizando…",
+    updatingNote: "A nova versão está sendo baixada, o app vai reiniciar sozinho.",
+    downloading: "Baixando no navegador: descompacte o arquivo compactado e substitua esta cópia pelo conteúdo dele.",
+    failed: (v) => `Não foi possível atualizar para a v${v}`,
+    timeout: (v) => `A v${v} não iniciou em um minuto. Se ela foi baixada, pare o Dump Forge e abra-o de novo para concluir a atualização.`,
+    retry: "Tentar de novo",
+    close: "Fechar",
+  },
   // api.ts: prettyDuration's units
   duration: { s: (s) => `${s} s`, ms: (m, s) => `${m} min ${s} s`, hm: (h, m) => `${h} h ${m} min` },
 };

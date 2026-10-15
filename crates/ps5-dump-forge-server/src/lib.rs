@@ -73,7 +73,7 @@ pub struct Options {
     /// nothing.
     pub roots: Vec<PathBuf>,
     pub platform: Platform,
-    /// Shows the user a line: the URL, "already running", "stopped".
+    /// Shows the user a line: the URL, "can't close", "stopped".
     pub notify: Arc<dyn Fn(&str) + Send + Sync>,
     /// The absolute time a client has to send one whole request (10 s).
     pub deadline: Duration,
@@ -84,6 +84,9 @@ pub struct Options {
     pub exit: Arc<dyn Fn(i32) + Send + Sync>,
     /// Set from a signal handler: the server then quits as `POST /api/quit` does.
     pub interrupt: Option<&'static AtomicBool>,
+    /// The loader `POST /api/self_update` asks to fetch and start a release (elfldr on
+    /// `127.0.0.1:9021`; tests point it at a fake).
+    pub elfldr: SocketAddr,
 }
 
 impl Options {
@@ -102,38 +105,102 @@ impl Options {
             write_timeout: Duration::from_secs(30),
             exit: Arc::new(|code| std::process::exit(code)),
             interrupt: None,
+            elfldr: SocketAddr::from((Ipv4Addr::LOCALHOST, 9021)),
         }
     }
 }
 
 /// Binds `0.0.0.0:<port>` and serves until quit. A port in use by another copy of this
-/// server is "already running" (`Ok`); by anything else, an error.
+/// server, of any version, is taken over when it is idle ([`take_over`]); a port in use by
+/// anything else is an error.
 pub fn serve(opts: Options) -> io::Result<()> {
     #[cfg(target_env = "ps5")]
     self_copy::start();
-    let result = match TcpListener::bind((Ipv4Addr::UNSPECIFIED, opts.port)) {
+    let result = match bind(opts.port) {
         Ok(listener) => serve_on(listener, opts),
-        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
-            let url = console_url(
-                SocketAddr::from((Ipv4Addr::UNSPECIFIED, opts.port)),
-                opts.platform,
-            );
-            if is_forge(opts.port) {
-                (opts.notify)(&notice::already_running(notice::console_lang(), &url));
-                Ok(())
-            } else {
+        Err(e) if e.kind() == io::ErrorKind::AddrInUse => match running_forge(opts.port) {
+            Some(peer) => take_over(opts, &peer),
+            None => {
                 let line = notice::port_in_use(notice::console_lang(), opts.port);
                 (opts.notify)(&line);
                 Err(io::Error::new(io::ErrorKind::AddrInUse, line))
             }
-        }
+        },
         Err(e) => Err(e),
     };
-    // Not serving (another copy already is, or the bind failed): the self copy still finishes
+    // Not serving (another copy is busy, or the bind failed): the self copy still finishes
     // before the process exits, so a newer payload loaded over an older one saves itself.
     #[cfg(target_env = "ps5")]
     self_copy::wait();
     result
+}
+
+fn bind(port: u16) -> io::Result<TcpListener> {
+    TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
+}
+
+/// Another copy (any version) holds the port: asks it to quit if idle (no job queued or running, no trace
+/// download), then binds once its port is free (every 200 ms, up to 30 s) and serves. A busy
+/// one keeps serving; the notice says how to update.
+fn take_over(opts: Options, peer: &Peer) -> io::Result<()> {
+    // A start that can't serve (no usable root) must not stop the one that does.
+    api::usable_roots(&opts)?;
+    let (lang, new, port) = (notice::console_lang(), env!("CARGO_PKG_VERSION"), opts.port);
+    let old = peer.version.as_str();
+    let failed = |opts: &Options| {
+        let line = notice::not_taken_over(lang, old, new);
+        (opts.notify)(&line);
+        Err(io::Error::new(io::ErrorKind::TimedOut, line))
+    };
+    // A copy without `handover` (v0.1.1 and older) ignores `if_idle` and cancels its jobs on
+    // quit: asked only when its job list shows none unfinished.
+    // ponytail: a job admitted between the two requests isn't listed yet and gets cancelled,
+    // and a trace download it is streaming is cut; both need someone acting in that instant.
+    let body = match peer.handover {
+        true => r#"{"if_idle":true}"#,
+        false if idle_by_jobs(port) => "{}",
+        false => {
+            (opts.notify)(notice::update_busy(lang));
+            return Ok(());
+        }
+    };
+    let request = format!(
+        "POST /api/quit HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    match local(port, &request, 64 * 1024)
+        .ok()
+        .and_then(|r| status_of(&r))
+    {
+        Some(200) => {}
+        Some(409) => {
+            (opts.notify)(notice::update_busy(lang));
+            return Ok(());
+        }
+        _ => return failed(&opts),
+    }
+    let start = Instant::now();
+    let listener = loop {
+        match bind(port) {
+            Ok(listener) => break listener,
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+                if start.elapsed() >= Duration::from_secs(30) {
+                    return failed(&opts);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    // The older copy finished its own save before it exited; saving again after this one's
+    // startup save makes the newest version's the last, whatever order the two ran in.
+    #[cfg(target_env = "ps5")]
+    {
+        self_copy::wait();
+        self_copy::start();
+    }
+    serve_on(listener, opts)
 }
 
 /// The `self_copy` field of `GET /api/session`.
@@ -234,41 +301,134 @@ fn console_url(local: SocketAddr, platform: Platform) -> String {
     format!("http://{host}:{}", local.port())
 }
 
-/// Whether `127.0.0.1:<port>` answers `GET /api/session` as this app, within 3 s overall
-/// (a peer that trickles bytes can't stall startup) and 64 KiB.
-fn is_forge(port: u16) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let left = || {
-        let left = deadline.saturating_duration_since(Instant::now());
-        (!left.is_zero())
-            .then_some(left)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
-    };
-    let ask = || -> io::Result<Vec<u8>> {
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-        let mut stream = TcpStream::connect_timeout(&addr, left()?)?;
-        stream.set_write_timeout(Some(left()?))?;
-        write!(
-            stream,
-            "GET /api/session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-        )?;
-        let (mut reply, mut buf) = (Vec::new(), [0u8; 4096]);
-        while reply.len() < 64 * 1024 {
-            stream.set_read_timeout(Some(left()?))?;
-            match stream.read(&mut buf)? {
-                0 => break,
-                n => reply.extend_from_slice(&buf[..n]),
-            }
-        }
-        Ok(reply)
-    };
-    let Ok(reply) = ask() else {
+/// The copy of this app answering `GET /api/session` on `127.0.0.1:<port>`.
+struct Peer {
+    version: String,
+    /// It takes `quit {"if_idle": true}` (session `handover`; v0.1.1 and older lack it, ignore
+    /// the body and cancel their jobs).
+    handover: bool,
+}
+
+/// Whether `127.0.0.1:<port>` answers `GET /api/session` as this app, and as which version.
+fn running_forge(port: u16) -> Option<Peer> {
+    let request =
+        format!("GET /api/session HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let reply = local(port, &request, 64 * 1024).ok()?;
+    let v: serde_json::Value = String::from_utf8_lossy(&reply)
+        .split_once("\r\n\r\n")
+        .and_then(|(_, body)| serde_json::from_str(body).ok())?;
+    (v["app"] == "ps5-dump-forge").then(|| Peer {
+        version: v["version"].as_str().unwrap_or_default().to_string(),
+        handover: v["handover"] == true,
+    })
+}
+
+/// Whether `GET /api/jobs` on `127.0.0.1:<port>` lists only finished jobs (each has `done`).
+fn idle_by_jobs(port: u16) -> bool {
+    let request =
+        format!("GET /api/jobs HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    // Up to 32 finished jobs with 200 log lines each: well past 64 KiB.
+    let Ok(reply) = local(port, &request, 16 << 20) else {
         return false;
     };
     String::from_utf8_lossy(&reply)
         .split_once("\r\n\r\n")
         .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
-        .is_some_and(|v| v["app"] == "ps5-dump-forge")
+        .and_then(|v| {
+            v["jobs"]
+                .as_array()
+                .map(|jobs| jobs.iter().all(|j| !j["done"].is_null()))
+        })
+        .unwrap_or(false)
+}
+
+/// One request to `127.0.0.1:<port>` and its reply (at most `max` bytes), within 3 s overall.
+fn local(port: u16, request: &str, max: usize) -> io::Result<Vec<u8>> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let stream = TcpStream::connect_timeout(&addr, left(deadline)?)?;
+    ask(stream, request, deadline, max)
+}
+
+/// The time to `deadline`; an error once it has passed.
+fn left(deadline: Instant) -> io::Result<Duration> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    (!left.is_zero())
+        .then_some(left)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
+}
+
+/// Sends `request` and reads the reply until the peer closes, at most `max` bytes, all by
+/// `deadline` (a peer that trickles bytes can't stall the caller).
+pub(crate) fn ask(
+    mut stream: TcpStream,
+    request: &str,
+    deadline: Instant,
+    max: usize,
+) -> io::Result<Vec<u8>> {
+    stream.set_write_timeout(Some(left(deadline)?))?;
+    stream.write_all(request.as_bytes())?;
+    let (mut reply, mut buf) = (Vec::new(), [0u8; 4096]);
+    while reply.len() < max {
+        stream.set_read_timeout(Some(left(deadline)?))?;
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => reply.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(reply)
+}
+
+/// The status code of a raw HTTP/1.x reply.
+pub(crate) fn status_of(reply: &[u8]) -> Option<u16> {
+    let line = reply.split(|&b| b == b'\r').next()?;
+    let mut parts = std::str::from_utf8(line).ok()?.split(' ');
+    parts.next()?.starts_with("HTTP/1.").then_some(())?;
+    parts.next()?.parse().ok()
+}
+
+/// `a` against `b`: `x.y.z` numerically, then a release above its pre-releases
+/// (`0.0.1` > `0.0.1-pre3`), and pre-releases by their digit runs as numbers (`pre10` > `pre3`).
+pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    /// A run of digits `(false, n, "")` or of anything else `(true, 0, text)`: numbers sort
+    /// below text.
+    type Run<'a> = (bool, u64, &'a str);
+    fn runs(s: &str) -> Vec<Run<'_>> {
+        let mut out = Vec::new();
+        let mut rest = s;
+        while let Some(c) = rest.chars().next() {
+            let digit = c.is_ascii_digit();
+            let end = rest
+                .find(|c: char| c.is_ascii_digit() != digit)
+                .unwrap_or(rest.len());
+            let (run, tail) = rest.split_at(end);
+            out.push(match digit {
+                true => (false, run.parse().unwrap_or(u64::MAX), ""),
+                false => (true, 0, run),
+            });
+            rest = tail;
+        }
+        out
+    }
+    fn split(v: &str) -> (Vec<u64>, Option<Vec<Run<'_>>>) {
+        let (core, pre) = match v.split_once('-') {
+            Some((core, pre)) => (core, Some(runs(pre))),
+            None => (v, None),
+        };
+        (
+            core.split('.').map(|n| n.parse().unwrap_or(0)).collect(),
+            pre,
+        )
+    }
+    let ((a_core, a_pre), (b_core, b_pre)) = (split(a), split(b));
+    a_core.cmp(&b_core).then(match (a_pre, b_pre) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (Some(a), Some(b)) => a.cmp(&b),
+    })
 }
 
 /// `n` random bytes as hex; fails closed when the system RNG does.

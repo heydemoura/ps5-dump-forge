@@ -359,6 +359,11 @@ export const api = {
   openRepo: () => invoke<void>("open_repo"),
   /** Cancel every job, wait for cleanup, exit. http build: resolves once the server is gone. */
   quitApp: () => invoke<void>("quit_app"),
+  /** This build's version and release file suffix; null: no updates here (`serve` on a computer). */
+  updateTarget: () => transport.updateTarget(),
+  /** PS5: elfldr loads `version`, the page reloads into it. The app: its download opens in the
+   * browser. */
+  startUpdate: (version: string) => transport.startUpdate(version),
 };
 
 export const events = {

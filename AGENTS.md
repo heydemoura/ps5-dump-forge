@@ -54,7 +54,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `npm run build:http` (Vite mode `http`) builds the web UI into `app/dist-http`: `transport-http.tsx`
   replaces `transport-tauri.tsx`, `Picker.tsx` the native dialogs, `main-http.tsx` runs `launcher.ts`
   (start the payload via elfldr) and `appcache.ts` first.
-  `app/scripts/*.mjs`: plain-node checks (`check-paths`, `check-poller`, `check-launcher`, `smoke`).
+  `app/scripts/*.mjs`: plain-node checks (`check-paths`, `check-poller`, `check-launcher`, `check-update`, `smoke`).
 - `vendor/ps5upload-{fpkg,pkg}`: ps5upload v7.0.22 crates (readers, FPKG builder, verify) plus a
   local patch series in `vendor/patches/`; see `vendor/README.md`. Edition 2021 on purpose.
   `vendor/lzma-rust2`: crates.io 0.22.0 + patch 0021 (bounded multithreaded LZMA2 decode, which
@@ -280,8 +280,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `LANGUAGES`: `<html dir="rtl">`; styles.css uses logical properties plus a few `[dir="rtl"]` overrides,
   paths stay LTR) with Latin digits (`numbers`), and its Latin file names and paths are wrapped in
   LRI…PDI (U+2066/U+2069) so the bidi algorithm can't reorder them. Durations are whole messages per
-  language (`duration`). The server's PS5 notifications (started, already running, port in use,
-  stopped; `crates/ps5-dump-forge-server/src/notice.rs`) follow the console's language
+  language (`duration`). The server's PS5 notifications (started, port in use, stopped, can't
+  close (jobs running), not taken over; `crates/ps5-dump-forge-server/src/notice.rs`) follow the console's language
   (`sceSystemServiceParamGetInt` LANG, mapped to the UI's languages, else English); English elsewhere.
 - No settings and no config file: the UI keeps choices in memory until it closes, except the UI
   language, which `localStorage` keeps (`forge.lang`; by user decision; unreadable storage falls back to
@@ -305,7 +305,26 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
 - Verification: fast by default everywhere (every structural check + seeded BLAKE3 sample of 8 MiB
   slices), full is opt-in (`full_verify`, `--full-verify`, the "Full verification" switch). A fast `.pkg`
   also samples the builder's own block sweep and `playgo-chunk.crc` check (vendor patch 0012, the job's seed).
-- PS5 payload: one plain `.elf`, no PKG, no signing, no updates (replace the file). FreeBSD 11 ABI via
+- Updates (by user decision): every start checks GitHub, always on, no setting, nothing stored (`localStorage`
+  keeps only `forge.lang`); **Later** hides the toast for the session. `app/src/update.ts` (no runtime imports;
+  `scripts/check-update.mjs`): `GET api.github.com/repos/quer3q/ps5-dump-forge/releases/latest` (10 s, no
+  cookies, any error = no toast), `tag_name` `vX.Y.Z` newer than the running version (a prerelease is older than
+  its release) and the release lists this build's exact asset (`ps5-dump-forge-<v>-<asset>`, `state`
+  `uploaded`, `size` > 0). The toast shows only after a successful check that found an installable update; any
+  failure (offline, DNS, HTTP, JSON, timeout) is silent: no toast, no error, no offline state. `UpdateToast.tsx`
+  (bottom-right, `role="status"`, once per start). Transport `updateTarget()` (`{version, asset}`, null = no
+  updates) and `startUpdate(v)`. Desktop: Tauri `update_target` (asset by OS/arch, `-webview2` when a `WebView2`
+  folder sits beside the exe) and `open_update {version}` (plain `X.Y.Z`; opens the release archive's URL in the
+  browser via `open_url`, no self-replace; CSP `connect-src` has `https://api.github.com`). PS5 (`ps5.elf`, only
+  while `GET /api/elfldr` says `{"up": true}`: a 1 s connect to elfldr, closed at once): `POST
+  /api/self_update {version}` asks elfldr (`Options.elfldr`, `127.0.0.1:9021`) for `GET /?uri=<release
+  .elf?args=serve&pipe=0>`; the page then polls `GET /api/session` for a new `instance` (1 s; 1 min in all from the request, download included) and
+  reloads through AppCache; the old server never stops itself. Any newly loaded copy, of any version (by user
+  decision: older and the same too), that finds Forge on the port closes it when idle and takes over
+  (handover: `quit {"if_idle": true}` for one with session `handover: true`; for v0.1.1 and older, a `GET
+  /api/jobs` with every job `done` first, then a plain `quit`; a running job always refuses: "Can't close
+  Dump Forge - some jobs are still running."; details in `ps5/README.md`). `serve` on a computer (`host`): no update check.
+- PS5 payload: one plain `.elf`, no PKG, no signing (updates: above, or replace the file). FreeBSD 11 ABI via
   `--cfg libc_unstable_freebsd_version="11"` (the env var is ignored by libc ≥ 0.2.187) and struct-size
   asserts in the CLI. `panic=abort`.
 - The server has **no protections** by user decision: no pairing, token, Host/Origin/CSRF checks or path

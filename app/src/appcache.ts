@@ -9,7 +9,7 @@ interface AppCache {
   readonly status: number;
   update(): void;
   swapCache(): void;
-  addEventListener(type: "updateready", f: () => void): void;
+  addEventListener(type: "updateready" | "noupdate" | "error" | "obsolete", f: () => void): void;
 }
 
 const UPDATEREADY = 4;
@@ -60,6 +60,27 @@ export function watchUpdates(): void {
 /** When a reload may happen now (the launcher and the app each say). */
 export function setCanReload(f: () => boolean): void {
   canReload = f;
+}
+
+/** After a self update: fetch the new version's manifest and reload with it (`updateready`),
+ *  or reload as is when there is nothing to fetch (no cache, not cached, no update, an error)
+ *  or nothing came within a minute; either way only when a reload may happen. */
+export function reloadForUpdate(): void {
+  const reload = () => {
+    ready = true;
+    tryReload();
+  };
+  const c = cache();
+  try {
+    if (!c || c.status < 1 || c.status > UPDATEREADY) throw new Error("not cached");
+    c.addEventListener("noupdate", reload);
+    c.addEventListener("error", reload);
+    c.addEventListener("obsolete", reload);
+    setTimeout(reload, 60_000);
+    c.update();
+  } catch {
+    reload();
+  }
 }
 
 /** After a healthy session: fetch the payload's manifest now. */

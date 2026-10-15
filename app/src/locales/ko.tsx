@@ -655,6 +655,19 @@ const ko: Messages = {
   },
   // transport-tauri.tsx: the native save dialog
   tauri: { saveProfile: "프로필로 저장", profileFilter: "LZ4 프로필(TOML)" },
+  // UpdateToast.tsx
+  update: {
+    available: (v) => `v${v} 업데이트가 있습니다`,
+    update: "업데이트",
+    later: "나중에",
+    updating: "업데이트 중…",
+    updatingNote: "새 버전을 다운로드하는 중입니다. 앱이 자동으로 다시 시작됩니다.",
+    downloading: "브라우저에서 다운로드 중입니다. 압축을 풀고 이 사본을 교체하세요.",
+    failed: (v) => `v${v}(으)로 업데이트하지 못했습니다`,
+    timeout: (v) => `v${v}이(가) 1분 안에 시작되지 않았습니다. 다운로드되었다면 Dump Forge를 중지한 뒤 다시 열어 업데이트를 마치세요.`,
+    retry: "다시 시도",
+    close: "닫기",
+  },
   // api.ts: prettyDuration's units
   duration: { s: (s) => `${s}초`, ms: (m, s) => `${m}분 ${s}초`, hm: (h, m) => `${h}시간 ${m}분` },
 };

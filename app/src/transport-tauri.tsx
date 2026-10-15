@@ -41,4 +41,6 @@ export const transport: Transport = {
     });
     return dest ? invoke("lz4_save_plan_profile", { request, dest }) : null;
   },
+  updateTarget: () => invoke("update_target"),
+  startUpdate: (version) => invoke("open_update", { version }),
 };

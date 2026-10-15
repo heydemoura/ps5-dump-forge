@@ -677,6 +677,19 @@ const es: Messages = {
     generatePattern: "[nombre del juego]-[ID del título]",
   },
   tauri: { saveProfile: "Guardar como perfil", profileFilter: "Perfil LZ4 (TOML)" },
+  // UpdateToast.tsx
+  update: {
+    available: (v) => `v${v} está disponible`,
+    update: "Actualizar",
+    later: "Más tarde",
+    updating: "Actualizando…",
+    updatingNote: "La nueva versión se está descargando, la app se reiniciará sola.",
+    downloading: "Descargando en tu navegador: descomprime el archivo y reemplaza esta copia con su contenido.",
+    failed: (v) => `No se pudo actualizar a la v${v}`,
+    timeout: (v) => `La v${v} no se inició en un minuto. Si se descargó, detén Dump Forge y vuelve a abrirlo para terminar la actualización.`,
+    retry: "Reintentar",
+    close: "Cerrar",
+  },
   duration: { s: (s) => `${s} s`, ms: (m, s) => `${m} min ${s} s`, hm: (h, m) => `${h} h ${m} min` },
 };
 

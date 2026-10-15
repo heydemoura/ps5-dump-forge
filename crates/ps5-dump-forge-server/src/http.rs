@@ -130,6 +130,7 @@ impl Response {
             409 => "Conflict",
             413 => "Content Too Large",
             429 => "Too Many Requests",
+            502 => "Bad Gateway",
             503 => "Service Unavailable",
             _ => "Internal Server Error",
         };

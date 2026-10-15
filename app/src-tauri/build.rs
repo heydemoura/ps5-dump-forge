@@ -17,6 +17,8 @@ const COMMANDS: &[&str] = &[
     "delete_path",
     "reveal",
     "open_repo",
+    "update_target",
+    "open_update",
     "quit_app",
 ];
 

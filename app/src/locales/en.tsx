@@ -645,6 +645,19 @@ const en = {
   },
   // transport-tauri.tsx: the native save dialog
   tauri: { saveProfile: "Save as profile", profileFilter: "LZ4 profile (TOML)" },
+  // UpdateToast.tsx: a newer release (checked at every start)
+  update: {
+    available: (v: string) => `v${v} is available`,
+    update: "Update",
+    later: "Later",
+    updating: "Updating…",
+    updatingNote: "New version is downloading, the app will restart itself.",
+    downloading: "Downloading in your browser: unpack the archive and replace this copy.",
+    failed: (v: string) => `Couldn't update to v${v}`,
+    timeout: (v: string) => `v${v} didn't start within a minute. If it was downloaded, stop Dump Forge and open it again to finish the update.`,
+    retry: "Retry",
+    close: "Close",
+  },
   // api.ts: prettyDuration, whole per language (CJK writes 5分30秒, no spaces)
   duration: { s: (s: number) => `${s} s`, ms: (m: number, s: number) => `${m} min ${s} s`, hm: (h: number, m: number) => `${h} h ${m} min` },
 };

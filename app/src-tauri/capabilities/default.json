@@ -22,6 +22,8 @@
     "allow-delete-path",
     "allow-reveal",
     "allow-open-repo",
+    "allow-update-target",
+    "allow-open-update",
     "allow-quit-app"
   ]
 }

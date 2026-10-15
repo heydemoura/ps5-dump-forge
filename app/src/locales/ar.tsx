@@ -733,6 +733,19 @@ const ar: Messages = {
     generatePattern: "[اسم اللعبة]-[معرّف اللعبة]",
   },
   tauri: { saveProfile: "حفظ كملف تعريف", profileFilter: "ملف تعريف ⁦LZ4 (TOML)⁩" },
+  // UpdateToast.tsx
+  update: {
+    available: (v) => `يتوفر ${iso(`v${v}`)}`,
+    update: "تحديث",
+    later: "لاحقًا",
+    updating: "جارٍ التحديث…",
+    updatingNote: "يجري تنزيل الإصدار الجديد، وسيُعاد تشغيل التطبيق تلقائيًا.",
+    downloading: "يجري التنزيل في متصفحك: فُكّ ضغط الأرشيف واستبدل به هذه النسخة.",
+    failed: (v) => `تعذّر التحديث إلى ${iso(`v${v}`)}`,
+    timeout: (v) => `لم يبدأ الإصدار ${iso(`v${v}`)} خلال دقيقة. إذا اكتمل تنزيله، فأوقف Dump Forge وافتحه من جديد لإكمال التحديث.`,
+    retry: "إعادة المحاولة",
+    close: "إغلاق",
+  },
   duration: { s: (s) => `${s} ث`, ms: (m, s) => `${m} د ${s} ث`, hm: (h, m) => `${h} س ${m} د` },
 };
 

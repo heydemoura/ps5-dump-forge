@@ -16,6 +16,7 @@ import { Icon } from "./icons";
 import { Inspect } from "./Inspect";
 import { Library } from "./Library";
 import { Lz4 } from "./Lz4";
+import { UpdateToast } from "./UpdateToast";
 import { jobsReducer, type Job } from "./jobs";
 
 // Tabs: [Convert Inspect] | LZ4 | Library | About (ids unchanged; the dividers are drawn only).
@@ -238,6 +239,8 @@ export function App() {
             <Formats />
           </div>
         </main>
+        {/* A newer release (checked once per start); inert with the screens under the quit prompt. */}
+        <UpdateToast />
       </div>
 
       {closing && (

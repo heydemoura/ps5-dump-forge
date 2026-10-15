@@ -671,6 +671,19 @@ const ja: Messages = {
     generatePattern: "[ゲーム名]-[タイトル ID]",
   },
   tauri: { saveProfile: "プロファイルとして保存", profileFilter: "LZ4 プロファイル（TOML）" },
+  // UpdateToast.tsx
+  update: {
+    available: (v) => `v${v} が利用可能です`,
+    update: "アップデート",
+    later: "後で",
+    updating: "アップデート中…",
+    updatingNote: "新しいバージョンをダウンロードしています。アプリは自動で再起動します。",
+    downloading: "ブラウザーでダウンロードしています。アーカイブを展開して、このコピーと置き換えてください。",
+    failed: (v) => `v${v} にアップデートできませんでした`,
+    timeout: (v) => `v${v} が 1 分以内に起動しませんでした。ダウンロード済みの場合は、Dump Forge を停止してから開き直すと更新が完了します。`,
+    retry: "再試行",
+    close: "閉じる",
+  },
   duration: { s: (s) => `${s}秒`, ms: (m, s) => `${m}分${s}秒`, hm: (h, m) => `${h}時間${m}分` },
 };
 

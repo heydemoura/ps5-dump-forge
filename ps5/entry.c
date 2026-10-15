@@ -61,7 +61,7 @@ static long dead_log(const char *name) {
 
 // Logs of earlier runs: those whose process is gone are deleted, except the newest (the run
 // before this one, for a crash's last lines). A running Forge's log is kept (a second launch
-// only answers "already running"). Best effort: a log that can't go stays.
+// may find it busy and leave it running). Best effort: a log that can't go stays.
 static void prune_logs(void) {
     DIR *dir = opendir(FORGE_DIR);
     if (!dir) return;

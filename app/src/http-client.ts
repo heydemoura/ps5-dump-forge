@@ -5,6 +5,7 @@
 
 import type { DoneEvent, JobsRestore, LogEvent, ProgressEvent, SnapshotJob, StagesEvent } from "./api";
 import type { EventName, Unlisten } from "./transport";
+import type { UpdateTimeout } from "./update";
 
 export interface Status {
   /** The last request failed at the network level; polling goes on with backoff. */
@@ -118,6 +119,7 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
 
 let address: string | null = null;
 let platform: "host" | "ps5" | null = null;
+let version: string | null = null;
 
 /** The server's `host:port` from its session's `url` (the console's own address, never the
  * viewer's `location`), once `serverSession` read it; null before, or when it has none. */
@@ -138,6 +140,8 @@ export async function serverSession(): Promise<{ separator: string | null; addre
     // Only the server's own word counts (never the browser's OS or URL); a valid one is kept.
     const plat = (s as { platform?: unknown } | null)?.platform;
     if (plat === "host" || plat === "ps5") platform = plat;
+    const ver = (s as { version?: unknown } | null)?.version;
+    if (typeof ver === "string") version = ver;
     return { separator: sep === "/" || sep === "\\" ? sep : null, address };
   } catch {
     return { separator: null, address: null };
@@ -150,6 +154,61 @@ export async function serverPlatform(): Promise<"host" | "ps5"> {
   if (platform === null) await serverSession();
   if (platform === null) throw text("noPlatform");
   return platform;
+}
+
+/** The update the page may offer: the PS5's payload (`ps5.elf`) at the session's version; null
+ * for `serve` on a computer or a session without a version. Rejects as `serverPlatform`. */
+export async function serverUpdateTarget(): Promise<{ version: string; asset: string } | null> {
+  const p = await serverPlatform();
+  if (p !== "ps5" || !version) return null;
+  // Installable only through elfldr: no toast while it doesn't answer (or the server predates
+  // the route). Never marks the page offline.
+  try {
+    const res = await request("GET", "/api/elfldr", undefined, 3000);
+    return res.status === 200 && (res.data as { up?: unknown } | null)?.up === true
+      ? { version, asset: "ps5.elf" }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** How long `selfUpdate` waits in all, from the request: download, start and takeover. */
+export const UPDATE_WAIT_MS = 60000;
+const UPDATE_TIMEOUT: UpdateTimeout = "update-timeout";
+
+/** The session's `instance`, or null when it doesn't answer with one. */
+async function sessionInstance(ms: number): Promise<string | null> {
+  try {
+    const res = await request("GET", "/api/session", undefined, ms);
+    const i = (res.data as { instance?: unknown } | null)?.instance;
+    return res.status === 200 && typeof i === "string" ? i : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `POST /api/self_update`: elfldr downloads and starts `v`, which takes over from this server.
+ * Resolves once a new `instance` answers the session; rejects with the server's error, or
+ * `UPDATE_TIMEOUT` once `UPDATE_WAIT_MS` has passed since the request. A network error during
+ * the call or the wait is expected (the old server exits): it waits on. */
+export async function selfUpdate(v: string): Promise<void> {
+  const end = Date.now() + UPDATE_WAIT_MS;
+  const left = () => end - Date.now();
+  const before = await sessionInstance(5000);
+  if (before === null) throw text("unreachable");
+  // Never ask once the minute is over: the update could start after the toast gave up.
+  if (left() <= 0) throw UPDATE_TIMEOUT;
+  // The server holds the reply while elfldr downloads (55 s at most there).
+  const res = await request("POST", "/api/self_update", { version: v }, Math.max(left(), 1)).catch(() => null);
+  if (res && res.status !== 200) throw errorOf(res.data, res.status);
+  for (;;) {
+    if (left() <= 0) throw UPDATE_TIMEOUT;
+    const now = await sessionInstance(Math.min(3000, left()));
+    if (now !== null && now !== before && left() > 0) return;
+    if (left() <= 0) throw UPDATE_TIMEOUT;
+    await new Promise((r) => setTimeout(r, Math.min(1000, left())));
+  }
 }
 
 let started = false;

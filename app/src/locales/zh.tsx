@@ -619,6 +619,19 @@ const zh: Messages = {
   },
   // transport-tauri.tsx: the native save dialog
   tauri: { saveProfile: "另存为配置文件", profileFilter: "LZ4 配置文件（TOML）" },
+  // UpdateToast.tsx
+  update: {
+    available: (v) => `v${v} 现已推出`,
+    update: "更新",
+    later: "稍后",
+    updating: "正在更新…",
+    updatingNote: "正在下载新版本，应用将自动重启。",
+    downloading: "正在浏览器中下载：解压压缩包，用它替换当前这份程序。",
+    failed: (v) => `无法更新到 v${v}`,
+    timeout: (v) => `v${v} 未在 1 分钟内启动。如果已下载，请停止 Dump Forge 后重新打开以完成更新。`,
+    retry: "重试",
+    close: "关闭",
+  },
   // api.ts: prettyDuration's units
   duration: { s: (s) => `${s}秒`, ms: (m, s) => `${m}分${s}秒`, hm: (h, m) => `${h}小时${m}分钟` },
 };

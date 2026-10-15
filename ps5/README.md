@@ -85,13 +85,13 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
   threads (then 503), 8 unfinished jobs (then 429), 2 inspections or naming requests at once (429,
   `Retry-After: 1`), 32 finished jobs and 200 log lines each kept, `list_dir` 10,000 entries (`truncated`),
   `stale_parts` 1,000. `compression_threads: null` is `max(1, cores − 1)`.
-- Errors are `{"error": "<text>"}` with 400 / 404 / 409 (stopping, a path a job uses) / 413 / 429 / 500; core errors are the
+- Errors are `{"error": "<text>"}` with 400 / 404 / 409 (stopping, a path a job uses) / 413 / 429 / 500 (`self_update`: 502 / 503); core errors are the
   Tauri commands' `format!("{e:#}")`. API replies are `Cache-Control: no-store`; `index.html` and the
   AppCache manifest `no-cache`; hashed `assets/*` a year, immutable.
 
 | Route | Body | Returns |
 |---|---|---|
-| `GET /api/session` | | `{app: "ps5-dump-forge", version, platform: "ps5"\|"host", instance, stopping, self_copy, separator: "/"\|"\\", url}` (`url`: the page header's host:port) |
+| `GET /api/session` | | `{app: "ps5-dump-forge", version, platform: "ps5"\|"host", instance, stopping, self_copy, separator: "/"\|"\\", url, handover: true}` (`url`: the page header's host:port; `handover`: takes `quit {"if_idle": true}`) |
 | `GET /api/qr` | | `url` as a QR code, `image/svg+xml` (the header's and About's); 404 when the server can't tell its IP |
 | `POST /api/inspect` | `{path}` | `Inspection` |
 | `POST /api/default_output` | `{source, format, dir}` | path |
@@ -109,6 +109,9 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
 | `POST /api/list_dir` | `{path: string\|null}` | `{path, parent, entries: [{name, path, dir, size}], truncated}` |
 | `GET /api/jobs` | | `{instance, jobs: [{id, request, progress, done, log, log_total}]}` |
 | `POST /api/quit` | `{}` | `{}`, then cancels every job, waits for cleanup and exits |
+| `POST /api/quit` | `{"if_idle": true}` | `{}`, then exits as above, only when idle: 409 "Dump Forge is busy: …" while a job is queued or running, a `lz4_traces` download streams or a patch or delete holds admission past 1 s, 409 "Dump Forge is stopping" (the handover's request) |
+| `GET /api/elfldr` | — | `{up}`: elfldr accepts a connection (1 s; connect and close, nothing sent); 404 on a computer |
+| `POST /api/self_update` | `{version}` (`X.Y.Z`, newer than this one) | `{}` once elfldr has answered (downloaded and started it); this server keeps serving until the new copy takes over when idle (below); 404 on a computer, 400 bad or not newer, 409 stopping, a job queued or running, a patch or delete holding admission past 1 s, or another update in flight, 502 elfldr refused or failed, 503 elfldr not listening |
 
 `lz4_traces` (LZ4 → Trace → Download traces): `source` (a folder or any image Forge reads; percent-encoded, else
 400); streams `ampr_commands.bin` and `ampr_emu.index` from the source's root (core's `lz4_traces`: a
@@ -138,7 +141,8 @@ undo.
 Events keep core's serde shape (`{"Ok": …}` / `{"Err": "cancelled"}`); ids stay below 2^53. A job's table
 entry is made by its first event (core can emit `Done` before `Jobs::start` returns). Quit closes
 admission first (`start_job` → 409); on a computer SIGINT/SIGTERM does the same. A port already taken by
-Forge notifies "already running at <url>" and exits 0; by anything else, exits 1.
+Forge is taken over when that copy is idle, else "Can't close Dump Forge - some jobs are still running."
+and exit 0 (see [Updates](#updates)); by anything else, exits 1.
 
 - The URL (session `url`, the page header, the host's start notice, the PS5 serve log) uses the address of
   a UDP `connect` toward the internet (no packet sent). On the PS5 the start notification only says
@@ -166,7 +170,9 @@ Forge notifies "already running at <url>" and exits 0; by anything else, exits 1
   SHA-256 of stage 1, then stage 1 zlib-compressed (6.3 MB ELF holding 1.7 MB for a 4.5 MB copy). On start a
   thread unpacks it (bounded, hash, ELF magic and version marker checked) into
   `/data/dumpforge/ps5-dump-forge.elf`: written when missing, older, the same version with other bytes,
-  or unmarked; kept when identical or newer. Temp file `O_EXCL|O_NOFOLLOW`, fsync, rename, folder fsync. A
+  or unmarked; kept when identical or newer. One save at a time across processes (`flock` on
+  `.ps5-dump-forge.elf.lock` beside it), so two copies starting together keep the newest. Temp file
+  `O_EXCL|O_NOFOLLOW`, fsync, rename, folder fsync. A
   copy that loses the port race, and quit, finish the save first. `GET /api/session` `self_copy`:
   `saving`, `saved`, `up to date`, `kept newer <v>`, `failed: <why>`, or `none` (stage 1, debug, computers).
 - Launch on open (`launcher.ts`, `appcache.ts`): the page is kept by AppCache (`forge.appcache`, a hash over
@@ -176,6 +182,43 @@ Forge notifies "already running at <url>" and exits 0; by anything else, exits 1
   `/data/ps5-dump-forge/ps5-dump-forge.elf`, the link or a folder a failed migration left, then the USB
   copies) and
   waits up to 30 s. A newer payload's manifest swaps the page in and reloads once, never mid-dialog.
+
+## Updates
+
+- The page checks GitHub at every start (always on, no setting, nothing stored; `app/src/update.ts`): the
+  latest release's `tag_name` `vX.Y.Z` newer than session `version`, an asset named
+  `ps5-dump-forge-<v>-ps5.elf` (uploaded, not empty) and elfldr answering (`GET /api/elfldr`), else no
+  toast; any failure on the way (offline, DNS, timeout, an older server without the route) is silent. `serve` on a computer (`platform: "host"`) never offers one.
+  **Update** posts `self_update`, then polls `GET /api/session` every 1 s until `instance`
+  changes (network errors meanwhile are expected: the old server exits on the handover), then lets AppCache
+  swap in the new page. One minute in all from the request, download included; then the toast says to stop
+  Dump Forge and open it again (a downloaded version that couldn't take over, such as v0.1.1 without
+  handover, has saved itself: the tile starts it).
+- `self_update` (`elfldr_load` in `api.rs`): admission checked like `lz4_patch` and released before
+  elfldr is asked (the new copy's `if_idle` needs it), one at a time (an `AtomicBool`). It never stops this
+  server itself. Connects to `Options.elfldr` (`127.0.0.1:9021`) within 3 s and sends exactly
+  `GET /?uri=<percent-encoded U> HTTP/1.1`, `Host`, `Connection: close`, with U =
+  `https://github.com/quer3q/ps5-dump-forge/releases/download/v<v>/ps5-dump-forge-<v>-ps5.elf?args=serve&pipe=0`
+  (elfldr reads `args`/`pipe` from U's own query). Reads the reply (64 KiB, 55 s: the download happens
+  inside it): no `200` → 502 "elfldr refused the request"; a body line with `Error` (elfldr's `Error
+  reading HTTP payload` / `Error spawning payload`) → 502 "elfldr couldn't download or start v<v>: <line>".
+- Handover: a newly loaded copy of any version (elfldr's `?uri=`, `nc`, an autoloader; an older or the same
+  version too) that finds the port held by Forge closes it when idle and takes its place. It reads the
+  running copy's session; one with `handover` gets `quit {"if_idle": true}`; one without (v0.1.1 and
+  older: they ignore the body and cancel their jobs on quit) first gets `GET /api/jobs` and a plain `quit {}`
+  only when every listed job has `done` (`ponytail:` in `lib.rs`: a job admitted between the two requests
+  isn't listed yet and is cancelled; a trace download it streams is cut). 3 s client, shared with the
+  session probe. A start that couldn't serve (no usable `--root` on a computer) fails before asking. On
+  200 it retries `bind` every 200 ms up to 30 s, then (PS5) waits for its self copy and
+  saves it again, and serves (the self copy still keeps the newest version: an older ELF runs, but the
+  tile starts the newer saved one next time). Busy (a 409, or an unfinished job listed) notifies "Can't
+  close Dump Forge - some jobs are still running." and exits 0; no answer or a port still taken after 30 s
+  notifies "Dump Forge v<new> could not take over from v<old>" and fails. Both notices are in the
+  console's language (`notice.rs`).
+- Open risks (unverified on hardware; `ponytail:` in `api.rs`): elfldr's sceHttp has to follow GitHub's
+  302 to its asset host and GitHub to ignore the extra query; elfldr ignores certificate errors and nothing
+  checks a signature (whoever can intercept the console's traffic can serve an ELF); it reads the body once
+  without checking its length, so a short read could start a cut ELF.
 
 ## Writing safely on the PS5
 

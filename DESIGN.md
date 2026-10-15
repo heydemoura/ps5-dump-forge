@@ -118,6 +118,8 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   | Help | `.help-btn` | The danger colours on a harmless button: How LZ4 works (experimental, read first). |
   | Neon | `.neon-btn` | Save as profile: the packed tile's static green straps, its label wraps; disabled drops the straps. |
   | Link | `.link` | Quiet text action (Compare formats). |
+- **Update toast** (`.update-toast`, bottom corner, mirrored in RTL): the Done green (`.tag.green`), a 14% tint
+  over `--card`, a 45% ring, `#6fe3a3` icon and title, its primary button green with dark ink.
 - **Inputs**: pill, `--inset` fill, mono for paths. A generated output name shows whole in `.out-box`,
   its folder on the `.out-dir` line below; a file name is never clipped. A typed name that can't work
   (another image extension, longer than core's name limit, blank, a leading dot, a trailing dot or

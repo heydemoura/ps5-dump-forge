@@ -320,7 +320,59 @@ async fn reveal(app: AppHandle, id: JobId) -> Result<(), String> {
 /// webview can't have anything else opened.
 #[tauri::command]
 async fn open_repo() -> Result<(), String> {
-    const REPO: &str = "https://github.com/quer3q/ps5-dump-forge";
+    open_url("https://github.com/quer3q/ps5-dump-forge")
+}
+
+/// The running version and this build's release asset suffix (after `ps5-dump-forge-<v>-`),
+/// for the update check (`app/src/update.ts`).
+#[tauri::command]
+fn update_target() -> HashMap<&'static str, String> {
+    HashMap::from([
+        ("version", env!("CARGO_PKG_VERSION").to_string()),
+        ("asset", release_asset().to_string()),
+    ])
+}
+
+/// The update toast's Update button: release `version`'s archive for this build, downloaded by
+/// the default browser. Only a plain `X.Y.Z` makes it into the URL.
+#[tauri::command]
+async fn open_update(version: String) -> Result<(), String> {
+    let parts: Vec<&str> = version.split('.').collect();
+    let plain = parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    if !plain {
+        return Err(format!("not a release version: {version}"));
+    }
+    open_url(&format!(
+        "https://github.com/quer3q/ps5-dump-forge/releases/download/v{version}/\
+         ps5-dump-forge-{version}-{}",
+        release_asset()
+    ))
+}
+
+/// The release archive this build came from (the release scripts' names).
+fn release_asset() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos-universal.zip"
+    } else if cfg!(all(windows, target_arch = "x86_64")) {
+        #[cfg(windows)]
+        if webview2::bundled().is_some() {
+            return "windows-x86-64-webview2.zip";
+        }
+        "windows-x86-64.zip"
+    } else if cfg!(windows) {
+        "windows-arm64.zip"
+    } else if cfg!(target_arch = "aarch64") {
+        "linux-arm64.tar.gz"
+    } else {
+        "linux-x86-64.tar.gz"
+    }
+}
+
+/// `url` in the default browser.
+fn open_url(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("/usr/bin/open");
     #[cfg(target_os = "windows")]
@@ -331,7 +383,7 @@ async fn open_repo() -> Result<(), String> {
         host_env(&mut c);
         c
     };
-    run(cmd.arg(REPO)).map_err(|e| format!("could not open {REPO}: {e}"))
+    run(cmd.arg(url)).map_err(|e| format!("could not open {url}: {e}"))
 }
 
 // macOS (`open -R`) and Windows (Explorer's `/select,`) select the file; Linux has no portable
@@ -560,7 +612,7 @@ mod webview2 {
 
     /// `WebView2` next to the exe. No fallback to Evergreen once it exists: a broken bundled
     /// runtime is reported, not silently replaced.
-    fn bundled() -> Option<PathBuf> {
+    pub fn bundled() -> Option<PathBuf> {
         let dir = std::env::current_exe().ok()?.parent()?.join("WebView2");
         dir.is_dir().then_some(dir)
     }
@@ -790,6 +842,8 @@ fn main() {
             delete_path,
             reveal,
             open_repo,
+            update_target,
+            open_update,
             quit_app,
         ])
         .build(tauri::generate_context!());

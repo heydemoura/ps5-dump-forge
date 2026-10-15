@@ -15,6 +15,8 @@ use std::path::Path;
 use flate2::read::ZlibDecoder;
 use sha2::{Digest, Sha256};
 
+use crate::compare_versions as compare;
+
 const MAGIC: &[u8; 8] = b"PDFGSELF";
 const HEADER: usize = 8 + 8 + 8 + 32;
 /// More than any payload this will ever be; a bad descriptor can't ask for more memory.
@@ -73,48 +75,6 @@ pub(crate) fn version_of(elf: &[u8]) -> Option<&str> {
     std::str::from_utf8(&rest[..end]).ok()
 }
 
-/// `a` against `b`: `x.y.z` numerically, then a release above its pre-releases
-/// (`0.0.1` > `0.0.1-pre3`), and pre-releases by their digit runs as numbers (`pre10` > `pre3`).
-pub(crate) fn compare(a: &str, b: &str) -> Ordering {
-    /// A run of digits `(false, n, "")` or of anything else `(true, 0, text)`: numbers sort
-    /// below text.
-    type Run<'a> = (bool, u64, &'a str);
-    fn runs(s: &str) -> Vec<Run<'_>> {
-        let mut out = Vec::new();
-        let mut rest = s;
-        while let Some(c) = rest.chars().next() {
-            let digit = c.is_ascii_digit();
-            let end = rest
-                .find(|c: char| c.is_ascii_digit() != digit)
-                .unwrap_or(rest.len());
-            let (run, tail) = rest.split_at(end);
-            out.push(match digit {
-                true => (false, run.parse().unwrap_or(u64::MAX), ""),
-                false => (true, 0, run),
-            });
-            rest = tail;
-        }
-        out
-    }
-    fn split(v: &str) -> (Vec<u64>, Option<Vec<Run<'_>>>) {
-        let (core, pre) = match v.split_once('-') {
-            Some((core, pre)) => (core, Some(runs(pre))),
-            None => (v, None),
-        };
-        (
-            core.split('.').map(|n| n.parse().unwrap_or(0)).collect(),
-            pre,
-        )
-    }
-    let ((a_core, a_pre), (b_core, b_pre)) = (split(a), split(b));
-    a_core.cmp(&b_core).then(match (a_pre, b_pre) {
-        (None, None) => Ordering::Equal,
-        (None, Some(_)) => Ordering::Greater,
-        (Some(_), None) => Ordering::Less,
-        (Some(a), Some(b)) => a.cmp(&b),
-    })
-}
-
 #[derive(Debug, PartialEq)]
 pub(crate) enum Outcome {
     Saved,
@@ -130,6 +90,18 @@ pub(crate) enum Outcome {
 // ponytail: reads whatever file is at `target` (up to MAX_ELF) to find its version; another
 // program swapping files there in between is out of scope (no protections, by decision).
 pub(crate) fn ensure(target: &Path, elf: &[u8], version: &str) -> io::Result<Outcome> {
+    let dir = target.parent().unwrap_or(Path::new("."));
+    let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("elf");
+    // One save at a time across processes (flock, released on drop): two copies starting
+    // together (a takeover can be by an older version) would each read, compare and rename,
+    // and the older one's could land last.
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join(format!(".{name}.lock")))?;
+    lock.lock()?;
     match fs::symlink_metadata(target) {
         Err(e) if e.kind() == ErrorKind::NotFound => {}
         Err(e) => return Err(e),
@@ -152,8 +124,6 @@ pub(crate) fn ensure(target: &Path, elf: &[u8], version: &str) -> io::Result<Out
             }
         }
     }
-    let dir = target.parent().unwrap_or(Path::new("."));
-    let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("elf");
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     // Only a dead process with our pid can have left this one.
     let _ = fs::remove_file(&tmp);
@@ -337,7 +307,29 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         names.sort();
-        assert_eq!(names, ["other", "ps5-dump-forge.elf"]);
+        assert_eq!(
+            names,
+            [".ps5-dump-forge.elf.lock", "other", "ps5-dump-forge.elf"]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Saves racing each other (an older copy starting beside a newer one) end with the newer.
+    #[test]
+    fn concurrent_saves_keep_the_newest() {
+        let dir = std::env::temp_dir().join(format!("forge-self-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("ps5-dump-forge.elf");
+        let (older, newer) = (elf("0.0.1", b"older"), elf("999.0.0", b"newer"));
+        for _ in 0..20 {
+            let _ = fs::remove_file(&target);
+            std::thread::scope(|s| {
+                s.spawn(|| ensure(&target, &older, "0.0.1").unwrap());
+                s.spawn(|| ensure(&target, &newer, "999.0.0").unwrap());
+            });
+            assert_eq!(fs::read(&target).unwrap(), newer);
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 }

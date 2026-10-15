@@ -806,6 +806,28 @@ pre.code { padding: 14px 16px; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
+/* ---------- Update toast (UpdateToast.tsx) ----------
+   The bottom corner, over the screens and under dialogs (.modal-backdrop is 10). Physical
+   offsets for old WebKit, mirrored for RTL; on a phone, full width within the 12px gutters. */
+.update-toast {
+  position: fixed; right: 24px; bottom: 24px; z-index: 8; width: 360px; max-width: calc(100% - 48px);
+  padding: 16px 18px;
+  /* Green: the semantic "Done" green (.tag.green), a tint over the card and a ring. */
+  background: linear-gradient(rgba(47, 210, 122, 0.14), rgba(47, 210, 122, 0.14)), var(--card);
+  box-shadow: inset 0 0 0 1px rgba(47, 210, 122, 0.45), 0 18px 44px -16px rgba(0, 0, 0, 0.9);
+}
+.update-toast .head-icon:not(.warn), .update-title { color: #6fe3a3; }
+.update-toast button.primary { background: #6fe3a3; color: #0e0e15; }
+.update-toast button.primary:hover:not(:disabled) { background: #8debb8; }
+[dir="rtl"] .update-toast { right: auto; left: 24px; }
+.update-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.update-title { font-size: 14px; font-weight: 600; overflow-wrap: break-word; overflow-wrap: anywhere; min-width: 0; }
+.update-toast p { margin: 8px 0 0; font-size: 12.5px; overflow-wrap: break-word; overflow-wrap: anywhere; }
+.update-toast .row { margin-top: 14px; }
+@media (max-width: 599px) {
+  .update-toast, [dir="rtl"] .update-toast { right: 12px; left: 12px; bottom: 12px; width: auto; max-width: none; }
+}
+
 /* Inspect odds and ends. */
 .fold-note { padding: 6px 12px 0; font-size: 12px; }
 .cid-label { color: var(--fg-2); font-weight: 600; }

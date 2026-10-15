@@ -4,7 +4,17 @@
 
 import { useSyncExternalStore } from "react";
 
-import { call, getStatus, listen, serverAddress, serverPlatform, watchStatus } from "./http-client";
+import { reloadForUpdate } from "./appcache";
+import {
+  call,
+  getStatus,
+  listen,
+  selfUpdate,
+  serverAddress,
+  serverPlatform,
+  serverUpdateTarget,
+  watchStatus,
+} from "./http-client";
 import { setServerSeparator } from "./paths";
 import { pick } from "./Picker";
 import type { Transport } from "./transport";
@@ -35,5 +45,12 @@ export const transport: Transport = {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
     return saved as T;
+  },
+  updateTarget: serverUpdateTarget,
+  // The new version serves a new bundle: AppCache swaps it in and reloads (appcache.ts, when no
+  // dialog is open); otherwise the page just reloads.
+  startUpdate: async (version) => {
+    await selfUpdate(version);
+    reloadForUpdate();
   },
 };

@@ -52,4 +52,11 @@ export interface Transport {
    * dialog, `name` in `dir` offered) and writes it there; the http build downloads it under the
    * server's name. null: the dialog was cancelled. */
   savePlanProfile<T>(request: unknown, name: string, dir: string): Promise<T | null>;
+  /** The running version and its release file's suffix (after `ps5-dump-forge-<v>-`), or null
+   * when this build gets no updates (the http build on a computer). */
+  updateTarget(): Promise<{ version: string; asset: string } | null>;
+  /** Install `version`: the PS5 has elfldr load it, then the page reloads once the new server
+   * answers (rejects with the server's error or update.ts's `UPDATE_TIMEOUT`); the app opens
+   * the release archive's download in the system browser. */
+  startUpdate(version: string): Promise<void>;
 }

@@ -8,7 +8,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ps5_dump_forge_core::{
     ArchivePassword, ConvertRequest, DeleteError, Event, Format, JobId, Jobs,
@@ -38,6 +38,8 @@ const SLOT_WAIT: std::time::Duration = if cfg!(test) {
 } else {
     std::time::Duration::from_secs(30)
 };
+/// How long `quit {"if_idle": true}` waits for admission before answering busy.
+const IDLE_WAIT: Duration = Duration::from_secs(1);
 const LIST_MAX: usize = 10_000;
 const STALE_MAX: usize = 1_000;
 
@@ -60,6 +62,10 @@ pub(crate) struct Server {
     inspecting: AtomicUsize,
     /// Reads waiting in [`Server::capped`] for a slot.
     waiting: AtomicUsize,
+    /// Trace downloads being streamed (`quit {"if_idle": true}` waits for none).
+    streaming: Arc<AtomicUsize>,
+    /// A `self_update` is waiting on elfldr.
+    updating: AtomicBool,
     cores: usize,
     /// Tests widen the gap between `Jobs::start` returning and the table admitting the job.
     #[cfg(test)]
@@ -113,6 +119,114 @@ impl Drop for Inspecting<'_> {
     }
 }
 
+/// One trace download being streamed; frees its place once the body is written or dropped.
+struct Streaming(Arc<AtomicUsize>);
+
+impl Streaming {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count.clone())
+    }
+}
+
+impl Drop for Streaming {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Clears its flag when dropped, also when the handler unwinds.
+struct Flag<'a>(&'a AtomicBool);
+
+impl Drop for Flag<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// `X.Y.Z`, each part 1 to 9 digits.
+fn plain_version(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| (1..=9).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Every byte but the unreserved ones as `%XX`.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Asks elfldr at `addr` to download v`version`'s PS5 ELF from its GitHub release and start it
+/// with `serve`: `GET /?uri=<that URL>`, `args` and `pipe` inside the URL's own query (elfldr
+/// reads them from there). elfldr answers 200 at once, then downloads and spawns, writing any
+/// failure into the body; with `pipe=0` it closes once spawned. The new process takes the port
+/// over from this one (`serve`'s handover) once it is idle.
+// ponytail: unverified on hardware: elfldr's sceHttp has to follow GitHub's 302
+// to its asset host and GitHub to ignore the extra query; elfldr ignores certificate errors and
+// nothing checks a signature (anyone who can intercept the console's traffic can serve an ELF);
+// it reads the body once without checking its length, so a short read could start a cut ELF.
+fn elfldr_load(addr: SocketAddr, version: &str) -> Result<(), Response> {
+    let uri = format!(
+        "https://github.com/quer3q/ps5-dump-forge/releases/download/v{version}/\
+         ps5-dump-forge-{version}-ps5.elf?args=serve&pipe=0"
+    );
+    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3)).map_err(|_| {
+        Response::error(
+            503,
+            format!(
+                "elfldr isn't running on port {}: load it, then try again",
+                addr.port()
+            ),
+        )
+    })?;
+    let request = format!(
+        "GET /?uri={} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n",
+        percent_encode(&uri)
+    );
+    let failed = |why: &str| {
+        Response::error(
+            502,
+            format!("elfldr couldn't download or start v{version}: {why}"),
+        )
+    };
+    // The download (~11 MB) happens inside this reply; within the page's minute.
+    let reply = crate::ask(
+        stream,
+        &request,
+        Instant::now() + Duration::from_secs(55),
+        64 * 1024,
+    )
+    .map_err(|e| failed(&e.to_string()))?;
+    if crate::status_of(&reply) != Some(200) {
+        return Err(Response::error(502, "elfldr refused the request"));
+    }
+    let text = String::from_utf8_lossy(&reply);
+    let body = text.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+    match body.lines().find(|l| l.contains("Error")) {
+        Some(line) => Err(failed(line.trim())),
+        None => Ok(()),
+    }
+}
+
+/// The browse roots and the notes about candidates left out; an error on a computer with no
+/// usable `--root` (also checked before a takeover, so a bad start never stops a good server).
+pub(crate) fn usable_roots(opts: &Options) -> std::io::Result<(Roots, Vec<String>)> {
+    let (roots, notes) = Roots::new(opts.platform, &opts.roots);
+    if opts.platform == Platform::Host && roots.current().is_empty() {
+        return Err(std::io::Error::other("no usable --root folder"));
+    }
+    Ok((roots, notes))
+}
+
 /// A JSON object whose optional `root` is a string (else 400).
 fn optional_root(body: &[u8]) -> Result<Option<PathBuf>, Response> {
     match parse::<serde_json::Value>(body)? {
@@ -162,6 +276,11 @@ struct SourceArg {
 }
 
 #[derive(Deserialize)]
+struct VersionArg {
+    version: String,
+}
+
+#[derive(Deserialize)]
 struct IdArg {
     id: JobId,
 }
@@ -179,12 +298,9 @@ struct ListArg {
 
 impl Server {
     pub fn new(opts: Options, local: SocketAddr) -> std::io::Result<Self> {
-        let (roots, notes) = Roots::new(opts.platform, &opts.roots);
+        let (roots, notes) = usable_roots(&opts)?;
         for line in &notes {
             eprintln!("ps5-dump-forge serve: {line}");
-        }
-        if opts.platform == Platform::Host && roots.current().is_empty() {
-            return Err(std::io::Error::other("no usable --root folder"));
         }
         let table = Arc::new(Mutex::new(Table::default()));
         let running = Arc::new(AtomicI64::new(0));
@@ -209,6 +325,8 @@ impl Server {
             stopping: AtomicBool::new(false),
             inspecting: AtomicUsize::new(0),
             waiting: AtomicUsize::new(0),
+            streaming: Arc::new(AtomicUsize::new(0)),
+            updating: AtomicBool::new(false),
             cores,
             opts,
             #[cfg(test)]
@@ -253,6 +371,7 @@ impl Server {
         match (post, api) {
             (false, "session") => Ok(self.session()),
             (false, "qr") => self.qr(),
+            (false, "elfldr") => self.elfldr(),
             (true, "inspect") => self.inspect(body),
             (true, "default_output") => {
                 let arg: OutputArg = parse(body)?;
@@ -329,10 +448,11 @@ impl Server {
                 "instance": self.instance,
                 "jobs": lock(&self.table).snapshot(),
             }))),
-            (true, "quit") => {
-                parse::<serde_json::Value>(body)?;
-                Ok(self.quit())
-            }
+            (true, "quit") => match parse::<serde_json::Value>(body)?["if_idle"] == true {
+                true => self.quit_if_idle(),
+                false => Ok(self.quit()),
+            },
+            (true, "self_update") => self.self_update(body),
             _ => Err(Response::error(404, "unknown route")),
         }
     }
@@ -360,6 +480,8 @@ impl Server {
             "instance": self.instance,
             "stopping": self.stopping.load(Ordering::SeqCst),
             "self_copy": crate::self_copy_status(),
+            // It takes `quit {"if_idle": true}`: a newer copy started later takes over from it.
+            "handover": true,
             // The page joins and splits paths with it ("\\" on a Windows host).
             "separator": std::path::MAIN_SEPARATOR_STR,
             // The page shows it: the console's own page is on 127.0.0.1.
@@ -552,11 +674,21 @@ impl Server {
         };
         let source = PathBuf::from(source);
         readable(&source)?;
+        // Counted under `admission` after a `stopping` check, as `quit_if_idle` checks and sets,
+        // so a download and a takeover never both go ahead.
+        let streaming = {
+            let _admission = lock(&self.admission);
+            self.refuse_if_stopping()?;
+            Streaming::new(&self.streaming)
+        };
         let mut traces = self
             .capped(|| ps5_dump_forge_core::lz4_traces(&source))?
             .map_err(|missing| Response::error(404, missing))?;
         let (name, len) = (traces.zip_name().to_string(), traces.zip_len());
-        let body = Box::new(move |out: &mut dyn std::io::Write| traces.write_zip(out));
+        let body = Box::new(move |out: &mut dyn std::io::Write| {
+            let _streaming = streaming;
+            traces.write_zip(out)
+        });
         Ok(Response::download("application/zip", &name, len, body))
     }
 
@@ -674,6 +806,106 @@ impl Server {
             response.after = Some(Box::new(move || server.finish()));
         }
         response
+    }
+
+    /// `quit {"if_idle": true}` (a newer copy taking over): quits as `quit` does, but only when
+    /// no job is queued or running and no trace download is streaming; else 409.
+    /// Admission within `IDLE_WAIT`, else a 409: a patch or delete holds it for long, and a
+    /// late yes would act after the asker gave up (the newer copy's 3 s request, the page's
+    /// minute).
+    fn admission_soon(&self) -> Result<MutexGuard<'_, ()>, Response> {
+        let start = Instant::now();
+        loop {
+            match self.admission.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(std::sync::TryLockError::Poisoned(e)) => return Ok(e.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) if start.elapsed() < IDLE_WAIT => {
+                    std::thread::sleep(Duration::from_millis(25))
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Err(Response::error(
+                        409,
+                        "Dump Forge is busy: a game is being patched or deleted",
+                    ));
+                }
+            }
+        }
+    }
+
+    fn quit_if_idle(self: &Arc<Self>) -> Reply {
+        {
+            let _admission = self.admission_soon()?;
+            if self.stopping.load(Ordering::SeqCst) {
+                return Err(Response::error(409, "Dump Forge is stopping"));
+            }
+            if self.running.load(Ordering::SeqCst) > 0 {
+                return Err(Response::error(
+                    409,
+                    "Dump Forge is busy: a conversion is queued or running",
+                ));
+            }
+            if self.streaming.load(Ordering::SeqCst) > 0 {
+                return Err(Response::error(
+                    409,
+                    "Dump Forge is busy: a trace download is running",
+                ));
+            }
+            self.stopping.store(true, Ordering::SeqCst);
+        }
+        let mut response = Response::json(&json!({}));
+        let server = self.clone();
+        response.after = Some(Box::new(move || server.finish()));
+        Ok(response)
+    }
+
+    /// `GET /api/elfldr` (PS5 only): `{"up": bool}`, whether elfldr accepts a connection, so the
+    /// page offers an update only when it can be installed.
+    // ponytail: connect and close; elfldr writes "Unknown payload format" to its own log, nothing on screen.
+    fn elfldr(&self) -> Reply {
+        if self.opts.platform != Platform::Ps5 {
+            return Err(Response::error(404, "unknown route"));
+        }
+        let up = TcpStream::connect_timeout(&self.opts.elfldr, Duration::from_secs(1)).is_ok();
+        Ok(Response::json(&json!({ "up": up })))
+    }
+
+    /// `{"version": "X.Y.Z"}` (PS5 only): elfldr downloads that release and starts it; this
+    /// server keeps serving, and the new one takes over once it is idle (`serve`). Refused for
+    /// a version not newer than this one, while a job is queued or running, once stopping and
+    /// while another update is waiting. Blocks while elfldr downloads (its own handler thread).
+    fn self_update(&self, body: &[u8]) -> Reply {
+        if self.opts.platform != Platform::Ps5 {
+            return Err(Response::error(404, "unknown route"));
+        }
+        let version = parse::<VersionArg>(body)?.version;
+        let current = env!("CARGO_PKG_VERSION");
+        if !plain_version(&version)
+            || crate::compare_versions(&version, current) != std::cmp::Ordering::Greater
+        {
+            return Err(Response::error(
+                400,
+                format!("bad request: version must be X.Y.Z, newer than {current}"),
+            ));
+        }
+        if self.updating.swap(true, Ordering::SeqCst) {
+            return Err(Response::error(409, "an update is already in progress"));
+        }
+        let _updating = Flag(&self.updating);
+        {
+            // Released before elfldr is asked: the new copy's `quit {"if_idle"}` needs it.
+            let _admission = self.admission_soon()?;
+            if self.stopping.load(Ordering::SeqCst) {
+                return Err(Response::error(409, "Dump Forge is stopping"));
+            }
+            if self.running.load(Ordering::SeqCst) > 0 {
+                return Err(Response::error(
+                    409,
+                    "a conversion is queued or running; update once it has finished",
+                ));
+            }
+        }
+        elfldr_load(self.opts.elfldr, &version)?;
+        Ok(Response::json(&json!({})))
     }
 
     /// `true` for the call that closed admission. Once it returns, every admitted job is
@@ -985,6 +1217,138 @@ mod tests {
         }
         server.jobs.cancel_all_and_wait();
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    /// `quit {"if_idle": true}`: 409 while a job is queued or running, a trace download is
+    /// streaming or once stopping; else `{}`, stopping, and quitting after the reply. A plain
+    /// `quit` is unchanged.
+    #[test]
+    fn quit_if_idle() {
+        let server = Arc::new(server());
+        let idle = json!({ "if_idle": true });
+        server.running.store(1, Ordering::SeqCst);
+        let r = post(&server, "quit", idle.clone());
+        assert_eq!(r.status, 409);
+        assert!(
+            r.text().contains("a conversion is queued or running"),
+            "{}",
+            r.text()
+        );
+        server.running.store(0, Ordering::SeqCst);
+        let stream = Streaming::new(&server.streaming);
+        let r = post(&server, "quit", idle.clone());
+        assert_eq!(r.status, 409);
+        assert!(
+            r.text().contains("a trace download is running"),
+            "{}",
+            r.text()
+        );
+        drop(stream);
+        // Admission held (a patch or delete): busy after a short wait, never stopping later.
+        let held = lock(&server.admission);
+        let r = post(&server, "quit", idle.clone());
+        assert_eq!(r.status, 409);
+        assert!(r.text().contains("patched or deleted"), "{}", r.text());
+        drop(held);
+        assert!(!server.stopping.load(Ordering::SeqCst));
+        let r = post(&server, "quit", idle.clone());
+        assert_eq!((r.status, r.text()), (200, "{}".to_string()));
+        assert!(r.after.is_some() && server.stopping.load(Ordering::SeqCst));
+        let r = post(&server, "quit", idle);
+        assert_eq!(r.status, 409);
+        assert!(r.text().contains("stopping"), "{}", r.text());
+        // A plain quit once stopping: `{}` and nothing more.
+        let r = post(&server, "quit", json!({}));
+        assert_eq!((r.status, r.after.is_none()), (200, true));
+    }
+
+    /// `self_update`: the PS5's only; a newer `X.Y.Z` only; never while a job is queued or
+    /// running, another update waits or the server is stopping (all before elfldr is asked).
+    #[test]
+    fn self_update_refusals() {
+        let r = post(
+            &Arc::new(server()),
+            "self_update",
+            json!({ "version": "999.0.0" }),
+        );
+        assert_eq!((r.status, r.text().contains("unknown route")), (404, true));
+
+        let mut opts = Options::new(0, vec![], Platform::Ps5, |_: &str| {});
+        // A closed port, in case a check below lets a request through.
+        opts.elfldr = "127.0.0.1:1".parse().unwrap();
+        let server = Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap());
+        let current = env!("CARGO_PKG_VERSION");
+        for bad in [
+            json!({ "version": current }),
+            json!({ "version": "0.0.1" }),
+            json!({ "version": "999.0" }),
+            json!({ "version": "999.0.0-pre1" }),
+            json!({ "version": "v999.0.0" }),
+            json!({ "version": "999.0.0/../x" }),
+            json!({ "version": "9999999999.0.0" }),
+            json!({ "version": 1 }),
+            json!({}),
+        ] {
+            assert_eq!(
+                post(&server, "self_update", bad.clone()).status,
+                400,
+                "{bad}"
+            );
+        }
+        let newer = json!({ "version": "999.0.0" });
+        server.running.store(1, Ordering::SeqCst);
+        let r = post(&server, "self_update", newer.clone());
+        assert_eq!(r.status, 409);
+        assert!(
+            r.text().contains("a conversion is queued or running"),
+            "{}",
+            r.text()
+        );
+        server.running.store(0, Ordering::SeqCst);
+        // A patch or delete holding admission past 1 s: refused before elfldr is asked.
+        {
+            let _held = server.admission.lock().unwrap();
+            let r = post(&server, "self_update", newer.clone());
+            assert_eq!(r.status, 409);
+            assert!(r.text().contains("patched or deleted"), "{}", r.text());
+        }
+        server.updating.store(true, Ordering::SeqCst);
+        let r = post(&server, "self_update", newer.clone());
+        assert_eq!(r.status, 409);
+        assert!(r.text().contains("already in progress"), "{}", r.text());
+        // The refusal leaves the other update's flag alone.
+        assert!(server.updating.load(Ordering::SeqCst));
+        server.updating.store(false, Ordering::SeqCst);
+        assert!(server.stop());
+        let r = post(&server, "self_update", newer);
+        assert_eq!(r.status, 409);
+        assert!(r.text().contains("stopping"), "{}", r.text());
+        assert!(!server.updating.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn helpers() {
+        assert!(plain_version("0.1.2") && plain_version("10.20.30"));
+        assert!(!plain_version("0.1") && !plain_version("0.1.2.3") && !plain_version("0..2"));
+        assert_eq!(
+            percent_encode("https://x/a b?args=serve&pipe=0"),
+            "https%3A%2F%2Fx%2Fa%20b%3Fargs%3Dserve%26pipe%3D0"
+        );
+        use std::cmp::Ordering::*;
+        for (a, b, want) in [
+            ("0.1.2", "0.1.1", Greater),
+            ("0.1.10", "0.1.9", Greater),
+            ("0.1.2", "0.1.2-pre4", Greater),
+            ("0.1.2-pre10", "0.1.2-pre4", Greater),
+            ("0.1.1", "0.1.1", Equal),
+            ("", "0.0.1", Less),
+        ] {
+            assert_eq!(crate::compare_versions(a, b), want, "{a} vs {b}");
+        }
+        assert_eq!(crate::status_of(b"HTTP/1.1 200 OK\r\n\r\n"), Some(200));
+        assert_eq!(crate::status_of(b"HTTP/1.0 409 Conflict"), Some(409));
+        assert_eq!(crate::status_of(b"[elfldr.elf] Error"), None);
+        assert_eq!(crate::status_of(b""), None);
     }
 
     /// The same without a blocked queue: a job whose `Done` came before `start` returned.
