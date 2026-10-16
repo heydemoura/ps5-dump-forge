@@ -43,7 +43,7 @@ gradient notice bar) and the app icon (near-black navy with a blue edge and an o
 | `--lz4-tint` / `-tint-hi` / `-line` | yellow 14% / 22%, ring 50% | Their tint, hover and ring (`--lz4-ink` on tint ≥ 9.3:1, `--lz4-soft` 11.4:1) |
 | `--library-ink` / `-ink-hi` / `-line` | `#a8ed8b` / `#c4f6aa` / green 50% | Library green: its header icon and the selected view button only |
 | `--neon-*` | lime, magenta, cyan 12%; ring lime 38%; ink `#d6e875` | A traced source's `LZ4 (AMPR)` tile |
-| `--pk-*` | green 14%, cyan 12%; ring 42%; ink `#86f5b4` | A packed source's tile and Save as profile |
+| `--pk-*` | green 14%, cyan 12%; ring 42%; ink `#86f5b4` | A packed source's tile |
 | count badge (`.count`) | `#2f5bff` + white | Active jobs on the Convert tab, the Library's count (5.2:1); grey in Inspect's sub-tabs |
 | primary button | `#fff` + `#0e0e15` | The one main action per card |
 
@@ -116,7 +116,6 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   | Small | `.small` | Job rows; `.small.icon-only` is a 30px round icon button. |
   | LZ4 | `.lz4-btn` | Yellow tint, ring and ink: the LZ4 tab's Choose source. |
   | Help | `.help-btn` | The danger colours on a harmless button: How LZ4 works (experimental, read first). |
-  | Neon | `.neon-btn` | Save as profile: the packed tile's static green straps, its label wraps; disabled drops the straps. |
   | Link | `.link` | Quiet text action (Compare formats). |
 - **Update toast** (`.update-toast`, bottom corner, mirrored in RTL): the Done green (`.tag.green`), a 14% tint
   over `--card`, a 45% ring, `#6fe3a3` icon and title, its primary button green with dark ink.
@@ -141,11 +140,13 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
 - **Switch** (`.switch`): a native checkbox drawn as a switch, blue when on. Disabled, only the track
   dims; the reason sits under it as a `.note-line.warn`. Remove backport (only for a source with
   backport libraries) and Full verification (off by default) each sit in their own inset box
-  (`.field.backport`, `.field.verify`: `--inset`, `--line` border, 12px radius). Convert's **Update
-  AMPR** switch sits in the Full verification box (a second `.switch`, with a one-line hint) and shows for
-  an AMPR title, not packed, whose own ampr_emu names a version older than the bundled one; on for each
-  new source. A combination core
-  would refuse disables Build with the reason in a `.note-line.block` beside it.
+  (`.field.backport`, `.field.verify`: `--inset`, `--line` border, 12px radius). A combination core
+  would refuse disables Build with the reason in a `.note-line.block` beside it. For an AMPR game,
+  Convert says under Build what the conversion does by itself, each a muted `.note-line` with the
+  `info` icon, from core's `runtime_action`: the bundled ampr_emu (its version) is installed (none
+  there) or replaces the game's runtime (older or unknown), or the game's own one is kept (the bundled
+  version or newer, named); and a stale, damaged or missing `ampr_emu.index` is written afresh (the old
+  traces left out; for fpkg, the package always gets a fresh one). A game that doesn't use AMPR gets none.
 - **LZ4 tab** (`Lz4.tsx`): a Source card, then an "LZ4 asset packs" card whose head holds a red
   `.small.help-btn` **How LZ4 works**. The empty Source is `.empty.lz4` (yellow icon and glow): "Choose a
   game that uses AMPR", an experimental lead and one `.lz4-btn` **Choose source** with a Folder /
@@ -163,11 +164,10 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
     Choose opens a Zip / Folder `.menu`), locked to the source's own traces when they load by
     themselves (`.lock-box`: dashed `--line-hi` border, a round lock button; unlocked, a `button.link`
     "Use the source's traces" locks it again), a collapsed `details.fold.rules` "Use a rules profile
-    instead", then the Target picker: Folder (the LZ4 packed folder, shown as Folder) | exfat (default) | ffpkg | ffpfs. **Unpack**:
-    Folder | exfat (default) | ffpkg | ffpfs.
+    instead", then the Target picker: Folder (the LZ4 packed folder, shown as Folder) | ffpkg (default) | exfat | ffpfs. **Unpack**:
+    Folder | ffpkg (default) | exfat | ffpfs.
   - Pack and Unpack end like Convert (Full verification, Output, Generate name; shared in
-    `target.tsx`). In `.build-actions`, left of Pack, the `.neon-btn` **Save as profile** (download
-    icon, "Saving…" while it runs); the row wraps under the switch when narrow.
+    `target.tsx`).
 - **Lead word** (`Lead` in `target.tsx`): a note starting with "Recommended" shows that word in
   `--good` (`.lead-good`), one starting with "Experimental" in `--warn` (`.lead-warn`). Text colour only
   (≥ 9:1 on `--card` and `--inset`); the word itself carries the meaning.
@@ -183,7 +183,10 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   Inspect, a `.tile.wide` **Archive** tile: the part count as the value, then "game in <folder>" (or
   "at the archive's root") · solid · password-protected as its note, and the part names as a `.path`
   note when there are several.
-  `.tile.wide` spans the row (the `LZ4 (AMPR)` tile: Packed, Damaged packs, Traced or Plain). A traced
+  `.tile.wide` spans the row (the `LZ4 (AMPR)` tile: Packed, Damaged packs, Traced or Plain; its note
+  adds what a conversion does to the runtime (installs or replaces with the bundled ampr_emu, or keeps
+  another build's named version) and a stale, damaged or missing `ampr_emu.index`; an index to refresh
+  or a runtime to install also makes the tile show). A traced
   source's tile is `.tile.neon` wherever it shows: static muted lime, magenta and cyan straps over
   `--inset`, a `--neon-line` ring with a faint `--neon-glow`, the state in `--neon-ink` (on the
   brightest strap `--fg` 12.8:1, `--muted` 5.2:1, `--neon-ink` 10.7:1). A packed source takes green
@@ -209,8 +212,8 @@ tiles and tags. Two columns from 880px; Inspect splits 5:7 from 1100px.
   `--fg-2`; the current one: `--accent-ink`, 600, `aria-current="step"`; later ones `--muted`. Screen
   readers hear "done" / "not started yet" (visually hidden). No row until the stages are known, none once
   the job has ended; no motion of its own. An LZ4 tab job (`.job.lz4`) has a
-  yellow left edge and a `.tag.lz4` (LZ4 pack, unpack, trace, unpatch); Convert's runtime job a plain
-  `.tag` "AMPR runtime". Finished: Show in Finder (Explorer on Windows, folder on Linux), the error box,
+  yellow left edge and a `.tag.lz4` (LZ4 pack, unpack, trace, unpatch); an unpatch conversion sent to the
+  server's API (not the LZ4 tab's in-place one) a plain `.tag` "AMPR runtime". Finished: Show in Finder (Explorer on Windows, folder on Linux), the error box,
   or "Fast (Full) verification passed: N checks".
 - **Rating chip** (`.chip.good` / `.ok` / `.bad`): the About tab's formats table (Console speed and
   Size on disk). Tint, icon and text together, every text ≥ 8.9:1. About holds an introduction card

@@ -396,11 +396,15 @@ fn archive_tree(
     ))
 }
 
+/// The largest `ampr_emu.index` an archive's inspection reads (for [`Lz4Facts::index`]).
+const MAX_ARCHIVE_INDEX: u64 = 16 << 20;
+
 /// What inspecting an archive unpacks, path → bytes from its start: whole metadata, cover,
-/// `eboot.bin`, `fakelib*/` and the LZ4 manifest, then other executables smallest first,
-/// each only while the sum stays within [`ARCHIVE_READ_BUDGET`].
+/// `eboot.bin`, `fakelib*/` and the LZ4 manifest, then `ampr_emu.index` (optional: it must not
+/// displace `eboot.bin`, which decides AMPR), then other executables smallest first, each only
+/// while the sum stays within [`ARCHIVE_READ_BUDGET`].
 fn archive_reads(files: &[SourceFile]) -> BTreeMap<String, u64> {
-    use ps5_dump_forge_lz4::{MANIFEST, format::PAK_HEADER};
+    use ps5_dump_forge_lz4::{INDEX, MANIFEST, format::PAK_HEADER};
     let lower = |f: &SourceFile| f.path.to_ascii_lowercase();
     let mut wanted: Vec<(&SourceFile, u64)> = Vec::new();
     for f in files {
@@ -418,6 +422,8 @@ fn archive_reads(files: &[SourceFile]) -> BTreeMap<String, u64> {
     }
     let code = |f: &&SourceFile| f.path.eq_ignore_ascii_case("eboot.bin") || is_fakelib(&f.path);
     wanted.extend(files.iter().filter(code).map(|f| (f, f.size)));
+    let index = |f: &&SourceFile| f.path == INDEX && f.size <= MAX_ARCHIVE_INDEX;
+    wanted.extend(files.iter().filter(index).map(|f| (f, f.size)));
     let mut rest: Vec<&SourceFile> = files
         .iter()
         .filter(|f| !code(f) && crate::sdk::is_executable(&f.path))
@@ -438,15 +444,16 @@ fn archive_reads(files: &[SourceFile]) -> BTreeMap<String, u64> {
 /// The LZ4 facts of a source; a damaged manifest becomes a finding. `None` without libSceAmpr
 /// or any LZ4 artifact.
 fn lz4_facts(tree: &mut dyn SourceTree, findings: &mut Vec<String>) -> Option<Lz4Facts> {
+    use crate::lz4::{IndexState, RuntimeAction};
     use ps5_dump_forge_lz4::runtime::RuntimeKind;
     use ps5_dump_forge_lz4::{INDEX, JOURNAL, MANIFEST, reader};
     let size = |tree: &dyn SourceTree, path: &str| {
         tree.files().iter().find(|f| f.path == path).map(|f| f.size)
     };
-    let imports_ampr = size(tree, "eboot.bin").is_some()
-        && ps5upload_fpkg::source::imports_ampr(tree, "eboot.bin");
+    let imports_ampr = crate::lz4::imports_ampr(tree);
     let journal_bytes = size(tree, JOURNAL);
-    let (kind, runtime_version) = crate::lz4::runtime_of(tree);
+    let rt = crate::lz4::runtime_of(tree);
+    let kind = rt.kind;
     let mut packed = None;
     let mut manifest_error = None;
     let holds_packs = reader::detect(tree).unwrap_or(false);
@@ -474,6 +481,29 @@ fn lz4_facts(tree: &mut dyn SourceTree, findings: &mut Vec<String>) -> Option<Lz
     if !imports_ampr && !artifact {
         return None;
     }
+    // As a plain conversion sees it (`lz4::plain`): a runtime it installs or replaces is
+    // compared at the release runtime's size.
+    let action = rt.action(imports_ampr, holds_packs);
+    let index = if holds_packs || action == RuntimeAction::Untouched {
+        None
+    } else {
+        let files = crate::lz4::plain_listing(tree.files(), action);
+        match crate::lz4::index_state(tree, &files) {
+            Ok(IndexState::Ok(_)) => Some("ok"),
+            Ok(IndexState::Stale) => Some("stale"),
+            Ok(IndexState::Damaged) => Some("damaged"),
+            Ok(IndexState::Missing) => Some("missing"),
+            Err(_) => None,
+        }
+    };
+    // Only an AMPR title's runtime is the user's concern (`lz4::Runtime::action`).
+    let name = |a: RuntimeAction| match a {
+        _ if !imports_ampr => None,
+        RuntimeAction::Install => Some("install"),
+        RuntimeAction::Replace => Some("replace"),
+        RuntimeAction::Keep => Some("keep"),
+        RuntimeAction::Untouched => None,
+    };
     let runtime = match kind {
         RuntimeKind::ForgeRelease => "forge_release",
         RuntimeKind::ForgeTrace => "forge_trace",
@@ -486,11 +516,11 @@ fn lz4_facts(tree: &mut dyn SourceTree, findings: &mut Vec<String>) -> Option<Lz
         manifest_error,
         runtime: runtime.to_string(),
         shipped_runtime_version: ps5_dump_forge_lz4::runtime::VERSION,
-        runtime_current: kind == RuntimeKind::Other
-            && runtime_version
-                .as_deref()
-                .is_some_and(ps5_dump_forge_lz4::runtime::not_older),
-        runtime_version,
+        runtime_action: name(action),
+        // Pack writes packs; Unpack (a packed source) writes none (`lz4::prepare`).
+        pack_runtime_action: name(rt.action(imports_ampr, !holds_packs)),
+        runtime_version: rt.version,
+        index,
         journal_bytes,
         traces_zip: (journal_bytes.is_some() && size(tree, INDEX).is_some()).then(|| {
             let param = size(tree, "sce_sys/param.json")
@@ -1027,6 +1057,21 @@ fn archive_info(source: &Path, password: Option<&str>) -> anyhow::Result<GameInf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_archive_index_never_displaces_eboot() {
+        let file = |path: &str, size: u64| SourceFile {
+            path: path.into(),
+            size,
+        };
+        let index = file(ps5_dump_forge_lz4::INDEX, MAX_ARCHIVE_INDEX);
+        let eboot = file("eboot.bin", ARCHIVE_READ_BUDGET - 1024);
+        let keep = archive_reads(&[index.clone(), eboot]);
+        assert!(keep.contains_key("eboot.bin"), "{keep:?}");
+        assert!(!keep.contains_key(&index.path), "{keep:?}");
+        let keep = archive_reads(&[index.clone(), file("eboot.bin", 1 << 20)]);
+        assert!(keep.contains_key(&index.path), "{keep:?}");
+    }
 
     #[test]
     fn generated_names() {

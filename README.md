@@ -36,7 +36,7 @@ installed. Every format can be created and read back (an image or `.fpkg` can be
 | `.ffpkg` (UFS2) | Full image speed | Equal to the game size | ShadowMountPlus's recommendation. |
 | `.exfat` (512 B sectors, 64 KiB clusters) | Full image speed | Equal to the game size | For games that only run like external-drive content. |
 | `.ffpfs` (PFS, uncompressed) | Full image speed | Equal to the game size | Experimental in ShadowMountPlus. ASCII file names only. |
-| `.ffpfsc` (compressed PFS container) | may stutter | Depends on the compression level, usually 30–60% less | Experimental, always mounted read-only. exFAT (default), UFS2 or PFS inside. zlib level 0–9 (`--level`), default 6. |
+| `.ffpfsc` (compressed PFS container) | may stutter | Depends on the compression level, usually 30–60% less | Experimental, always mounted read-only. UFS2 (default), exFAT or PFS inside. zlib level 0–9 (`--level`), default 6. |
 | Folder | Full drive speed | Equal to the game size | Run as it is by ShadowMountPlus. |
 
 ## LZ4 asset packs
@@ -111,7 +111,7 @@ Every desktop archive also has `ps5-dump-forge` (`ps5-dump-forge.exe` on Windows
 ```sh
 ./ps5-dump-forge inspect PPSA01234.exfat
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to ffpkg      # folder | exfat | ffpkg | ffpfs | ffpfsc | pkg (debug FPKG)
-./ps5-dump-forge convert ~/Games/PPSA01234 --to ffpfsc --inner exfat   # inner: exfat (default) | ffpkg | ffpfs
+./ps5-dump-forge convert ~/Games/PPSA01234 --to ffpfsc --inner ffpkg   # inner: ffpkg (default) | exfat | ffpfs
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to ffpfsc --level 6        # zlib level 0 (store) .. 9 (smallest), default 6
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to pkg --kraken fast       # fast (default) | balanced | smallest | stored
 ./ps5-dump-forge convert ~/Games/PPSA01234 --to exfat --full-verify     # check every byte, not a sample

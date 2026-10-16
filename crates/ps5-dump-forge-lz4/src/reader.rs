@@ -9,7 +9,7 @@ use ps5upload_fpkg::source::{SourceFile, SourceTree};
 use ps5upload_fpkg::{Error, Result};
 
 use crate::format::*;
-use crate::{CRC_SIDECAR, MANIFEST, PROFILE, RuntimeProfile};
+use crate::{CRC_SIDECAR, MANIFEST, PROFILE, RUNTIME, RuntimeProfile};
 
 /// Runtime source defaults (not proof of the release blobs' build overrides).
 pub const MAX_MANIFEST_BYTES: u64 = 512 << 20;
@@ -506,7 +506,8 @@ fn read_exact<T: SourceTree + ?Sized>(tree: &mut T, path: &str, size: u64) -> Re
 
 /// Opens the packs of `tree`: the manifest with every runtime check, every volume header, and
 /// the CRC sidecar and runtime profile when present. Fails if a loose record's file is missing
-/// or has the wrong size, or a packed path is also a physical file.
+/// or has the wrong size (the runtime's size is not checked), or a packed path is also a
+/// physical file.
 pub fn unpack<T: SourceTree + ?Sized>(mut inner: Box<T>) -> Result<Unpacked<T>> {
     let sizes: HashMap<String, u64> = inner
         .files()
@@ -575,6 +576,11 @@ pub fn unpack<T: SourceTree + ?Sized>(mut inner: Box<T>) -> Result<Unpacked<T>> 
         if !f.packed() {
             match sizes.get(&f.path) {
                 Some(&n) if n == f.size => {}
+                // A conversion replaces a packed game's runtime with the bundled one (by user
+                // decision), keeping the manifest and index byte for byte.
+                // ponytail: assumes the console never checks the runtime's own record (it is
+                // loaded before AMPR serves a file); unverified on hardware.
+                Some(_) if f.path == RUNTIME => {}
                 Some(&n) => {
                     return Err(bad(format!(
                         "loose {} is {n} bytes, the manifest says {}",
@@ -839,6 +845,20 @@ mod tests {
         assert!(both.contains("both packed and a physical"), "{both}");
         let dir = err(tree(|f| drop(f.insert("data/a.bin/x".into(), vec![0]))));
         assert!(dir.contains("file and a folder"), "{dir}");
+    }
+
+    #[test]
+    fn the_runtime_may_differ_from_its_record() {
+        let entries: Entries = vec![
+            ("data/a.bin", text(200_000, 1), spec(16)),
+            (RUNTIME, noise(300, 3), None),
+        ];
+        let (_, _, out, _) = pack_mem(&entries, None, 2, VOLUME_CAP).unwrap();
+        let mut files: std::collections::BTreeMap<String, Vec<u8>> =
+            out.files.into_iter().collect();
+        files.insert(RUNTIME.into(), noise(500, 4));
+        let u = unpack(Box::new(Mem::new(files))).unwrap();
+        assert!(u.files().iter().any(|f| f.path == RUNTIME && f.size == 500));
     }
 
     #[test]

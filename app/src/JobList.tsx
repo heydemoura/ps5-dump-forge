@@ -77,8 +77,9 @@ function revealLabel(t: T): string {
 }
 
 /** What a job does with LZ4, for its row: its tag (a key of the `lz4` messages), and whether it
- * is an LZ4 tab job (the yellow accent). A legacy `lz4` target is a pack into a folder. Convert's
- * runtime replacement (`unpatch` without `lz4_in_place`) is no LZ4 tab job and never "packing". */
+ * is an LZ4 tab job (the yellow accent). A legacy `lz4` target is a pack into a folder. An
+ * `unpatch` without `lz4_in_place` (a server API request; Convert no longer sends one) is no LZ4
+ * tab job and never "packing". */
 function lz4Job(r: ConvertRequest | undefined): { id: keyof T["lz4"]; tab: boolean } | null {
   if (!r) return null;
   const mode = r.lz4 ?? (r.format === "lz4" ? "pack" : null);

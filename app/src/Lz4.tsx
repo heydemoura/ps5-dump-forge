@@ -19,7 +19,6 @@ import {
   type JobId,
   type Lz4Facts,
   type Lz4Patch,
-  type Lz4PlanProfile,
 } from "./api";
 import {
   CardHead,
@@ -37,7 +36,6 @@ import { openLz4Help } from "./Lz4Help";
 import { Icon } from "./icons";
 import { JobsCard } from "./JobList";
 import { inspectSource as readSource } from "./password";
-import { dirname } from "./paths";
 import type { Action, Job } from "./jobs";
 import {
   formatInfo,
@@ -72,13 +70,11 @@ export type Lz4Action = TraceAct | "pack" | "unpack";
  * an archive, which jobs unpack first: Pack/Unpack only, nothing to trace in place. */
 function scenarioWhy(s: Scenario, lz4: Lz4Facts | null, archive = false): string | null {
   const t = msg().lz4;
-  // Without its own ampr_emu (fakelib/libSceAmpr.sprx) an AMPR game gets no LZ4 action, by user
-  // decision: neither a pack nor a trace runtime is put into it.
-  const noRuntime = !!lz4 && lz4.imports_ampr && !lz4.packed && lz4.runtime === "none";
-  if (s === "pack") return noRuntime ? t.noRuntime : lz4?.imports_ampr || lz4?.packed ? null : t.noAmpr;
+  // An AMPR game without its own ampr_emu gets every action too: Pack and Patch/Unpatch put
+  // the bundled runtime in (by user decision).
+  if (s === "pack") return lz4?.imports_ampr || lz4?.packed ? null : t.noAmpr;
   if (archive) return t.archive;
   if (!lz4?.imports_ampr) return t.noAmpr;
-  if (noRuntime) return t.noRuntime;
   if (lz4.packed) return t.packedFirst;
   if (lz4.manifest_error !== null) return t.damaged;
   return null;
@@ -92,12 +88,12 @@ function defaultScenario(lz4: Lz4Facts | null, archive = false): Scenario | null
 /** Pack's targets, in picker order: the LZ4 packed folder, then the plain images it packs
  * straight into. Unpack's: a folder or the same images. The tab offers no .ffpfsc or .fpkg
  * (core and the CLI still do): Convert turns the folder into any format. */
-const PACK_FORMATS: Format[] = ["lz4", "exfat", "ffpkg", "ffpfs"];
-const UNPACK_FORMATS: Format[] = ["folder", "exfat", "ffpkg", "ffpfs"];
+const PACK_FORMATS: Format[] = ["lz4", "ffpkg", "exfat", "ffpfs"];
+const UNPACK_FORMATS: Format[] = ["folder", "ffpkg", "exfat", "ffpfs"];
 
-/** Pack's or Unpack's target: Unpack starts on exfat, Pack on its chosen target. */
+/** Pack's or Unpack's target: Unpack starts on ffpkg, Pack on its chosen target. */
 function packTarget(lz4: Lz4Facts | null, packFormat: Format): Format {
-  return lz4?.packed ? "exfat" : packFormat;
+  return lz4?.packed ? "ffpkg" : packFormat;
 }
 
 /** The source's own traces load by themselves (journal + index, recorded by Forge's trace
@@ -108,6 +104,7 @@ function ownTraces(lz4: Lz4Facts | null): boolean {
 
 export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const t = useMessages().lz4;
+  const c = useMessages().convert;
   const [source, setSource] = useState<string | null>(null);
   const [sourceIsImage, setSourceIsImage] = useState(false);
   const [ins, setIns] = useState<Inspection | null>(null);
@@ -119,9 +116,9 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const [chosen, setChosen] = useState<Scenario | null>(null);
   const [act, setAct] = useState<TraceAct | null>(null);
   /** Unpack's target. */
-  const [format, setFormat] = useState<Format>("exfat");
-  /** Pack's target: an image (default .exfat) or the LZ4 packed folder. */
-  const [packFormat, setPackFormat] = useState<Format>("exfat");
+  const [format, setFormat] = useState<Format>("ffpkg");
+  /** Pack's target: an image (default .ffpkg) or the LZ4 packed folder. */
+  const [packFormat, setPackFormat] = useState<Format>("ffpkg");
   const [fullVerify, setFullVerify] = useState(false);
   /** The free space a traced image gets, 64 MiB to 1 GiB; kept across sources. */
   const [traceMib, setTraceMib] = useState(DEFAULT_TRACE_MIB);
@@ -136,9 +133,6 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const [patched, setPatched] = useState<{ source: string; act: TraceAct; result: Lz4Patch } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  /** Save as profile: running, and what it saved for which source. */
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState<{ source: string; result: Lz4PlanProfile } | null>(null);
   const submittingRef = useRef(false); // state lags a fast double click
   const started = useRef(new Set<JobId>());
   /** Jobs seen unfinished; one that finishes is checked against the source once. */
@@ -220,7 +214,6 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
         setInsError(null);
         setInspecting(false);
         setPatched(null);
-        setSaved(null);
         setError(null);
       }),
     [source],
@@ -236,7 +229,6 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     setUnlocked(false);
     setProfileOpen(false);
     setPatched(null);
-    setSaved(null);
     setIns(null);
     setPassword(null);
     setInsError(null);
@@ -390,26 +382,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     }
   };
 
-  // Save as profile: the plan Pack would use, with the current settings, as a TOML.
-  const savePlan = async () => {
-    if (!source || !packing || blockReason || pending > 0 || saving) return;
-    setError(null);
-    setSaved(null);
-    setSaving(true);
-    const src = source;
-    const seq = sourceSeq.current;
-    try {
-      const result = await api.savePlanProfile(makeRequest(src), profileName(ins), dirname(src));
-      if (result && seq === sourceSeq.current) setSaved({ source: src, result });
-    } catch (e) {
-      if (seq === sourceSeq.current) setError(errorText(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const patchDone = folderTrace && patched?.source === source ? patched : null;
-  const savedHere = packing && saved?.source === source ? saved.result : null;
   const sameJobs = props.jobs.filter(
     (j) => !j.result && !j.request?.lz4_in_place && j.request?.source === source && j.request.format === fmt,
   );
@@ -423,6 +396,34 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const hasJobs = props.jobs.length > 0;
   const showButton = folderTrace || job;
   const journal = lz4?.journal_bytes ?? null;
+  // What the action does to the game's runtime and index (hidden while blocked). Pack/Unpack:
+  // core's pack_runtime_action (install, replace or keep; null for a game that doesn't use
+  // AMPR). Patch/Unpatch put their own runtime in, so only a game without one hears about it.
+  // A stale, damaged or missing ampr_emu.index is written afresh (a packed game keeps its own).
+  const shipped = lz4?.shipped_runtime_version;
+  const packAct = lz4?.pack_runtime_action ?? null;
+  const runtimeNote =
+    blockReason || !showButton || !lz4 || !shipped
+      ? null
+      : scenario === "pack"
+        ? packAct === "install"
+          ? packing
+            ? t.installsRuntime("pack", shipped)
+            : c.amprRuntime("install", null, shipped)
+          : packAct
+            ? c.amprRuntime(
+                packAct === "replace" && lz4.runtime === "forge_trace" ? "trace" : packAct,
+                lz4.runtime === "other" ? (lz4.runtime_version ?? null) : null,
+                shipped,
+              )
+            : null
+        : lz4.runtime === "none" && lz4.imports_ampr
+          ? t.installsRuntime(traceAct, shipped)
+          : null;
+  const indexNote =
+    !blockReason && showButton && !packed && lz4?.index && lz4.index !== "ok"
+      ? t.freshIndex(lz4.index, scenario === "pack" ? "pack" : traceAct)
+      : null;
 
   return (
     <div className={hasJobs ? "screen with-jobs" : "screen"}>
@@ -464,7 +465,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           ) : ins && usable.length === 0 ? (
             <p className="note-line warn lz4-why">
               <Icon name="warn" />
-              <span>{lz4?.imports_ampr && lz4.runtime === "none" ? t.noRuntimeWarn : t.nothing}</span>
+              <span>{t.noAmprGame}</span>
             </p>
           ) : (
             ins &&
@@ -609,41 +610,21 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           {showButton && (
             <div className="build-row">
               {outputJob && <GenerateSwitch out={out} source={source} />}
-              {/* Save as profile sits left of Pack, also in the tab order. */}
-              <span className="build-actions">
-                {packing && (
-                  <button
-                    className="neon-btn"
-                    onClick={savePlan}
-                    disabled={!!blockReason || saving || pending > 0}
-                    title={pending > 0 ? t.waitJobs : t.saveHint}
-                  >
-                    <Icon name="download" />
-                    {saving ? t.saving : t.saveProfile}
-                  </button>
-                )}
-                <button
-                  className="primary"
-                  onClick={folderTrace ? runFolder : start}
-                  disabled={
-                    !!blockReason || submitting || (outputJob && (!target || !!named.error || collides))
-                  }
-                >
-                  <Icon name="bolt" />
-                  {t.actions[action]}
-                </button>
-              </span>
+              <button
+                className="primary"
+                onClick={folderTrace ? runFolder : start}
+                disabled={
+                  !!blockReason || submitting || (outputJob && (!target || !!named.error || collides))
+                }
+              >
+                <Icon name="bolt" />
+                {t.actions[action]}
+              </button>
             </div>
           )}
-          {(blockReason || formatWarn > 0 || dupe || error || patchDone || savedHere) && (
+          {(blockReason || formatWarn > 0 || dupe || error || patchDone || runtimeNote || indexNote) && (
             <div className="build-notes">
               {error && <p className="bad">{error}</p>}
-              {savedHere && (
-                <p className="note-line muted">
-                  <Icon name="info" />
-                  <span>{t.saved(savedHere.file_name, savedHere.packed, savedHere.loose)}</span>
-                </p>
-              )}
               {patchDone && <PatchResult act={patchDone.act} result={patchDone.result} />}
               {blockReason && (
                 <p className="note-line block">
@@ -655,6 +636,18 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                 <p className="note-line warn">
                   <Icon name="warn" />
                   <span>{t.likelyFail(kindLabel(fmt))}</span>
+                </p>
+              )}
+              {runtimeNote && (
+                <p className="note-line muted">
+                  <Icon name="info" />
+                  <span>{runtimeNote}</span>
+                </p>
+              )}
+              {indexNote && (
+                <p className="note-line muted">
+                  <Icon name="info" />
+                  <span>{indexNote}</span>
                 </p>
               )}
               {dupe && (
@@ -717,18 +710,6 @@ function SegPicker<T extends string>(props: {
       })}
     </div>
   );
-}
-
-/** Save as profile's offered name, as core names it: `[GAME_NAME]-[TITLE_ID]-lz4profile.toml`
- * (the title's file-safe characters; a part it lacks left out). */
-function profileName(ins: Inspection | null): string {
-  const title = (ins?.title_name ?? "")
-    .normalize("NFC")
-    .replace(/[^\p{L}\p{N} \-_.,'()&+!]/gu, "")
-    .replace(/\s+/g, " ")
-    .replace(/^[. ]+|[. ]+$/g, "");
-  const parts = [title && `[${title}]`, ins?.title_id && `[${ins.title_id}]`].filter(Boolean);
-  return [...parts, "lz4profile.toml"].join("-");
 }
 
 /** Where Pack's rules come from, in core's order: a profile, traces chosen here, this

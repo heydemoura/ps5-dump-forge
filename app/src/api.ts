@@ -158,9 +158,19 @@ export interface Lz4Facts {
   shipped_runtime_version?: string;
   /** The ampr_emu version the game's own runtime names itself with, when it does. */
   runtime_version?: string | null;
-  /** The game's runtime is another ampr_emu build, as new as the bundled one or newer:
-   * nothing to update. */
-  runtime_current?: boolean;
+  /** What a plain conversion does to the runtime: "install" (none there), "replace" (Forge's
+   * trace runtime, an older ampr_emu or one naming no version: the bundled one goes in) or
+   * "keep" (Forge's release runtime, or ampr_emu at the bundled version or newer:
+   * runtime_version names it). Null for a non-AMPR title; missing from an older backend. */
+  runtime_action?: "install" | "replace" | "keep" | null;
+  /** The same for the LZ4 tab's Pack (an unpacked source) or Unpack (a packed one): Pack also
+   * replaces a not-older runtime that can't read packs. */
+  pack_runtime_action?: "install" | "replace" | "keep" | null;
+  /** ampr_emu.index against the files a plain conversion writes: "stale", "damaged" and
+   * "missing" are written anew by any conversion. Null when no conversion touches it (packed:
+   * kept as it is; a non-AMPR title; an archive's index too large to read); missing from an
+   * older backend. */
+  index?: "ok" | "stale" | "damaged" | "missing" | null;
   /** Size of the trace journal (ampr_commands.bin), when present. */
   journal_bytes: number | null;
   /** With the journal and its ampr_emu.index both present: the name Get traces' zip takes. */
@@ -229,17 +239,6 @@ export interface Inspection {
   findings: string[];
   /** An archive source: the archive's own facts (`files` and `total_bytes` are unpacked). */
   archive?: ArchiveFacts | null;
-}
-
-/** Save as profile: the pack plan Forge resolved for a Pack request, as an editable TOML. */
-export interface Lz4PlanProfile {
-  /** `[GAME_NAME]-[TITLE_ID]-lz4profile.toml` (the app: the name saved under). */
-  file_name: string;
-  toml: string;
-  packed: number;
-  loose: number;
-  /** How the plan was resolved (rule source, keep-loose, auto-loose), as a job logs it. */
-  log: string[];
 }
 
 /** What patching (or unpatching) a folder in place for LZ4 tracing did. */
@@ -338,10 +337,6 @@ export const api = {
   /** Put Forge's release runtime back in a game folder in place: journal and logs removed, a
    * fresh index. Not a job; core refuses it while a job runs. */
   lz4Unpatch: (source: string) => transport.lz4Unpatch<Lz4Patch>(source),
-  /** Save as profile for a Pack request: the app's save dialog (offering `name` in `dir`) then
-   * writes it; the http build downloads it. Reads the source, not a job. null: cancelled. */
-  savePlanProfile: (request: ConvertRequest, name: string, dir: string) =>
-    transport.savePlanProfile<Lz4PlanProfile>(request, name, dir),
   /** Delete a file or folder for good (the page asks first). Refused for a link, a drive or
    * browse root or a folder holding one, and anything an unfinished job reads or writes. */
   deletePath: (path: string) => invoke<null>("delete_path", { path }).then(() => undefined),

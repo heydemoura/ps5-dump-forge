@@ -50,14 +50,25 @@ const de: Messages = {
     alreadyFolder: "die Quelle ist bereits ein Ordner",
     lz4Backport:
       "Die Assets dieses Spiels sind LZ4-gepackt und sein LZ4-Manifest enthält den Backport: Entpacken Sie es zuerst im Tab „LZ4“ und entfernen Sie dann hier den Backport.",
-    lz4Trace:
-      "Dieses gepackte Spiel enthält die LZ4-Trace-Runtime: Entpacken oder packen Sie es zuerst im Tab „LZ4“ neu.",
     unreadable: "Erstellen nicht möglich: Diese Quelle konnte nicht gelesen werden (siehe „Quelle“).",
     noContentId: "Erstellen als fpkg nicht möglich: Die param.json dieses Spiels hat keine Content-ID, die ein Paket braucht.",
     blocked: (first, more) =>
       `Erstellen nicht möglich: ${first}${more > 0 ? ` (und ${num(more)} weitere, siehe „Quelle“)` : ""}.`,
-    runtime: "AMPR aktualisieren",
-    runtimeHint: "Das ampr_emu dieses Spiels ist nicht die neueste Version.",
+    amprRuntime: (a, own, version) => {
+      if (a === "install") return `Dieses Spiel nutzt AMPR, hat aber kein ampr_emu: Die Konvertierung installiert das mitgelieferte ampr_emu ${version}.`;
+      if (a === "trace") return `Die Konvertierung ersetzt die LZ4-Trace-Runtime durch das mitgelieferte Release-ampr_emu ${version}.`;
+      if (a === "replace")
+        return own
+          ? `Die Konvertierung ersetzt das ampr_emu ${own} dieses Spiels durch das mitgelieferte ampr_emu ${version}.`
+          : `Die Konvertierung ersetzt das ampr_emu dieses Spiels, das keine Version nennt, durch das mitgelieferte ampr_emu ${version}.`;
+      return own
+        ? `Das ampr_emu ${own} dieses Spiels ist so neu wie das mitgelieferte ${version} oder neuer: Die Konvertierung behält es.`
+        : `Dieses Spiel hat bereits das mitgelieferte ampr_emu ${version}: Die Konvertierung behält es.`;
+    },
+    amprIndex: (state, traces) =>
+      `${state === "stale" ? "ampr_emu.index listet nicht die Dateien dieses Spiels" : state === "damaged" ? "ampr_emu.index ist nicht lesbar" : "Dieses Spiel hat keine ampr_emu.index"}: Die Konvertierung schreibt eine neue${traces ? " und lässt die alten Traces weg" : ""}.`,
+    amprPkgIndex: (traces) =>
+      `Das Paket erhält eine neue ampr_emu.index aus seinen Dateien${traces ? ", ohne die alten Traces" : ""}.`,
     removeBackport: "Backport entfernen",
     removeHint: (libs, emulators, other) =>
       `Lässt ${num(libs)} ${plural(libs, { one: "Backport-Bibliothek", other: "Backport-Bibliotheken" })} aus fakelib/ weg` +
@@ -109,7 +120,7 @@ const de: Messages = {
       ["Prüfen", "jeder Ausgabe nach dem Schreiben: standardmäßig schnelle Stichprobe, auf Wunsch jedes Byte."],
       ["Löschen", "eines Spiels vom Datenträger, nach Ihrer Bestätigung."],
       ["LZ4", "Tracing eines AMPR-Spiels, dann Packen seiner Assets (experimentell)."],
-      ["AMPR-Runtime", "ampr_emu in der konvertierten Kopie installieren oder aktualisieren."],
+      ["AMPR-Runtime", "jede Konvertierung installiert oder aktualisiert das ampr_emu des Spiels (ein gleich neues oder neueres bleibt) und erneuert eine veraltete ampr_emu.index."],
       ["PS5-Payload", "dieselbe App auf der Konsole, erreichbar von jedem Gerät in Ihrem Netzwerk."],
     ],
     howToConnect: "Verbindung herstellen",
@@ -289,8 +300,6 @@ const de: Messages = {
         ? "Erstellt dieses Image mit der Release-Runtime neu und ersetzt es dann."
         : "Stellt die Release-Runtime in diesem Ordner wieder her.",
     noAmpr: "das Spiel nutzt kein AMPR",
-    noRuntime: "das Spiel hat kein ampr_emu",
-    noRuntimeWarn: "Dieses Spiel hat kein ampr_emu, daher kann LZ4 es nicht konvertieren.",
     packedFirst: "die Quelle ist LZ4-gepackt: zuerst entpacken",
     damaged: "seine LZ4-Pakete sind beschädigt",
     archive: "für ein Archiv ist kein Tracing möglich: zuerst konvertieren",
@@ -317,7 +326,15 @@ const de: Messages = {
             : `Entpacken nicht möglich: ${rest}`;
     },
     chooseGame: "Wählen Sie zuerst einen Spielordner oder ein Image.",
-    nothing: "Nichts zu tun: Dieses Spiel nutzt kein AMPR und ist nicht LZ4-gepackt.",
+    noAmprGame: "Dieses Spiel nutzt kein AMPR, daher ist LZ4 hier nicht nutzbar.",
+    installsRuntime: (a, version) =>
+      a === "pack"
+        ? `Dieses Spiel hat kein ampr_emu: „Packen“ installiert das mitgelieferte ampr_emu ${version}.`
+        : a === "patch"
+          ? `Dieses Spiel hat kein ampr_emu: „Patchen“ installiert die mitgelieferte Trace-Runtime (ampr_emu ${version}).`
+          : `Dieses Spiel hat kein ampr_emu: „Patch entfernen“ installiert die mitgelieferte Release-Runtime (ampr_emu ${version}).`,
+    freshIndex: (state, a) =>
+      `${state === "stale" ? "ampr_emu.index listet nicht die Dateien dieses Spiels" : state === "damaged" ? "ampr_emu.index ist nicht lesbar" : "Dieses Spiel hat keine ampr_emu.index"}: „${a === "pack" ? "Packen" : a === "patch" ? "Patchen" : "Patch entfernen"}“ schreibt eine neue.`,
     unavailable: (items) => `Nicht für diese Quelle: ${items.join("; ")}.`,
     readOnly: (kind) => <>
       <b>{kind}</b> ist auf der Konsole schreibgeschützt, daher ist kein Tracing möglich. Konvertieren Sie es zuerst in <b>ffpkg</b> oder <b>exfat</b>.
@@ -349,11 +366,6 @@ const de: Messages = {
     unpackFolder: "Ein neuer Spielordner, in dem die Pakete als normale Dateien zurückgeschrieben sind.",
     unpackHint: (n) =>
       `${n === null ? "Schreibt die gepackten Dateien als normale Dateien zurück" : `Schreibt ${plural(n, { one: `${num(n)} gepackte Datei als normale Datei`, other: `${num(n)} gepackte Dateien als normale Dateien` })} zurück`}.`,
-    waitJobs: "Warten Sie, bis die laufenden Aufträge fertig sind",
-    saveHint: "Die Dateiliste von „Packen“ als bearbeitbares Regelprofil speichern",
-    saving: "Wird gespeichert…",
-    saveProfile: "Als Profil speichern",
-    saved: (name, packed, loose) => `${name} gespeichert: ${num(packed)} ${plural(packed, FILES)} gepackt, ${num(loose)} ungepackt.`,
     likelyFail: (fmt) => <>
       Als <b>{fmt}</b> wahrscheinlich nicht möglich: Das Format lehnt Dateinamen ab, die unter „Quelle“ aufgeführt sind.
     </>,
@@ -420,6 +432,7 @@ const de: Messages = {
           <li>
             Bei einer gepackten Quelle erscheint stattdessen <b>Entpacken</b>: Die ungepackten Dateien kommen zurück.
           </li>
+          <li>Packen behält das ampr_emu des Spiels, wenn es die mitgelieferte Version oder neuer ist und LZ4-Pakete lesen kann; sonst installiert es das mitgelieferte Release-ampr_emu, auch anstelle der LZ4-Trace-Runtime und in einem Spiel, das keines hat.</li>
         </ol>
 
         <h3>2. Trace</h3>
@@ -504,6 +517,17 @@ const de: Messages = {
     journal: (size) => `Journal ${size}`,
     noJournal: "noch kein Journal",
     runtimeIs: (label) => `Runtime: ${label}`,
+    index: {
+      stale: "ampr_emu.index veraltet: Eine Konvertierung erneuert sie",
+      damaged: "ampr_emu.index beschädigt: Eine Konvertierung schreibt sie neu",
+      missing: "keine ampr_emu.index: Eine Konvertierung schreibt eine",
+    },
+    runtimeAction: (a, version) =>
+      a === "install"
+        ? `eine Konvertierung installiert das mitgelieferte ampr_emu ${version}`
+        : a === "replace"
+          ? `eine Konvertierung ersetzt die Runtime durch das mitgelieferte ampr_emu ${version}`
+          : `ampr_emu ${version}: Eine Konvertierung behält es`,
     backportLibs: (exclusive, n) =>
       `${exclusive ? "fakelib2/, allein eingebunden" : "fakelib/"}, ${num(n)} ${plural(n, { one: "Backport-Bibliothek", other: "Backport-Bibliotheken" })}`,
     findings: "Befunde der Vorabprüfung",
@@ -663,8 +687,6 @@ const de: Messages = {
     generate: "Namen aus dem Inhalt erzeugen",
     generatePattern: "[Spielname]-[Titel-ID]",
   },
-  // transport-tauri.tsx: the native save dialog
-  tauri: { saveProfile: "Als Profil speichern", profileFilter: "LZ4-Profil (TOML)" },
   // UpdateToast.tsx
   update: {
     available: (v) => `v${v} ist verfügbar`,

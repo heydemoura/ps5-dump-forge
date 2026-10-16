@@ -149,7 +149,7 @@ fn every_target_publishes_on_this_volume() {
         (Format::Exfat, None, "game.exfat"),
         (Format::Ffpkg, None, "game.ffpkg"),
         (Format::Ffpfs, None, "game.ffpfs"),
-        (Format::Ffpfsc, None, "game.ffpfsc"),
+        (Format::Ffpfsc, Some(Format::Exfat), "game.ffpfsc"),
         (Format::Ffpfsc, Some(Format::Ffpkg), "game-ufs.ffpfsc"),
         (Format::Ffpfsc, Some(Format::Ffpfs), "game-pfs.ffpfsc"),
         (Format::Pkg, None, "game.pkg"),

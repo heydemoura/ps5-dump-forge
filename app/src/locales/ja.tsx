@@ -53,16 +53,27 @@ const ja: Messages = {
     alreadyFolder: "ソースがすでにフォルダーです",
     lz4Backport:
       "このゲームのアセットは LZ4 でパックされており、LZ4 マニフェストにバックポートが含まれています。先に「LZ4」タブでアンパックしてから、ここでバックポートを除外してください。",
-    lz4Trace:
-      "このパック済みゲームには LZ4 のトレース用ランタイムが入っています。先に「LZ4」タブでアンパックするか、パックし直してください。",
     unreadable: "ビルドできません：このソースを読み込めませんでした（「ソース」を参照）。",
     noContentId: "fpkg としてビルドできません：このゲームの param.json には、パッケージに必要な Content ID がありません。",
     blocked: (first, more) =>
       more > 0
         ? `ビルドできません：${first}（ほか ${num(more)} 件、「ソース」を参照）。`
         : `ビルドできません：${first}。`,
-    runtime: "AMPR を更新",
-    runtimeHint: "このゲームの ampr_emu は最新版ではありません。",
+    amprRuntime: (a, own, version) => {
+      if (a === "install") return `このゲームは AMPR を使いますが ampr_emu がありません。変換すると同梱の ampr_emu ${version} をインストールします。`;
+      if (a === "trace") return `変換すると、LZ4 のトレース用ランタイムが同梱のリリース版 ampr_emu ${version} に置き換わります。`;
+      if (a === "replace")
+        return own
+          ? `変換すると、このゲームの ampr_emu ${own} が同梱の ampr_emu ${version} に置き換わります。`
+          : `変換すると、バージョン不明のこのゲームの ampr_emu が同梱の ampr_emu ${version} に置き換わります。`;
+      return own
+        ? `このゲームの ampr_emu ${own} は同梱の ${version} と同じか新しいため、変換してもそのまま残ります。`
+        : `このゲームにはすでに同梱の ampr_emu ${version} があり、変換してもそのまま残ります。`;
+    },
+    amprIndex: (state, traces) =>
+      `${state === "stale" ? "ampr_emu.index がこのゲームのファイルと一致しません" : state === "damaged" ? "ampr_emu.index を読み込めません" : "このゲームには ampr_emu.index がありません"}。変換すると新しく書き込みます${traces ? "（古いトレースは含めません）" : ""}。`,
+    amprPkgIndex: (traces) =>
+      `パッケージには、収録するファイルから作った新しい ampr_emu.index が入ります${traces ? "（古いトレースは含めません）" : ""}。`,
     removeBackport: "バックポートを除外",
     removeHint: (libs, emulators, other) =>
       emulators.length === 0
@@ -115,7 +126,7 @@ const ja: Messages = {
       ["検証", "書き込み後にすべての出力を検証します。標準は高速なサンプリング、指定すれば全バイトを検証します。"],
       ["削除", "確認のうえ、ゲームをディスクから削除します。"],
       ["LZ4", "AMPR ゲームをトレースし、そのアセットをパックします（実験的）。"],
-      ["AMPR ランタイム", "変換したコピーに ampr_emu をインストールまたは更新します。"],
+      ["AMPR ランタイム", "変換のたびにゲームの ampr_emu をインストールまたは更新し（同梱版と同じか新しいものは残します）、古い ampr_emu.index を作り直します。"],
       ["PS5 ペイロード", "同じアプリを本体で実行し、ネットワーク上のどのデバイスからでも開けます。"],
     ],
     howToConnect: "接続方法",
@@ -291,8 +302,6 @@ const ja: Messages = {
         ? "リリース版ランタイムでこのイメージを再ビルドし、置き換えます。"
         : "このフォルダーにリリース版ランタイムを戻します。",
     noAmpr: "このゲームは AMPR を使用していません",
-    noRuntime: "このゲームには ampr_emu がありません",
-    noRuntimeWarn: "このゲームには ampr_emu がないため、LZ4 で変換できません。",
     packedFirst: "ソースは LZ4 パック済みです。先にアンパックしてください",
     damaged: "LZ4 パックが破損しています",
     archive: "アーカイブはトレースできません。先に変換してください",
@@ -318,7 +327,15 @@ const ja: Messages = {
       return more > 0 ? `${what}：${first}（ほか ${num(more)} 件、「ソース」を参照）。` : `${what}：${first}。`;
     },
     chooseGame: "先にゲームのフォルダーまたはイメージを選んでください。",
-    nothing: "何もできません。このゲームは AMPR を使用しておらず、LZ4 パック済みでもありません。",
+    noAmprGame: "このゲームは AMPR を使用していないため、LZ4 は使えません。",
+    installsRuntime: (a, version) =>
+      a === "pack"
+        ? `このゲームには ampr_emu がありません。パックすると同梱の ampr_emu ${version} がインストールされます。`
+        : a === "patch"
+          ? `このゲームには ampr_emu がありません。パッチ適用で同梱のトレース用ランタイム（ampr_emu ${version}）がインストールされます。`
+          : `このゲームには ampr_emu がありません。パッチ解除で同梱のリリース版ランタイム（ampr_emu ${version}）がインストールされます。`,
+    freshIndex: (state, a) =>
+      `${state === "stale" ? "ampr_emu.index がこのゲームのファイルと一致しません" : state === "damaged" ? "ampr_emu.index を読み込めません" : "このゲームには ampr_emu.index がありません"}。${a === "pack" ? "パックすると" : a === "patch" ? "パッチ適用で" : "パッチ解除で"}新しく書き込みます。`,
     unavailable: (items) => `このソースでは使用できません：${items.join("、")}。`,
     readOnly: (kind) => <>
       <b>{kind}</b> は本体では読み取り専用のため、トレースできません。先に <b>ffpkg</b> または <b>exfat</b> に変換してください。
@@ -359,11 +376,6 @@ const ja: Messages = {
       n === null
         ? "パックされたファイルを通常のファイルに戻します。"
         : `パックされた ${num(n)} 個のファイルを通常のファイルに戻します。`,
-    waitJobs: "実行中のジョブが完了するまでお待ちください",
-    saveHint: "パックのファイル一覧を編集可能なルールプロファイルとして保存",
-    saving: "保存中…",
-    saveProfile: "プロファイルとして保存",
-    saved: (name, packed, loose) => `${name} を保存しました：パックするファイル ${num(packed)} 個、そのまま残すファイル ${num(loose)} 個。`,
     likelyFail: (fmt) => <>
       <b>{fmt}</b> では失敗する可能性が高いです。「ソース」に表示されたファイル名を受け付けません。
     </>,
@@ -429,6 +441,7 @@ const ja: Messages = {
           <li>
             パック済みのソースでは代わりに <b>アンパック</b> が表示され、ファイルが元に戻ります。
           </li>
+          <li>ゲームの ampr_emu が同梱版以降で LZ4 パックを読める場合、パックはそれを残します。それ以外は同梱のリリース版 ampr_emu をインストールします。LZ4 のトレース用ランタイムや、ampr_emu のないゲームでも同じです。</li>
         </ol>
 
         <h3>2. トレース</h3>
@@ -511,6 +524,17 @@ const ja: Messages = {
     journal: (size) => `ジャーナル ${size}`,
     noJournal: "ジャーナルはまだありません",
     runtimeIs: (label) => `ランタイム：${label}`,
+    index: {
+      stale: "ampr_emu.index が古い：変換で更新されます",
+      damaged: "ampr_emu.index が破損：変換で書き直されます",
+      missing: "ampr_emu.index なし：変換で書き込まれます",
+    },
+    runtimeAction: (a, version) =>
+      a === "install"
+        ? `変換で同梱の ampr_emu ${version} がインストールされます`
+        : a === "replace"
+          ? `変換でランタイムが同梱の ampr_emu ${version} に置き換わります`
+          : `ampr_emu ${version}：変換後もそのまま残ります`,
     backportLibs: (exclusive, n) =>
       exclusive
         ? `fakelib2/（単独でマウント）、バックポートライブラリ ${num(n)} 個`
@@ -670,7 +694,6 @@ const ja: Messages = {
     generate: "内容から名前を生成",
     generatePattern: "[ゲーム名]-[タイトル ID]",
   },
-  tauri: { saveProfile: "プロファイルとして保存", profileFilter: "LZ4 プロファイル（TOML）" },
   // UpdateToast.tsx
   update: {
     available: (v) => `v${v} が利用可能です`,

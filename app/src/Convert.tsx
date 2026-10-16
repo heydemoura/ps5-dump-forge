@@ -44,7 +44,7 @@ import {
 } from "./target";
 
 /** The targets, in the picker's order. */
-const TARGETS: Format[] = ["folder", "pkg", "exfat", "ffpfsc", "ffpkg", "ffpfs"];
+const TARGETS: Format[] = ["folder", "pkg", "exfat", "ffpkg", "ffpfsc", "ffpfs"];
 /** The target a new source starts with: fpkg (the debug .pkg), or exfat for a .pkg source. */
 const DEFAULT_FORMAT: Format = "pkg";
 const startFormat = (path: string, isImage: boolean): Format =>
@@ -68,7 +68,7 @@ export function Convert(props: {
   const [password, setPassword] = useState<string | null>(null);
   const [format, setFormat] = useState<Format>(DEFAULT_FORMAT);
   /** The image inside a `.ffpfsc`; kept while other targets are picked. */
-  const [inner, setInner] = useState<InnerFormat>("exfat");
+  const [inner, setInner] = useState<InnerFormat>("ffpkg");
   /** Leave the backport libraries out; offered only for a source that has some. */
   const [removeBackport, setRemoveBackport] = useState(false);
   /** Re-read every byte instead of sampling; kept across sources and targets. */
@@ -77,9 +77,6 @@ export function Convert(props: {
   const [krakenLevel, setKrakenLevel] = useState<KrakenLevel>("fast");
   /** The `.ffpfsc` zlib level, 0–9; kept across sources and targets. */
   const [ffpfscLevel, setFfpfscLevel] = useState(DEFAULT_FFPFSC_LEVEL);
-  /** Install or replace the AMPR runtime in the output; on for each new source (offered only
-   * where `runtimeCard` says). */
-  const [runtimeOn, setRuntimeOn] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false); // state lags a fast double click
@@ -98,7 +95,6 @@ export function Convert(props: {
     setSourceIsImage(isImage);
     setFormat(fmt);
     setRemoveBackport(false);
-    setRuntimeOn(true);
     setIns(null);
     setPassword(null);
     setInsError(null);
@@ -158,32 +154,32 @@ export function Convert(props: {
   const libs = ins ? ins.backport.length : 0;
   const emus = ins ? emulatorNames(ins) : [];
 
-  // A packed source (LZ4 asset packs) copies as it is; core refuses what needs its packs
-  // unpacked first, which the LZ4 tab does.
+  // A packed source (LZ4 asset packs) keeps its packs; core refuses what needs them unpacked
+  // first, which the LZ4 tab does.
   const lz4 = ins?.lz4 ?? null;
-  const lz4Reason = !lz4?.packed
-    ? null
-    : removable && removeBackport
-      ? t.lz4Backport
-      : lz4.runtime === "forge_trace"
-        ? t.lz4Trace
-        : null;
+  const lz4Reason = lz4?.packed && removable && removeBackport ? t.lz4Backport : null;
 
-  // An AMPR title, not packed, that carries its own ampr_emu naming an older version than the
-  // bundled one: offer the bundled one in the output (core's unpatch). Hidden without a runtime,
-  // with one whose version can't be read, and when an older backend doesn't say which version it
-  // ships. Forge's trace runtime is swapped by core anyway.
+  // What core's plain conversion does to an AMPR game by itself (nothing to choose, only said):
+  // core's runtime_action installs, replaces or keeps its ampr_emu, and a stale, damaged or
+  // missing ampr_emu.index is written afresh, leaving the old traces out. A package's builder
+  // always writes its own index. A game that doesn't use AMPR gets no note.
   const shipped = lz4?.shipped_runtime_version;
-  const runtimeCard =
-    !!lz4 &&
-    !!shipped &&
-    lz4.imports_ampr &&
-    !lz4.packed &&
-    !lz4.manifest_error &&
-    lz4.runtime === "other" &&
-    !!lz4.runtime_version &&
-    !lz4.runtime_current;
-  const installRuntime = runtimeCard && runtimeOn;
+  const action = lz4?.imports_ampr ? lz4.runtime_action : null;
+  const own = lz4?.runtime === "other" ? (lz4.runtime_version ?? null) : null;
+  const runtimeNote =
+    !action || !shipped
+      ? null
+      : t.amprRuntime(action === "replace" && lz4?.runtime === "forge_trace" ? "trace" : action, own, shipped);
+  // Remove backport leaves fakelib files out before core compares the index, so an ok one goes stale.
+  const indexState = lz4?.index === "ok" && removable && removeBackport ? "stale" : lz4?.index;
+  const indexNote =
+    !lz4?.imports_ampr || lz4.packed
+      ? null
+      : format === "pkg"
+        ? t.amprPkgIndex(lz4.journal_bytes !== null)
+        : indexState && indexState !== "ok"
+          ? t.amprIndex(indexState, lz4.journal_bytes !== null)
+          : null;
 
   // Build would certainly fail: say why next to it instead.
   const hard = ins ? ins.findings.filter((l) => classify(l).kind === "block") : [];
@@ -209,8 +205,8 @@ export function Convert(props: {
       full_verify: fullVerify,
       kraken_level: krakenLevel,
       ffpfsc_level: ffpfscLevel,
-      // LZ4 tracing and unpacking start from the LZ4 tab; here only the runtime card.
-      lz4: installRuntime ? "unpatch" : null,
+      // LZ4 tracing, packing and unpatching start from the LZ4 tab.
+      lz4: null,
       ...(password !== null && { archive_password: password }),
     };
     submittingRef.current = true;
@@ -245,6 +241,8 @@ export function Convert(props: {
   const hasJobs = props.jobs.length > 0;
   // An unreadable source fails its naming too: Source already says why.
   const shownError = insError ? null : error;
+  // What to expect for an AMPR game, unless Build is off anyway.
+  const ampr = !blockReason && (runtimeNote !== null || indexNote !== null);
 
   return (
     <div className={hasJobs ? "screen with-jobs" : "screen"}>
@@ -311,23 +309,7 @@ export function Convert(props: {
             </div>
           )}
           {format === "pkg" && <KrakenField prefix="c" value={krakenLevel} onChange={setKrakenLevel} />}
-          <VerifySwitch checked={fullVerify} onChange={setFullVerify}>
-            {runtimeCard && (
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  className="visually-hidden"
-                  checked={runtimeOn}
-                  onChange={(e) => setRuntimeOn(e.target.checked)}
-                />
-                <span className="switch-track" aria-hidden="true" />
-                <span>
-                  {t.runtime}
-                  <span className="muted hint">{t.runtimeHint}</span>
-                </span>
-              </label>
-            )}
-          </VerifySwitch>
+          <VerifySwitch checked={fullVerify} onChange={setFullVerify} />
           <button className="link" onClick={props.onCompare}>
             <Icon name="table" />
             {t.compare}
@@ -344,7 +326,7 @@ export function Convert(props: {
               {t.build}
             </button>
           </div>
-          {(blockReason || formatWarn > 0 || dupe || shownError) && (
+          {(blockReason || formatWarn > 0 || dupe || shownError || ampr) && (
             <div className="build-notes">
               {shownError && <p className="bad">{shownError}</p>}
               {blockReason && (
@@ -359,6 +341,18 @@ export function Convert(props: {
                 <p className="note-line warn">
                   <Icon name="warn" />
                   <span>{t.likelyFail(kindLabel(format))}</span>
+                </p>
+              )}
+              {ampr && runtimeNote && (
+                <p className="note-line muted">
+                  <Icon name="info" />
+                  <span>{runtimeNote}</span>
+                </p>
+              )}
+              {ampr && indexNote && (
+                <p className="note-line muted">
+                  <Icon name="info" />
+                  <span>{indexNote}</span>
                 </p>
               )}
               {dupe && (

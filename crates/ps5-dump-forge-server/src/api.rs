@@ -411,13 +411,6 @@ impl Server {
                 Ok(Response::json(&()))
             }
             (true, "stale_parts") => self.stale_parts(body),
-            (true, "lz4_plan_profile") => {
-                // A Pack `start_job` body; reads only (sampling a few MiB per large file).
-                let request = parse::<StartArg>(body)?.request;
-                readable(&request.source)?;
-                let saved = self.capped(|| ps5_dump_forge_core::lz4_plan_profile(&request))?;
-                Ok(Response::json(&saved))
-            }
             (true, "lz4_patch") => self.lz4_patch(body, false),
             (true, "lz4_unpatch") => self.lz4_patch(body, true),
             (false, "lz4_traces") => self.lz4_traces(&head.query),

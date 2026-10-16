@@ -55,14 +55,29 @@ const en = {
     alreadyFolder: "the source is already a folder",
     lz4Backport:
       "This game's assets are LZ4 packed and its LZ4 manifest lists the backport: unpack it in the LZ4 tab first, then remove the backport here.",
-    lz4Trace:
-      "This packed game carries the LZ4 trace runtime: unpack or pack it again in the LZ4 tab first.",
     unreadable: "Can't build: this source couldn't be read (see Source).",
     noContentId: "Can't build as fpkg: this game's param.json has no content ID, which a package needs.",
     blocked: (first: string, more: number) =>
       `Can't build: ${first}${more > 0 ? ` (and ${num(more)} more, see Source)` : ""}.`,
-    runtime: "Update AMPR",
-    runtimeHint: "This game's ampr_emu isn't the latest version.",
+    /** What the conversion does to an AMPR game's ampr_emu. `own` is the game's version:
+     * for "keep", null when it is Forge's release runtime (the bundled one); for "replace", null
+     * when it names none. */
+    amprRuntime: (a: "install" | "trace" | "replace" | "keep", own: string | null, version: string) => {
+      if (a === "install") return `This game uses AMPR but has no ampr_emu: the conversion installs the bundled ampr_emu ${version}.`;
+      if (a === "trace") return `The conversion replaces the LZ4 trace runtime with the bundled release ampr_emu ${version}.`;
+      if (a === "replace")
+        return own
+          ? `The conversion replaces this game's ampr_emu ${own} with the bundled ampr_emu ${version}.`
+          : `The conversion replaces this game's ampr_emu, which names no version, with the bundled ampr_emu ${version}.`;
+      return own
+        ? `This game's ampr_emu ${own} is as new as the bundled ${version} or newer: the conversion keeps it.`
+        : `This game already has the bundled ampr_emu ${version}: the conversion keeps it.`;
+    },
+    amprIndex: (state: "stale" | "damaged" | "missing", traces: boolean) =>
+      `${state === "stale" ? "ampr_emu.index doesn't list this game's files" : state === "damaged" ? "ampr_emu.index can't be read" : "This game has no ampr_emu.index"}: the conversion writes a fresh one${traces ? " and leaves out the old traces" : ""}.`,
+    /** A package's index: the builder always writes it afresh from what it packages. */
+    amprPkgIndex: (traces: boolean) =>
+      `The package gets a fresh ampr_emu.index built from the files it holds${traces ? ", without the old traces" : ""}.`,
     removeBackport: "Remove backport",
     /** What "Remove backport" leaves out and keeps: the emulators by name, and any other homebrew libraries. */
     removeHint: (libs: number, emulators: string[], other: boolean) =>
@@ -116,7 +131,7 @@ const en = {
       ["Verify", "every output after writing: a fast sample by default, every byte on request."],
       ["Delete", "a game from the disk, after you confirm."],
       ["LZ4", "trace an AMPR game, then pack its assets (experimental)."],
-      ["AMPR runtime", "install or update ampr_emu in the converted copy."],
+      ["AMPR runtime", "every conversion installs or updates the game's ampr_emu (one as new as the bundled one or newer stays) and refreshes a stale ampr_emu.index."],
       ["PS5 payload", "the same app on the console, open from any device on your network."],
     ] as [string, string][],
     howToConnect: "How to connect",
@@ -297,8 +312,6 @@ const en = {
         ? "Rebuilds this image with the release runtime, then replaces it."
         : "Puts the release runtime back in this folder.",
     noAmpr: "the game doesn't use AMPR",
-    noRuntime: "the game has no ampr_emu",
-    noRuntimeWarn: "This game has no ampr_emu, so LZ4 can't convert it.",
     packedFirst: "the source is LZ4 packed: unpack it first",
     damaged: "its LZ4 packs are damaged",
     archive: "an archive can't be traced: convert it first",
@@ -317,7 +330,15 @@ const en = {
     blocked: (a: Lz4Action, first: string, more: number) =>
       `Can't ${a}: ${first}${more > 0 ? ` (and ${num(more)} more, see Source)` : ""}.`,
     chooseGame: "Choose a game folder or image first.",
-    nothing: "Nothing to do: this game doesn't use AMPR and isn't LZ4 packed.",
+    noAmprGame: "This game doesn't use AMPR, so LZ4 can't be used here.",
+    installsRuntime: (a: TraceAct | "pack", version: string) =>
+      a === "pack"
+        ? `This game has no ampr_emu: Pack installs the bundled ampr_emu ${version}.`
+        : a === "patch"
+          ? `This game has no ampr_emu: Patch installs the bundled trace runtime (ampr_emu ${version}).`
+          : `This game has no ampr_emu: Unpatch installs the bundled release runtime (ampr_emu ${version}).`,
+    freshIndex: (state: "stale" | "damaged" | "missing", a: TraceAct | "pack") =>
+      `${state === "stale" ? "ampr_emu.index doesn't list this game's files" : state === "damaged" ? "ampr_emu.index can't be read" : "This game has no ampr_emu.index"}: ${a === "pack" ? "Pack" : a === "patch" ? "Patch" : "Unpatch"} writes a fresh one.`,
     unavailable: (items: string[]) => `Not for this source: ${items.join("; ")}.`,
     readOnly: (kind: string): ReactNode => <>
       <b>{kind}</b> is read-only on the console, so it can't be traced. Convert it to <b>ffpkg</b> or <b>exfat</b> first.
@@ -346,11 +367,6 @@ const en = {
       n === null
         ? "Writes the packed files back as plain files."
         : `Writes ${num(n)} packed ${plural(n, { one: "file", other: "files" })} back as plain files.`,
-    waitJobs: "Wait for the running jobs to finish",
-    saveHint: "Save Pack's file list as an editable rules profile",
-    saving: "Saving…",
-    saveProfile: "Save as profile",
-    saved: (name: string, packed: number, loose: number) => `Saved ${name}: ${num(packed)} ${plural(packed, { one: "file", other: "files" })} packed, ${num(loose)} loose.`,
     likelyFail: (fmt: string): ReactNode => <>
       Likely to fail as <b>{fmt}</b>: it refuses file names listed in Source.
     </>,
@@ -405,6 +421,7 @@ const en = {
           <li>
             A packed source shows <b>Unpack</b> instead: the loose files come back.
           </li>
+          <li>Pack keeps the game's ampr_emu if it is the bundled version or newer and can read LZ4 packs; otherwise it installs the bundled release one, also over the LZ4 trace runtime and in a game that has none.</li>
         </ol>
 
         <h3>2. Trace</h3>
@@ -487,6 +504,18 @@ const en = {
     journal: (size: string) => `journal ${size}`,
     noJournal: "no journal yet",
     runtimeIs: (label: string) => `runtime ${label}`,
+    index: {
+      stale: "ampr_emu.index out of date: a conversion refreshes it",
+      damaged: "ampr_emu.index damaged: a conversion rewrites it",
+      missing: "no ampr_emu.index: a conversion writes one",
+    } satisfies Record<"stale" | "damaged" | "missing", string>,
+    /** What a conversion does to the runtime; for "keep", the game's own version. */
+    runtimeAction: (a: "install" | "replace" | "keep", version: string) =>
+      a === "install"
+        ? `a conversion installs the bundled ampr_emu ${version}`
+        : a === "replace"
+          ? `a conversion replaces the runtime with the bundled ampr_emu ${version}`
+          : `ampr_emu ${version}: a conversion keeps it`,
     backportLibs: (exclusive: boolean, n: number) =>
       `${exclusive ? "fakelib2/, mounted alone" : "fakelib/"}, ${num(n)} backport ${plural(n, { one: "library", other: "libraries" })}`,
     findings: "Preflight findings",
@@ -643,8 +672,6 @@ const en = {
     generate: "Generate name based on content",
     generatePattern: "[game name]-[title ID]",
   },
-  // transport-tauri.tsx: the native save dialog
-  tauri: { saveProfile: "Save as profile", profileFilter: "LZ4 profile (TOML)" },
   // UpdateToast.tsx: a newer release (checked at every start)
   update: {
     available: (v: string) => `v${v} is available`,

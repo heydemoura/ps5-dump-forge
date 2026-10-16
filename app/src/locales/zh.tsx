@@ -48,14 +48,25 @@ const zh: Messages = {
     alreadyFolder: "源已经是文件夹",
     lz4Backport:
       "此游戏的资源已用 LZ4 打包，且其 LZ4 清单包含向下移植文件：请先在“LZ4”选项卡中解包，再在此处移除向下移植。",
-    lz4Trace:
-      "此已打包游戏带有 LZ4 追踪运行时：请先在“LZ4”选项卡中解包或重新打包。",
     unreadable: "无法构建：无法读取此源（见“源”）。",
     noContentId: "无法构建为 fpkg：此游戏的 param.json 没有软件包所需的 Content ID。",
     blocked: (first, more) =>
       `无法构建：${first}${more > 0 ? `（另有 ${num(more)} 项，见“源”）` : ""}。`,
-    runtime: "更新 AMPR",
-    runtimeHint: "此游戏的 ampr_emu 不是最新版本。",
+    amprRuntime: (a, own, version) => {
+      if (a === "install") return `此游戏使用 AMPR 但没有 ampr_emu：转换时会安装内置的 ampr_emu ${version}。`;
+      if (a === "trace") return `转换时会用内置的正式版 ampr_emu ${version} 替换 LZ4 追踪运行时。`;
+      if (a === "replace")
+        return own
+          ? `转换时会用内置的 ampr_emu ${version} 替换此游戏的 ampr_emu ${own}。`
+          : `转换时会用内置的 ampr_emu ${version} 替换此游戏未标明版本的 ampr_emu。`;
+      return own
+        ? `此游戏的 ampr_emu ${own} 不低于内置的 ${version}：转换时会保留它。`
+        : `此游戏已带有内置的 ampr_emu ${version}：转换时会保留它。`;
+    },
+    amprIndex: (state, traces) =>
+      `${state === "stale" ? "ampr_emu.index 与此游戏的文件不符" : state === "damaged" ? "无法读取 ampr_emu.index" : "此游戏没有 ampr_emu.index"}：转换时会写入新的索引${traces ? "，并略去旧的追踪数据" : ""}。`,
+    amprPkgIndex: (traces) =>
+      `软件包会获得根据其中文件新建的 ampr_emu.index${traces ? "，并略去旧的追踪数据" : ""}。`,
     removeBackport: "移除向下移植",
     removeHint: (libs, emulators, other) =>
       `从 fakelib/ 中排除 ${num(libs)} 个向下移植库` +
@@ -107,7 +118,7 @@ const zh: Messages = {
       ["校验", "在写入后核对每个输出：默认快速抽样，也可按需逐字节核对。"],
       ["删除", "经您确认后，将游戏从磁盘上移除。"],
       ["LZ4", "追踪 AMPR 游戏，再打包其资源（实验性）。"],
-      ["AMPR 运行时", "在转换后的副本中安装或更新 ampr_emu。"],
+      ["AMPR 运行时", "每次转换都会安装或更新游戏的 ampr_emu（不低于内置版本的会保留），并更新过期的 ampr_emu.index。"],
       ["PS5 payload", "在主机上运行同一个应用，可从局域网内任意设备打开。"],
     ],
     howToConnect: "连接方法",
@@ -281,8 +292,6 @@ const zh: Messages = {
         ? "用正式版运行时重新构建此镜像，然后替换原镜像。"
         : "在此文件夹中恢复正式版运行时。",
     noAmpr: "该游戏未使用 AMPR",
-    noRuntime: "该游戏没有 ampr_emu",
-    noRuntimeWarn: "该游戏没有 ampr_emu，因此无法用 LZ4 转换。",
     packedFirst: "源已用 LZ4 打包：请先解包",
     damaged: "其 LZ4 包已损坏",
     archive: "压缩包无法追踪：请先转换",
@@ -301,7 +310,15 @@ const zh: Messages = {
     blocked: (a, first, more) =>
       `无法${a === "patch" ? "打补丁" : a === "unpatch" ? "移除补丁" : a === "pack" ? "打包" : "解包"}：${first}${more > 0 ? `（另有 ${num(more)} 项，见“源”）` : ""}。`,
     chooseGame: "请先选择游戏文件夹或镜像。",
-    nothing: "无可执行的操作：该游戏未使用 AMPR，也未用 LZ4 打包。",
+    noAmprGame: "该游戏未使用 AMPR，因此这里无法使用 LZ4。",
+    installsRuntime: (a, version) =>
+      a === "pack"
+        ? `该游戏没有 ampr_emu：打包时会安装内置的 ampr_emu ${version}。`
+        : a === "patch"
+          ? `该游戏没有 ampr_emu：打补丁时会安装内置的追踪运行时（ampr_emu ${version}）。`
+          : `该游戏没有 ampr_emu：移除补丁时会安装内置的正式版运行时（ampr_emu ${version}）。`,
+    freshIndex: (state, a) =>
+      `${state === "stale" ? "ampr_emu.index 与此游戏的文件不符" : state === "damaged" ? "无法读取 ampr_emu.index" : "此游戏没有 ampr_emu.index"}：${a === "pack" ? "打包" : a === "patch" ? "打补丁" : "移除补丁"}时会写入新的索引。`,
     unavailable: (items) => `不适用于此源：${items.join("；")}。`,
     readOnly: (kind) => <>
       <b>{kind}</b> 在主机上是只读的，因此无法追踪。请先将其转换为 <b>ffpkg</b> 或 <b>exfat</b>。
@@ -329,11 +346,6 @@ const zh: Messages = {
     unpackFolder: "新的游戏文件夹，其中的包已还原为普通文件。",
     unpackHint: (n) =>
       n === null ? "将已打包的文件还原为普通文件。" : `将 ${num(n)} 个已打包的文件还原为普通文件。`,
-    waitJobs: "请等待正在运行的任务完成",
-    saveHint: "将“打包”的文件列表保存为可编辑的规则配置文件",
-    saving: "正在保存…",
-    saveProfile: "另存为配置文件",
-    saved: (name, packed, loose) => `已保存 ${name}：${num(packed)} 个文件打包，${num(loose)} 个不打包。`,
     likelyFail: (fmt) => <>
       输出为 <b>{fmt}</b> 很可能失败：该格式不接受“源”中列出的文件名。
     </>,
@@ -389,6 +401,7 @@ const zh: Messages = {
           <li>
             对于已打包的源，这里显示的是 <b>解包</b>：文件会还原为普通文件。
           </li>
+          <li>如果游戏自带的 ampr_emu 不低于内置版本且能读取 LZ4 包，打包会保留它；否则安装内置的正式版 ampr_emu；LZ4 追踪运行时也会被替换，没有 ampr_emu 的游戏也一样。</li>
         </ol>
 
         <h3>2. 追踪</h3>
@@ -469,6 +482,17 @@ const zh: Messages = {
     journal: (size) => `记录 ${size}`,
     noJournal: "尚无记录",
     runtimeIs: (label) => `运行时：${label}`,
+    index: {
+      stale: "ampr_emu.index 已过期：转换时会更新",
+      damaged: "ampr_emu.index 已损坏：转换时会重写",
+      missing: "没有 ampr_emu.index：转换时会写入",
+    },
+    runtimeAction: (a, version) =>
+      a === "install"
+        ? `转换时会安装内置的 ampr_emu ${version}`
+        : a === "replace"
+          ? `转换时会用内置的 ampr_emu ${version} 替换运行时`
+          : `ampr_emu ${version}：转换时会保留`,
     backportLibs: (exclusive, n) =>
       `${exclusive ? "fakelib2/，单独挂载" : "fakelib/"}，${num(n)} 个向下移植库`,
     findings: "预检发现的问题",
@@ -617,8 +641,6 @@ const zh: Messages = {
     generate: "根据内容生成名称",
     generatePattern: "[游戏名称]-[游戏 ID]",
   },
-  // transport-tauri.tsx: the native save dialog
-  tauri: { saveProfile: "另存为配置文件", profileFilter: "LZ4 配置文件（TOML）" },
   // UpdateToast.tsx
   update: {
     available: (v) => `v${v} 现已推出`,

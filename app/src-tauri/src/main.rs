@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use ps5_dump_forge_core::{
     ArchivePassword, ConvertRequest, Event, Format, Inspection, JobId, Jobs, LibraryScan, Lz4Patch,
-    Lz4PlanProfile,
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -242,27 +241,6 @@ async fn delete_path(app: AppHandle, path: PathBuf) -> Result<(), String> {
         let done = state.jobs(app).delete_path(&path, &keep);
         drop(quitting);
         done.map_err(|e| e.to_string())
-    })
-    .await
-}
-
-/// Save as profile: the pack plan `request` (a Pack request) resolves, as a TOML profile written
-/// to `dest`, the save dialog's choice (it already asked about replacing a file; never into the
-/// source, never through a symlink). Reads the source and writes only `dest`; not a job.
-#[tauri::command]
-async fn lz4_save_plan_profile(
-    app: AppHandle,
-    request: ConvertRequest,
-    dest: PathBuf,
-) -> Result<Lz4PlanProfile, String> {
-    blocking(app, move |_, _| {
-        let mut saved = ps5_dump_forge_core::lz4_plan_profile(&request).map_err(err)?;
-        ps5_dump_forge_core::write_lz4_plan_profile(&request.source, &dest, &saved.toml, true)
-            .map_err(err)?;
-        if let Some(name) = dest.file_name() {
-            saved.file_name = name.to_string_lossy().into_owned();
-        }
-        Ok(saved)
     })
     .await
 }
@@ -838,7 +816,6 @@ fn main() {
             stale_parts,
             lz4_patch,
             lz4_unpatch,
-            lz4_save_plan_profile,
             delete_path,
             reveal,
             open_repo,

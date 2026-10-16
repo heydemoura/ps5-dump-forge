@@ -32,7 +32,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
 - `crates/ps5-dump-forge-lz4`: ampr_emu asset packs: AMPRPAK4 manifest + AMPRDAT3 volume writer and
   reader (unpack view as a `SourceTree`), AMPRIDX3 and AMPRCMD1 (journal) readers, pack rules (`rules.rs`),
   the embedded runtimes (`runtime.rs`). Glue in `core/src/lz4.rs` (open/unpack, trace, index, runtime swap);
-  `core/src/lz4_patch.rs` is the in-place folder patch and unpatch; `core/src/lz4_profile.rs` is Save as profile.
+  `core/src/lz4_patch.rs` is the in-place folder patch and unpatch.
   `tree.rs` is `PackedTree`, the packs served as a `SourceTree` from a `writer::measure` pass.
   `vendor/ampr_emu/`: the two upstream 0.4.2.1 `.sprx` runtimes + the source archive (see its README).
 - `crates/ps5-dump-forge-archive`: `.zip`/`.7z`/`.rar` sources (`detect`, `list`, `read_files`, `Reader`,
@@ -115,17 +115,47 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   to the source's own when it is traced, or a profile; Unpack when the source is packed), then **Trace** (a
   folder, `.exfat` or `.ffpkg`: Patch / Unpatch; a folder through `lz4_patch`/`lz4_unpatch`, an image
   through a conversion with `lz4: "trace"|"unpatch"`, `format` = the source's, `lz4_in_place: true`;
-  Download traces in the web build once a journal is there). An AMPR game without its own ampr_emu (runtime `none`) gets
-  no LZ4 action in the tab, Pack included (by user decision; the right card says why, the source card stays). Target pickers (a UI limit; core and CLI keep
-  `.ffpfsc`): Pack folder/`.exfat` (default)/`.ffpkg`/`.ffpfs`, Unpack folder/`.exfat` (default)/`.ffpkg`/`.ffpfs`.
-  Convert sends `lz4: null` except for its **Update AMPR** switch (in the Full verification box, with a one-line
-  reason; on for each new source), which sends `lz4: "unpatch"`, never `lz4_in_place`. It shows only for an AMPR
-  title, not packed, no damaged manifest, whose own runtime (`other`) names an ampr_emu version
-  (`Lz4Facts.runtime_version`, from `runtime::version_of`: the "<ver> (c) Drakmor" string) older than the bundled
-  one: not without a runtime, nor for one whose version can't be read. A runtime at least the bundled version
-  (`not_older`; `Lz4Facts.runtime_current`) is left alone: no switch, and Pack keeps it when it also holds the pack format's
-  magics (`runtime::reads_packs`; upstream's no-pack build is replaced; Patch/Unpatch still install theirs). Job rows: an LZ4 tab job has a yellow edge and an `LZ4 pack|unpack|trace|unpatch` tag;
-  Convert's runtime job is tagged `AMPR runtime`.
+  Download traces in the web build once a journal is there). An AMPR game without its own ampr_emu (runtime `none`)
+  gets every LZ4 action too (by user decision): Pack, Unpack and Patch/Unpatch install the bundled runtime. A game
+  that doesn't use AMPR (and isn't packed) gets none: the right card says "This game doesn't use AMPR, so LZ4 can't
+  be used here" (`lz4.noAmprGame`, by user decision), no actions. Right-card notes (hidden while blocked): Pack/Unpack's
+  runtime action from `Lz4Facts.pack_runtime_action` (install, replace or keep, naming an `other` build's version),
+  Patch/Unpatch's install for runtime `none`, and a non-ok index the action writes afresh (`lz4.freshIndex`; Pack,
+  Patch, Unpatch). Target pickers (a UI limit; core and CLI keep
+  `.ffpfsc`): Pack folder/`.ffpkg` (default)/`.exfat`/`.ffpfs`, Unpack folder/`.ffpkg` (default)/`.exfat`/`.ffpfs`
+  (by user decision).
+  Convert always sends `lz4: null` (by user decision: no Update AMPR switch, nothing to choose); under Build, for an
+  AMPR game only, muted `info` notes say what the conversion does by itself: the runtime action
+  (`Lz4Facts.runtime_action`: install, replace, keep with the version; `convert.amprRuntime`) and the index (a
+  non-ok one written afresh, `amprIndex`, an ok one counted stale while Remove backport is on; for an fpkg target always `amprPkgIndex`: the builder writes it). Inspect's
+  LZ4 tile names install/replace (keep only for an `other` build with a version) and a non-ok index, and shows for
+  an AMPR game a conversion installs the runtime into. Job rows: an LZ4 tab job has a yellow edge and an
+  `LZ4 pack|unpack|trace|unpatch` tag; an `unpatch` without `lz4_in_place` (a server API request; Convert sends
+  none) is tagged `AMPR runtime`.
+- Every conversion repairs an AMPR title (`eboot.bin` imports libSceAmpr; by user decision): any target, Convert,
+  CLI, server and LZ4 jobs alike (`lz4::plain` for a request without LZ4 options, `prepare`'s full path otherwise).
+  Runtime: one rule, `lz4::runtime_of(tree).action(ampr, packs)` → `RuntimeAction`, shared by the jobs and Inspect:
+  `Install` where there is none; `Replace` an ampr_emu older than the bundled one (`runtime::version_of` +
+  `not_older`), one naming no version or unreadable, and Forge's trace runtime (on any title); `Keep` Forge's
+  release runtime and another ampr_emu at the bundled version or newer (by user decision), except into an output
+  holding packs (Pack, a packed source as it is), which also needs `runtime::reads_packs` (upstream's no-pack build
+  is replaced); `Untouched` for a non-AMPR title. Trace/Patch still install the trace runtime and Unpatch the release
+  one whatever is there. `Lz4Facts.runtime_action` (plain convert) and `pack_runtime_action` (Pack/Unpack) name it
+  (`install`/`replace`/`keep`, `None` for a non-AMPR title); the CLI's LZ4 line says it too.
+  Index (any action but `Untouched`): an unpacked source keeps `ampr_emu.index` only when it lists exactly the
+  output's (path, size) set (`lz4::index_state`, the one comparison, Inspect's too; a replaced or installed
+  runtime counted at the release size, `plain_listing`), else a fresh one is written (stale, damaged or missing alike); with a rebuild the journal
+  and logs are left out (the journal's file ids follow the old index's record order), with a kept index they stay
+  (LZ4 jobs always leave them out). `index_state` reads no index bigger than `index_bound` (4 × a fresh index for
+  the listing + 1 MiB: `Stale` unread) nor over 64 MiB (`MAX_INDEX_CHECK`: `Damaged` unread), so the check
+  stays well within a job's 512 MiB.
+  Into a `.pkg` no index is built here: the old one (an AMPR title's), the journal and logs are left out and the
+  builder writes it after its SDK filtering (below), so leftovers it drops can't fail preflight. A packed source
+  gets the runtime action and keeps its index, manifest, journal and logs byte for byte; a replaced runtime then
+  differs from the manifest's loose record, which `reader::unpack` lets pass for `RUNTIME` only (ponytail:
+  unverified on the console). `Lz4Facts.index` (`ok`/`stale`/`damaged`/`missing`; `None` when packed, when the
+  action is `Untouched`, or for an archive's index over 16 MiB) is that comparison; Inspect, Convert, the LZ4
+  tab and the CLI say a conversion refreshes it.
 - The recommended trace path is a traced `.ffpkg` mounted `image_rw=`, then **Download traces** (http build
   only; the desktop app points at Pack): `GET /api/lz4_traces?source=` streams one STORED zip
   (`[GAME_TITLE]-[TITLE_ID]-amprtrace.zip`, the generated output stem + `-amprtrace.zip`) of
@@ -137,14 +167,15 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   mounted image's folder can be picked too. Patching a folder stays offered, though a folder patched in
   place failed to launch on the console (CE-107750-0, cause unknown) where a Forge `.ffpkg` did.
   Both upstream runtimes (release, trace) are embedded with `include_bytes!`, pinned by SHA-256; the trace
-  runtime is swapped for the release one on every pack or plain conversion of a traced dump. Unpatch
-  (`Lz4Mode::Unpatch`, `--lz4-unpatch`) does that explicitly: the release runtime over any runtime
-  (Forge's trace build or another; no backup exists), journal and logs left out, a fresh index; refused
+  runtime is swapped for the release one on every plain conversion and Pack (above). Unpatch
+  (`Lz4Mode::Unpatch`, `--lz4-unpatch`) forces it: the release runtime over any runtime or none, even one
+  a plain convert keeps (no backup exists), journal and logs left out, always a fresh index; refused
   for a packed source ("unpack first") and with `--to lz4` (redundant).
 - LZ4 rule sources, first match: `--lz4-profile x.toml`, copied traces (`--lz4-traces`), the dump's own
   journal of the last trace session (`ampr_commands.bin`, mapped to paths through the source's
   `ampr_emu.index`), else the built-in guess. `--lz4-unpack` (automatic when the target is lz4) restores the
-  logical assets but keeps the runtime and `ampr_emu.index`. A trace (`--lz4-trace`) writes the journal on
+  logical assets; the runtime follows the runtime rule above (kept unless installed or replaced) and an
+  `ampr_emu.index` listing exactly the output stays. A trace (`--lz4-trace`) writes the journal on
   the title's `/app0`, so the output must be writable there: a folder, or an `image_rw` exfat/ffpkg with
   `--lz4-trace-space` MiB (default 256, 64..1024 step 64) of free room; `.ffpfs`/`.ffpfsc`/`.pkg` are refused.
   `--lz4-traces <zip|folder|ampr_commands.bin>` (the downloaded zip: STORED entries only, each CRC-checked,
@@ -164,14 +195,6 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `auto_loose_hot_files`) of ≥ 64 MiB is sampled during preflight (32 blocks / ≤ 16 MiB at fixed, evenly
   spread block indices, `writer::sample` = the writer's `encode`) and kept loose when it saves < 5% or
   ≥ 90% of the blocks stay RAW; one log line `auto-loose: N large files kept loose (incompressible samples): …`.
-- Save as profile (`lz4_plan_profile(&ConvertRequest)` → `Lz4PlanProfile {file_name, toml, packed, loose,
-  log}`, `core/src/lz4_profile.rs`; `convert::lz4_plan` runs a Pack job's front half with every rule,
-  writes nothing, LZ4 findings are the error). The TOML has `auto_loose_large_files = false` (already
-  applied) and one `[[rule]]` per distinct `PackSpec` with exact, fnmatch-escaped paths; loaded back it
-  selects the same specs (round-trip test). Name: the generated stem + `-lz4profile.toml`. CLI
-  `lz4-profile` (`-o`; default next to the source, never
-  overwrites); server `POST /api/lz4_plan_profile` `{request}` (Blob download in the page); Tauri
-  `lz4_save_plan_profile {request, dest}` (`dialog:allow-save`). UI: **Save as profile** beside Pack.
 - Never touch the source: junk (`.DS_Store`, `._*`, `.fseventsd`, ...) is filtered, not deleted.
   Three exceptions, by user decision, all explicit requests:
   1. The LZ4 folder patch and unpatch (`lz4_patch`/`lz4_unpatch`, CLI `lz4-patch`/`lz4-unpatch`, server
@@ -257,6 +280,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   The builder writes a fresh `ampr_emu.index` from the packaged files (a libSceAmpr title or a source
   with one; a stale index crashes the game; a case clash refuses), except for an LZ4-packed source, whose
   own index is kept byte for byte (the runtime checks each record against the pack manifest by file id).
+  So a plain `.pkg` of an unpacked AMPR title builds no index of its own first (`lz4::plain`): the old index,
+  journal and logs are left out and the builder indexes what survives `sdk_rules::excluded`.
 - The UI names formats without the dot (`ffpkg`, `exfat`, `ffpfs`, `ffpfsc`, `fpkg`; `KIND_LABEL` in
   `common.tsx`), and in running text in bold (`Prose`); paths and file names keep the extension. The debug
   FPKG is labelled `fpkg`; its files, the `Format`/`Kind` id and the CLI flag stay `pkg`. Format copy and
@@ -290,8 +315,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
 - No settings and no config file: the UI keeps choices in memory until it closes, except the UI
   language, which `localStorage` keeps (`forge.lang`; by user decision; unreadable storage falls back to
   the system languages). Defaults: Convert's target
-  fpkg (`.pkg`), exfat for a `.pkg` source (by user decision; picker order Folder, fpkg, exfat, ffpfsc, ffpkg,
-  ffpfs), exFAT inside a `.ffpfsc` at zlib
+  fpkg (`.pkg`), exfat for a `.pkg` source (by user decision; picker order Folder, fpkg, exfat, ffpkg, ffpfsc,
+  ffpfs), ffpkg inside a `.ffpfsc` (by user decision), at zlib
   level 6, all cores for compression (`serve`: cores − 1; PS5: its 5 CPUs − 2), `.pkg` Kraken level `fast` (also `balanced`,
   `smallest`, and `stored`: every block raw, the fallback for a console that won't start a compressed
   package; tests use `fast` only), no extra free space beyond each format's built-in spare, output next
@@ -374,8 +399,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   data is contiguous. Files are stored uncompressed (per-file PFSC passes verify but the console misreads it).
   Names: ASCII only, no case collisions, every offender listed.
 - `.ffpfsc`: a single-file PFS (MkPFS `pack file` layout) whose one file is a zlib PFSC container of 64 KiB
-  blocks around a nested `.exfat`/`.ffpkg`/`.ffpfs` named `<TITLE_ID>.<ext>` (default exFAT, MkPFS's most
-  stable). Always PFSC, zlib level 0–9 as zlib numbers them (the slider, `--level`, `ffpfsc_level`;
+  blocks around a nested `.exfat`/`.ffpkg`/`.ffpfs` named `<TITLE_ID>.<ext>` (default `.ffpkg`, by user decision;
+  exFAT is MkPFS's most stable). Always PFSC, zlib level 0–9 as zlib numbers them (the slider, `--level`, `ffpfsc_level`;
   default 6; 0 stores every block raw); a block is kept compressed only if it saves ≥ 5%; a block with
   near-8-bit byte entropy that level 1 shrinks < 2% skips the level's search (stored raw). zlib from
   `flate2` (`miniz_oxide`). Streamed: the inner writer feeds the compressor, which writes the `.part`;
@@ -410,7 +435,6 @@ cargo run -p ps5-dump-forge-cli -- lz4-unpatch <game_dir>   # IN PLACE: release 
 cargo run -p ps5-dump-forge-cli -- convert <img.ffpkg> --lz4-trace --lz4-in-place   # REPLACES the image (also .exfat; --lz4-unpatch)
 cargo run -p ps5-dump-forge-cli -- convert <game_dir> --to lz4 --lz4-traces <x-amprtrace.zip|folder>   # pack with traces from the console
 cargo run -p ps5-dump-forge-cli -- convert <game_dir> --to ffpkg --lz4-pack [--lz4-traces <zip>]   # pack straight into an image (also exfat|ffpfs|ffpfsc)
-cargo run -p ps5-dump-forge-cli -- lz4-profile <game_dir> [--lz4-traces <zip>] [-o x.toml]   # Save as profile: the pack plan as TOML
 scripts/check-lz4.sh <lz4_out_dir> <orig_dir> | --reverse   # upstream Python tools (Docker) inspect/verify our packs, unpack theirs
 cargo run -p ps5-dump-forge-cli -- convert <game_dir> --to ffpfsc --inner exfat   # inner: exfat | ffpkg | ffpfs; --level 0..9
 cargo run --release -p ps5-dump-forge-pfs --example pfs_tool -- ffpfs <dir> <out> <time>   # for MkPFS byte comparisons

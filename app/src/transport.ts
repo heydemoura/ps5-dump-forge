@@ -48,10 +48,6 @@ export interface Transport {
   lz4Patch<T>(source: string): Promise<T>;
   /** Put Forge's release runtime back in a game folder (same argument names as lz4Patch). */
   lz4Unpatch<T>(source: string): Promise<T>;
-  /** Save as profile (api.ts `Lz4PlanProfile`) for a Pack request: the app asks where (the save
-   * dialog, `name` in `dir` offered) and writes it there; the http build downloads it under the
-   * server's name. null: the dialog was cancelled. */
-  savePlanProfile<T>(request: unknown, name: string, dir: string): Promise<T | null>;
   /** The running version and its release file's suffix (after `ps5-dump-forge-<v>-`), or null
    * when this build gets no updates (the http build on a computer). */
   updateTarget(): Promise<{ version: string; asset: string } | null>;

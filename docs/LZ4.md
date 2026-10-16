@@ -20,7 +20,9 @@ in short, offline), in two scenarios: **Trace** (Patch or Unpatch a game folder,
 Download traces in the console web UI once it holds a journal) and **Pack/Unpack** (pack by traces or a
 profile into an LZ4 packed folder, `.ffpkg`, `.exfat` or `.ffpfs`; Unpack a packed source to a folder,
 `.ffpkg`, `.exfat` or `.ffpfs`). `.ffpfsc` is CLI only there; any packed or unpacked folder converts to
-every format in Convert. The Convert tab copies a packed folder as it is.
+every format in Convert. The Convert tab copies a packed folder as it is, except an outdated or missing runtime
+(see [Every conversion of an AMPR game](#every-conversion-of-an-ampr-game)). For a game that doesn't use
+AMPR the **LZ4** tab says "This game doesn't use AMPR, so LZ4 can't be used here" and offers nothing.
 
 ## How it works
 
@@ -34,7 +36,9 @@ Which files to pack comes from a recording, so it takes two converts:
 2. **Pack.** Convert the traced dump (or the folder you copied back) with `--to lz4` / **LZ4** →
    **Pack/Unpack**. Forge reads the journal, packs the files the game read, except those the engine opens
    directly (container indexes, configs, media) and files at the game's root, leaves the rest loose, swaps
-   the trace runtime for the release one and removes the journal and logs. Or pass `--lz4-profile x.toml` to choose the files
+   the trace runtime for the release one (and installs it where the game has none, or replaces an older
+   ampr_emu, one that names no version, or one that can't read packs; a build at Forge's version or newer
+   that reads packs stays) and removes the journal and logs. Or pass `--lz4-profile x.toml` to choose the files
    yourself; without a recording or a profile it falls back to a built-in guess, which is less reliable.
 
    Packed files exist for the game only once it has started AMPR, so anything it reads before that must
@@ -46,11 +50,6 @@ Which files to pack comes from a recording, so it takes two converts:
    (32 blocks spread across it, at most 16 MiB) and stays loose when the samples save under 5% or 90% of
    them stay uncompressed; hot files (a profile's `hot = true`) are exempt unless `auto_loose_hot_files = true`. A profile tunes it with the
    `[pack] auto_loose_*` keys (`auto_loose_large_files = false` turns it off).
-
-   **Save as profile** (beside Pack; CLI `ps5-dump-forge lz4-profile <dump> [--lz4-traces <zip>]
-   [-o x.toml]`) saves the plan Pack would use, after all of the above, as an editable TOML,
-   `[Game title]-[TITLE_ID]-lz4profile.toml`: one rule per kind of packing listing the exact paths.
-   Edit it, then pack with **Use a rules profile** / `--lz4-profile`.
 3. Or pack straight into an image: **LZ4** → **Pack/Unpack** → Target **.ffpkg** (or `.exfat`, `.ffpfs`;
    the CLI also `.ffpfsc`), CLI `convert <dump> --to ffpkg --lz4-pack [--lz4-traces <zip|folder|journal>]
    [--lz4-profile x.toml]`. `.fpkg` is not offered (packing into a package is not supported yet). The
@@ -102,16 +101,38 @@ FTP).
 `convert <image> --lz4-unpatch --lz4-in-place` for an `.exfat`/`.ffpkg`) undoes a patch: Forge's release
 runtime (0.4.2.1) replaces whatever runtime is there (no backup of an earlier one exists), the journal and
 logs are deleted and a fresh `ampr_emu.index` is written. A folder changes in place; an image is rebuilt
-and replaced like Patch. `--lz4-unpatch` also works on an ordinary convert into a new output; in the app
-that is Convert's **AMPR runtime** switch, shown for an AMPR title (not packed) whose
-`fakelib/libSceAmpr.sprx` is missing (**Install**) or not a runtime Forge ships (**Replace**: other bytes
-may be newer or older, not necessarily outdated), on for each new source. The output gets the bundled
-release runtime, without the journal and logs and with a fresh `ampr_emu.index`; the source is left as it
-is, and off copies the runtime unchanged. Forge's own trace runtime is swapped in any case.
+and replaced like Patch. `--lz4-unpatch` also works on an ordinary convert into a new output (CLI): the
+bundled release runtime replaces any runtime, even one as new as Forge's that a conversion would keep, and
+the journal, logs and old index always stay out. Without it, a conversion already installs or updates the
+runtime and refreshes a stale index by itself (below).
 
 `--lz4-unpack` (converting to anything with the option on; UI: **LZ4** → **Pack/Unpack** on a packed
-source) restores the loose assets byte for byte; the runtime and its `ampr_emu.index` stay, so the folder
-keeps working.
+source) restores the loose assets byte for byte; the runtime stays unless it is outdated (below) and so does
+an `ampr_emu.index` that lists exactly the restored files, so the folder keeps working.
+
+## Every conversion of an AMPR game
+
+Any conversion of an AMPR title (Convert, the CLI, the console web UI and the LZ4 tab's jobs; every target)
+fixes two things in the output by itself, with nothing to choose; Inspect, Convert and the **LZ4** tab say
+which. The source is left as it is.
+
+- **The runtime** (`fakelib/libSceAmpr.sprx`). Installed: a game without its own ampr_emu gets the bundled
+  release runtime (0.4.2.1). Replaced: Forge's trace runtime, an ampr_emu older than Forge's, or one whose
+  version can't be read. Kept: Forge's release runtime, or another ampr_emu at Forge's version or newer;
+  into packs (Pack, or a packed game copied as it is) only if it can also read them, else it is replaced.
+  A trace or Patch still puts the trace runtime in, and Unpatch the release one, whatever is there.
+- **The index.** `ampr_emu.index` stays only when it lists exactly the files written, with their sizes;
+  otherwise (stale, damaged or missing) a fresh one is written, and the journal and logs are left out with
+  the old one, since the journal names files by the old index's order. The files written include the
+  runtime the output gets: an index that lists the old runtime's size (or no runtime) is rebuilt, one that
+  already lists the release runtime at its size stays. **Remove backport** leaves files out, so it makes an
+  index stale too. An index far bigger than the game's file list
+  needs is judged stale without being read. A `.fpkg` always gets a fresh index from the package builder,
+  built from the files it actually packages.
+- **A packed game** gets the same runtime rule, but its `ampr_emu.index`, pack manifest, journal and logs
+  are copied byte for byte (the manifest's file ids are the index's records). A replaced runtime then no
+  longer matches the size the manifest lists; Forge's reader allows that for the runtime alone. Not yet
+  confirmed on the console.
 
 ## Things to know
 
@@ -120,7 +141,9 @@ keeps working.
   `--lz4-trace-space` MiB (default 256, 64 to 1024 in steps of 64) of free room in such an image. Measured
   on Stellar Blade: about 2 MB of journal per 5 minutes of heavy loading, ≈ 25 MB/hour, so 256 MiB ≈ 10
   hours. `.ffpfs`, `.ffpfsc` and `.pkg` cannot be traced.
-- **Only AMPR titles.** A game whose `eboot.bin` does not import `libSceAmpr` is refused.
+- **Only AMPR titles.** A game whose `eboot.bin` does not import `libSceAmpr` is refused (the **LZ4**
+  tab says "This game doesn't use AMPR, so LZ4 can't be used here"; Convert shows no AMPR notes for it).
+  A game without its own ampr_emu is fine: Pack, Unpack, Patch and Unpatch install the bundled one.
 - **Patch and Unpatch are the only LZ4 operations that change your source** (Delete, in Inspect or the
   Library, removes it). Keep the original dump to pack from. Only a folder, `.exfat` or `.ffpkg` can be
   patched (`.ffpfs`, `.ffpfsc` and `.pkg` are read-only on the console), and a packed source must be

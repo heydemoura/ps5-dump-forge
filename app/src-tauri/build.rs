@@ -13,7 +13,6 @@ const COMMANDS: &[&str] = &[
     "stale_parts",
     "lz4_patch",
     "lz4_unpatch",
-    "lz4_save_plan_profile",
     "delete_path",
     "reveal",
     "open_repo",

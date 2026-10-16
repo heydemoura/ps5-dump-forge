@@ -27,7 +27,6 @@ mod library;
 mod library_roots;
 mod lz4;
 mod lz4_patch;
-mod lz4_profile;
 mod lz4_traces;
 mod package;
 mod portable;
@@ -148,7 +147,7 @@ pub struct ConvertRequest {
     /// Compression thread cap for `.pkg` and `.ffpfsc` builds (all cores when unset).
     #[serde(default)]
     pub compression_threads: Option<usize>,
-    /// For `.ffpfsc`: the image inside, `Exfat` (when unset), `Ffpkg` or `Ffpfs`; any other
+    /// For `.ffpfsc`: the image inside, `Ffpkg` (when unset), `Exfat` or `Ffpfs`; any other
     /// format fails preflight. Ignored for every other target.
     #[serde(default)]
     pub inner: Option<Format>,
@@ -410,9 +409,20 @@ pub struct Lz4Facts {
     pub shipped_runtime_version: &'static str,
     /// The ampr_emu version the game's own runtime names itself with, when it does.
     pub runtime_version: Option<String>,
-    /// The game's runtime is another ampr_emu build, [`Lz4Facts::shipped_runtime_version`] or
-    /// newer: nothing to update (Convert offers no update, Pack keeps it).
-    pub runtime_current: bool,
+    /// What a plain conversion does to the runtime (by user decision): `install` (none there),
+    /// `replace` (Forge's trace runtime, an older ampr_emu or one naming no version: the
+    /// bundled release runtime goes in) or `keep` (Forge's release runtime, or ampr_emu at
+    /// [`Lz4Facts::shipped_runtime_version`] or newer). `None` for a non-AMPR title.
+    pub runtime_action: Option<&'static str>,
+    /// The same for the LZ4 tab's Pack (an unpacked source) or Unpack (a packed one): Pack
+    /// also replaces a not-older runtime that can't read packs.
+    pub pack_runtime_action: Option<&'static str>,
+    /// `ampr_emu.index` against the files a plain conversion writes (the same comparison the
+    /// job makes, the runtime as it installs, replaces or keeps it): `ok`, `stale`, `damaged`
+    /// or `missing` (the last three written anew by any conversion). `None` when no conversion
+    /// touches it: a packed source (kept byte for byte), a non-AMPR title or an archive's
+    /// unread index.
+    pub index: Option<&'static str>,
     /// Size of the trace journal (`ampr_commands.bin`), when present.
     pub journal_bytes: Option<u64>,
     /// With the journal and its `ampr_emu.index` both present: the name [`lz4_traces`] gives
@@ -520,40 +530,6 @@ pub fn library_cover(path: &Path) -> anyhow::Result<Option<String>> {
 }
 
 pub use lz4_traces::Lz4Traces;
-
-/// What [`lz4_plan_profile`] resolved, as an editable TOML rules profile.
-#[derive(Debug, Clone, Serialize)]
-pub struct Lz4PlanProfile {
-    /// `[GAME_TITLE]-[TITLE_ID]-lz4profile.toml` (the generated stem, as the traces zip's).
-    pub file_name: String,
-    pub toml: String,
-    /// Files the plan packs and leaves loose (every logical file, the runtime and index too).
-    pub packed: usize,
-    pub loose: usize,
-    /// The resolution's log lines (rule source, keep-loose, auto-loose), as a job would log them.
-    pub log: Vec<String>,
-}
-
-/// Save as profile: the pack plan a Pack job of `request` would resolve (the source opened,
-/// packs decoded, traces, profile or built-in guess, the keep-loose list, auto-loose sampling),
-/// written as a TOML profile that `--lz4-profile` loads back to the same selection. Writes
-/// nothing; the LZ4 findings a job would refuse with are the error.
-pub fn lz4_plan_profile(request: &ConvertRequest) -> anyhow::Result<Lz4PlanProfile> {
-    lz4_profile::plan_profile(request)
-}
-
-/// Writes a saved profile's `toml` to `dest`, never into `source`: refused when `dest` is inside
-/// the source folder or is the source image (aliases through links or case included), or when
-/// it exists and is not a regular file (a symlink is never followed). An existing regular file
-/// is replaced only with `replace` (written beside it, then renamed over it); else refused.
-pub fn write_lz4_plan_profile(
-    source: &Path,
-    dest: &Path,
-    toml: &str,
-    replace: bool,
-) -> anyhow::Result<()> {
-    lz4_profile::write(source, dest, toml, replace)
-}
 
 /// The LZ4 trace files a traced game writes at its root: the journal, and the path index
 /// whose file ids it names. Pack takes both from one folder.

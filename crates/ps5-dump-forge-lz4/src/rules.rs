@@ -424,7 +424,7 @@ impl Profile {
 }
 
 /// `Profile::rules` compiled once by `load_profile`, so matching a file compiles nothing and
-/// patterns that name one exact path (Save as profile writes one per packed file) are a map
+/// patterns that name one exact path (a profile may list one per packed file) are a map
 /// lookup, not a scan. Selects the same rule as the plain reverse scan: the last rule with a
 /// matching include and no matching exclude.
 #[derive(Clone, Default)]

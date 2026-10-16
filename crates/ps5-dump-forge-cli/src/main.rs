@@ -27,8 +27,6 @@ usage: ps5-dump-forge inspect <path> [--json] [--password-stdin]
                          (--lz4-trace [--lz4-trace-space <MiB>] | --lz4-unpatch) [--full-verify]
        ps5-dump-forge lz4-patch <folder>
        ps5-dump-forge lz4-unpatch <folder>
-       ps5-dump-forge lz4-profile <source> [--lz4-traces <zip|dir|journal> | --lz4-profile <toml>]
-                         [-o <out.toml>] [--password-stdin]
        ps5-dump-forge serve [--port N] --root <dir> [--root <dir>]...
 
   inspect   describe a game folder, image (.exfat, .ffpkg, .ffpfs, .ffpfsc, .pkg) or archive
@@ -42,7 +40,7 @@ usage: ps5-dump-forge inspect <path> [--json] [--password-stdin]
             ffpfsc (compressed PFS container, mounted read-only), or pkg = debug FPKG
             (shown as .fpkg in the app; the file still ends in .pkg), or lz4 = an LZ4 packed
             folder (AMPR asset packs; titles that import libSceAmpr; named like a folder)
-  --inner   with --to ffpfsc: the image inside (default exfat)
+  --inner   with --to ffpfsc: the image inside (default ffpkg)
   -o        output path (default: named from the title id, next to the source); an
             output's name without its extension must stay within 63 bytes (58 for
             .ffpfsc), or ShadowMountPlus can't mount it
@@ -100,11 +98,6 @@ usage: ps5-dump-forge inspect <path> [--json] [--password-stdin]
             undo lz4-patch IN PLACE: install the release runtime at
             fakelib/libSceAmpr.sprx (replacing any runtime there; no backup exists), delete the
             journal and logs, and write a fresh ampr_emu.index. Folders only; not a packed one
-  lz4-profile
-            save the LZ4 pack plan --to lz4 would use (traces, profile or built-in guess, the
-            keep-loose list, auto-loose) as an editable TOML rules profile; reads the source,
-            writes only the TOML (default: [Game]-[TITLE_ID]-lz4profile.toml next to the
-            source; never overwrites). Load it back with --lz4-profile
   serve     the web UI on http://<this computer>:<port> (default 8095); the file browser
             starts at the --root folders (on the PS5: /data, /mnt/shadowmnt, /mnt/usb0..7,
             /mnt/ext0..1, no --root). No protections: anyone on the network can use it
@@ -124,11 +117,6 @@ enum Cli {
     Lz4Patch {
         path: PathBuf,
         unpatch: bool,
-    },
-    Lz4Profile {
-        request: Box<ConvertRequest>,
-        out: Option<PathBuf>,
-        password_stdin: bool,
     },
     Serve {
         port: u16,
@@ -165,9 +153,6 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
             path,
             unpatch: command == "lz4-unpatch",
         });
-    }
-    if command == "lz4-profile" {
-        return parse_lz4_profile(args);
     }
     let mut positional = Vec::new();
     let (mut json, mut to, mut output) = (false, None, None);
@@ -375,51 +360,6 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
     }
 }
 
-fn parse_lz4_profile(mut args: impl Iterator<Item = OsString>) -> Result<Cli, String> {
-    let (mut paths, mut out, mut traces, mut profile) = (Vec::new(), None, None, None);
-    let mut password_stdin = false;
-    while let Some(arg) = args.next() {
-        let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
-        match arg.to_str().unwrap_or("") {
-            "-h" | "--help" => return Ok(Cli::Help),
-            "--password-stdin" => password_stdin = true,
-            "-o" | "--output" => out = Some(PathBuf::from(value("-o")?)),
-            "--lz4-traces" => traces = Some(PathBuf::from(value("--lz4-traces")?)),
-            "--lz4-profile" => profile = Some(PathBuf::from(value("--lz4-profile")?)),
-            flag if flag.starts_with('-') && flag != "-" => {
-                return Err(format!("unknown option {flag:?}"));
-            }
-            _ => paths.push(PathBuf::from(arg)),
-        }
-    }
-    let [source] = <[PathBuf; 1]>::try_from(paths)
-        .map_err(|p| format!("expected one source, got {}", p.len()))?;
-    if traces.is_some() && profile.is_some() {
-        return Err("choose --lz4-profile or --lz4-traces, not both".into());
-    }
-    Ok(Cli::Lz4Profile {
-        request: Box::new(ConvertRequest {
-            source,
-            format: Format::Lz4,
-            output: PathBuf::new(),
-            compression_threads: None,
-            inner: None,
-            remove_backport: false,
-            full_verify: false,
-            kraken_level: KrakenLevel::default(),
-            ffpfsc_level: ps5_dump_forge_core::DEFAULT_FFPFSC_LEVEL,
-            lz4: None,
-            lz4_profile: profile,
-            lz4_traces: traces,
-            lz4_trace_space_mib: ps5_dump_forge_core::DEFAULT_LZ4_TRACE_SPACE_MIB,
-            lz4_in_place: false,
-            archive_password: None,
-        }),
-        out,
-        password_stdin,
-    })
-}
-
 fn parse_serve(mut args: impl Iterator<Item = OsString>) -> Result<Cli, String> {
     let (mut port, mut roots) = (ps5_dump_forge_server::DEFAULT_PORT, Vec::new());
     while let Some(arg) = args.next() {
@@ -574,17 +514,6 @@ fn main() -> ExitCode {
             Err(e) => usage_error(&e),
         },
         Cli::Lz4Patch { path, unpatch } => lz4_patch(&path, unpatch),
-        Cli::Lz4Profile {
-            mut request,
-            out,
-            password_stdin,
-        } => match archive_password(password_stdin) {
-            Ok(password) => {
-                request.archive_password = password;
-                lz4_profile(&request, out)
-            }
-            Err(e) => usage_error(&e),
-        },
         Cli::Serve { port, roots } => serve(port, roots),
     }
 }
@@ -801,7 +730,28 @@ fn lz4_line(f: &ps5_dump_forge_core::Lz4Facts) -> String {
     } else {
         " (eboot.bin does not import libSceAmpr)"
     };
-    format!("LZ4 (AMPR): {state}{ampr}")
+    let index = match f.index {
+        Some(i @ ("stale" | "damaged" | "missing")) => {
+            format!(", ampr_emu.index {i} (a conversion writes a new one)")
+        }
+        _ => String::new(),
+    };
+    let shipped = f.shipped_runtime_version;
+    let action = match (f.runtime_action, f.runtime.as_str()) {
+        (Some("install"), _) => format!(", a conversion installs ampr_emu {shipped}"),
+        (Some("replace"), _) => {
+            format!(", a conversion replaces the runtime with ampr_emu {shipped}")
+        }
+        // Core keeps another runtime only when it names a version at least the bundled one.
+        (Some("keep"), "other") => {
+            format!(
+                ", ampr_emu {} kept",
+                f.runtime_version.as_deref().unwrap_or_default()
+            )
+        }
+        _ => String::new(),
+    };
+    format!("LZ4 (AMPR): {state}{action}{index}{ampr}")
 }
 
 fn lz4_patch(path: &Path, unpatch: bool) -> ExitCode {
@@ -849,45 +799,6 @@ fn lz4_patch(path: &Path, unpatch: bool) -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// Saves the pack plan as a TOML profile: at `out`, else next to the source; never over a file.
-fn lz4_profile(request: &ConvertRequest, out: Option<PathBuf>) -> ExitCode {
-    let fail = |e: anyhow::Error| {
-        eprintln!("ps5-dump-forge: {e:#}");
-        ExitCode::FAILURE
-    };
-    let saved = match ps5_dump_forge_core::lz4_plan_profile(request) {
-        Ok(saved) => saved,
-        Err(e) => return fail(e),
-    };
-    for line in &saved.log {
-        eprintln!("ps5-dump-forge: {line}");
-    }
-    let path = match out {
-        Some(p) => p,
-        // The folder holding the source, as core names outputs there.
-        None => match ps5_dump_forge_core::default_output_with(
-            &request.source,
-            Format::Folder,
-            Path::new(""),
-            request.archive_password.as_ref().map(|p| p.as_str()),
-        ) {
-            Ok(p) => p.with_file_name(&saved.file_name),
-            Err(e) => return fail(e),
-        },
-    };
-    if let Err(e) =
-        ps5_dump_forge_core::write_lz4_plan_profile(&request.source, &path, &saved.toml, false)
-    {
-        return fail(e);
-    }
-    print_out(&format!(
-        "saved {}: {} files packed, {} loose; edit it and load it with --lz4-profile\n",
-        path.display(),
-        saved.packed,
-        saved.loose
-    ))
 }
 
 /// stdout, without the panic `print!` has on a closed pipe.

@@ -1,7 +1,7 @@
 // Pieces of a Target card that Convert and LZ4 share: format copy, the per-format settings,
 // Full verification, and the output name (generated or typed) with its folder.
 
-import { useRef, useState, type ReactNode } from "react";
+import { useRef, useState } from "react";
 
 import { api, errorText, pick, type Format, type InnerFormat, type KrakenLevel } from "./api";
 import {
@@ -175,8 +175,6 @@ export function KrakenField(props: {
 export function VerifySwitch(props: {
   checked: boolean;
   onChange: (on: boolean) => void;
-  /** More switches for the same box (Convert's Update AMPR). */
-  children?: ReactNode;
 }) {
   const t = useMessages().target;
   return (
@@ -194,7 +192,6 @@ export function VerifySwitch(props: {
           <span className="muted hint">{t.fullVerifyHint}</span>
         </span>
       </label>
-      {props.children}
     </div>
   );
 }

@@ -659,6 +659,9 @@ function Lz4Tile({ facts }: { facts: Lz4Facts }) {
   const { state, detail } = lz4State(facts);
   const notes = [detail];
   if (!facts.imports_ampr) notes.push(t.noAmpr);
+  const runtime = facts.imports_ampr ? runtimeAction(facts) : null;
+  if (runtime) notes.push(runtime);
+  if (facts.index && facts.index !== "ok") notes.push(t.index[facts.index]);
   const look = facts.packed
     ? " neon packed"
     : facts.manifest_error !== null
@@ -677,13 +680,32 @@ function Lz4Tile({ facts }: { facts: Lz4Facts }) {
   );
 }
 
-/** "Packed" / "Damaged packs" / "Traced" / "Plain", and what backs it (read at call time). */
-/** The LZ4 (AMPR) tile shows for a game with its own ampr_emu or any LZ4 artifact (packs, a
- * damaged manifest, traces); one that only imports Sony's libSceAmpr has nothing for LZ4. */
-function lz4Shown(f: Lz4Facts): boolean {
-  return f.runtime !== "none" || !!f.packed || f.manifest_error !== null || f.journal_bytes !== null;
+/** What a conversion does to an AMPR game's runtime, as the CLI's `inspect` says it: installs
+ * or replaces with the bundled ampr_emu, or keeps the game's own (named only when it is another
+ * build: Forge's release runtime is the bundled one). Null when there is nothing to say. */
+function runtimeAction(f: Lz4Facts): string | null {
+  const t = msg().common;
+  const shipped = f.shipped_runtime_version;
+  if (!shipped || !f.runtime_action) return null;
+  if (f.runtime_action !== "keep") return t.runtimeAction(f.runtime_action, shipped);
+  return f.runtime === "other" && f.runtime_version ? t.runtimeAction("keep", f.runtime_version) : null;
 }
 
+/** The LZ4 (AMPR) tile shows for a game with its own ampr_emu, any LZ4 artifact (packs, a
+ * damaged manifest, traces), an ampr_emu.index a conversion rewrites, or an AMPR game a
+ * conversion gives the bundled ampr_emu. */
+function lz4Shown(f: Lz4Facts): boolean {
+  return (
+    f.runtime !== "none" ||
+    !!f.packed ||
+    f.manifest_error !== null ||
+    f.journal_bytes !== null ||
+    (!!f.index && f.index !== "ok") ||
+    (f.imports_ampr && f.runtime_action === "install")
+  );
+}
+
+/** "Packed" / "Damaged packs" / "Traced" / "Plain", and what backs it (read at call time). */
 export function lz4State(f: Lz4Facts): { state: string; detail: string } {
   const t = msg().common;
   if (f.packed) {
@@ -738,7 +760,7 @@ export function classify(line: string): { kind: "block" | "warn" | "info"; forma
   // .ffpfs takes ASCII names only, and a .ffpfsc's inner image refuses them too.
   if (/^name not in NFC/.test(line))
     return { kind: "warn", formats: ["exfat", "ffpkg", "ffpfs", "ffpfsc", "pkg"] };
-  // PFS holds ASCII names only; a .ffpfsc defaults to exFAT inside, which takes them.
+  // PFS holds ASCII names only; a .ffpfsc defaults to ffpkg inside, which takes them.
   if (/^name not ASCII/.test(line)) return { kind: "warn", formats: ["ffpfs"] };
   if (/^extraction:/.test(line)) return { kind: "warn", formats: ["folder", "lz4"] };
   if (/^(already 512-byte sectors|geometry differs from the SMP fast path)/.test(line))

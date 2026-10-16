@@ -1,10 +1,12 @@
 //! LZ4 asset packs in a conversion: unpacking a packed source, tracing, and the logical tree
 //! the `Lz4` target packs (`ps5-dump-forge-lz4` does the bytes; this is the job's glue).
 //!
-//! A source no LZ4 option touches converts as before: packs travel as plain files. Otherwise
-//! the tree the job writes is an overlay: the packs decoded ([`open`]), the journal, logs and
-//! old path index left out, the requested runtime installed and `ampr_emu.index` rebuilt for
-//! the final file set ([`prepare`]).
+//! Without an LZ4 option packs travel as plain files, and an AMPR title gets the release
+//! runtime where its own is missing, older or unknown, and an `ampr_emu.index` that fits
+//! ([`plain`]). Otherwise the tree the job writes is
+//! an overlay: the packs decoded ([`open`]), the journal, logs and old path index left out, the
+//! requested runtime installed and `ampr_emu.index` rebuilt for the final file set
+//! ([`prepare`]).
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -29,29 +31,80 @@ use crate::{ConvertRequest, Format, Lz4Mode};
 const MAX_RUNTIME: u64 = 64 << 20;
 /// The largest `ampr_emu.index` read for traces (2 M records and their paths fit).
 const MAX_INDEX: u64 = 512 << 20;
+/// The largest `ampr_emu.index` read whole to be compared with the files written.
+// ponytail: 64 MiB is about 600,000 records; a bigger index is taken as damaged and rebuilt
+// (its journal and logs left out) rather than read whole into a job's 512 MiB.
+const MAX_INDEX_CHECK: u64 = 64 << 20;
 
-/// Which runtime `tree` carries at `fakelib/libSceAmpr.sprx` (`None` without one), and the
-/// ampr_emu version it names itself with, when it does.
-pub(crate) fn runtime_of(tree: &mut dyn SourceTree) -> (RuntimeKind, Option<String>) {
-    let (kind, version, _) = runtime_full(tree);
-    (kind, version)
+/// The runtime at `fakelib/libSceAmpr.sprx`, as [`Runtime::action`] judges it.
+pub(crate) struct Runtime {
+    /// Which one it is ([`RuntimeKind::None`] without one).
+    pub kind: RuntimeKind,
+    /// The ampr_emu version it names itself with, when it does ([`runtime::version_of`]).
+    pub version: Option<String>,
+    /// It holds the pack format ([`runtime::reads_packs`]).
+    pub packs: bool,
 }
 
-/// [`runtime_of`], and whether the runtime holds the pack format ([`runtime::reads_packs`]).
-fn runtime_full(tree: &mut dyn SourceTree) -> (RuntimeKind, Option<String>, bool) {
+/// What a conversion does to the source's runtime (by user decision).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeAction {
+    /// An AMPR title without one: the release runtime goes in.
+    Install,
+    /// Forge's trace runtime, or another one older than the bundled ampr_emu or naming no
+    /// version (into packs also one that reads none): the release runtime replaces it.
+    Replace,
+    /// Forge's release runtime, or ampr_emu at the bundled version or newer: left as it is.
+    Keep,
+    /// Not an AMPR title (and not Forge's trace runtime): nothing to do.
+    Untouched,
+}
+
+impl Runtime {
+    /// The action for a title that imports libSceAmpr (`ampr`, [`imports_ampr`]) or not, into
+    /// an output that holds LZ4 packs (`packs`: Pack, or a packed source converted as it is)
+    /// or not: the one rule the jobs and Inspect share.
+    pub(crate) fn action(&self, ampr: bool, packs: bool) -> RuntimeAction {
+        let current = self.version.as_deref().is_some_and(runtime::not_older);
+        match self.kind {
+            RuntimeKind::ForgeTrace => RuntimeAction::Replace,
+            _ if !ampr => RuntimeAction::Untouched,
+            RuntimeKind::None => RuntimeAction::Install,
+            RuntimeKind::ForgeRelease => RuntimeAction::Keep,
+            RuntimeKind::Other if current && (self.packs || !packs) => RuntimeAction::Keep,
+            RuntimeKind::Other => RuntimeAction::Replace,
+        }
+    }
+}
+
+/// Whether `tree`'s `eboot.bin` imports libSceAmpr.
+pub(crate) fn imports_ampr(tree: &mut dyn SourceTree) -> bool {
+    size_of(tree, "eboot.bin").is_some() && ps5upload_fpkg::source::imports_ampr(tree, "eboot.bin")
+}
+
+/// The runtime `tree` carries at `fakelib/libSceAmpr.sprx`.
+pub(crate) fn runtime_of(tree: &mut dyn SourceTree) -> Runtime {
+    let unknown = Runtime {
+        kind: RuntimeKind::Other,
+        version: None,
+        packs: false,
+    };
     let Some(size) = size_of(tree, RUNTIME) else {
-        return (RuntimeKind::None, None, false);
+        return Runtime {
+            kind: RuntimeKind::None,
+            ..unknown
+        };
     };
     if size > MAX_RUNTIME {
-        return (RuntimeKind::Other, None, false);
+        return unknown;
     }
     match tree.read_range(RUNTIME, 0, size as usize) {
-        Ok(bytes) if bytes.len() as u64 == size => (
-            runtime::classify(&bytes),
-            runtime::version_of(&bytes),
-            runtime::reads_packs(&bytes),
-        ),
-        _ => (RuntimeKind::Other, None, false),
+        Ok(bytes) if bytes.len() as u64 == size => Runtime {
+            kind: runtime::classify(&bytes),
+            version: runtime::version_of(&bytes),
+            packs: runtime::reads_packs(&bytes),
+        },
+        _ => unknown,
     }
 }
 
@@ -250,7 +303,8 @@ fn target_name(format: Format) -> String {
 
 /// The tree the job writes, per the request's LZ4 options (`packs` from [`open`], the
 /// backport already left out). `mtime` is the job's one timestamp (integer seconds) for a
-/// rebuilt `ampr_emu.index` and the pack manifest. Untouched sources come back as they were.
+/// rebuilt `ampr_emu.index` and the pack manifest. Without an LZ4 option, [`plain`] decides.
+/// Untouched sources come back as they were.
 pub(crate) fn prepare(
     req: &ConvertRequest,
     mut tree: Box<dyn SourceTree>,
@@ -263,12 +317,9 @@ pub(crate) fn prepare(
     let target = packing(req);
     let trace = req.lz4 == Some(Lz4Mode::Trace);
     let unpatch = req.lz4 == Some(Lz4Mode::Unpatch);
-    let (kind, version, packs_ok) = runtime_full(tree.as_mut());
-    // Another build of ampr_emu, as new as the bundled one or newer, that reads packs: Pack
-    // keeps it (upstream's no-pack build of the same version is replaced).
-    let current = kind == RuntimeKind::Other
-        && packs_ok
-        && version.as_deref().is_some_and(runtime::not_older);
+    let rt = runtime_of(tree.as_mut());
+    let kind = rt.kind;
+    let ampr = imports_ampr(tree.as_mut());
     // In place, `in_place_findings` says it once.
     if unpatch && packs.packed && !req.lz4_in_place {
         findings.push(format!(
@@ -276,34 +327,25 @@ pub(crate) fn prepare(
              the unpacked copy"
         ));
     }
-    if packs.packed && !packs.unpacked && kind == RuntimeKind::ForgeTrace && !unpatch {
-        findings.push(
-            "this packed dump carries Forge's LZ4 trace runtime: unpack it (Unpack LZ4) or repack \
-             it (the LZ4 packed folder target); swapping the runtime in place would break its \
-             manifest"
-                .into(),
-        );
-    }
     if req.lz4 == Some(Lz4Mode::Unpack) && !packs.packed {
         ctx.log("unpack LZ4: nothing to unpack, the source holds no LZ4 packs");
     }
-    if (trace || target || unpatch)
-        && size_of(tree.as_ref(), "eboot.bin").is_some()
-        && !ps5upload_fpkg::source::imports_ampr(tree.as_mut(), "eboot.bin")
-    {
+    if (trace || target || unpatch) && size_of(tree.as_ref(), "eboot.bin").is_some() && !ampr {
         findings.push(
             "eboot.bin does not import libSceAmpr: LZ4 traces and packs only work for a title \
              that uses AMPR"
                 .into(),
         );
     }
-    let swap = kind == RuntimeKind::ForgeTrace && !packs.packed;
-    if !(trace || target || unpatch || packs.unpacked || swap) || !findings.is_empty() {
+    if !findings.is_empty() {
         return Ok(Prepared {
             tree,
             findings,
             pack: None,
         });
+    }
+    if !(trace || target || unpatch || packs.unpacked) {
+        return plain(req, tree, packs.packed, &rt, ampr, mtime, ctx);
     }
     if trace || target || unpatch {
         ctx.log(runtime::WARNING);
@@ -343,25 +385,25 @@ pub(crate) fn prepare(
             }
         });
         Some(runtime::RELEASE)
-    } else if target && current {
-        ctx.log(format!(
-            "LZ4: keeping the game's ampr_emu {} at {RUNTIME} (the bundled one is {})",
-            version.as_deref().unwrap_or_default(),
-            runtime::VERSION
-        ));
-        None
-    } else if target || kind == RuntimeKind::ForgeTrace {
-        ctx.log(match kind {
-            RuntimeKind::ForgeTrace => {
-                format!("LZ4: swapping the tracing runtime at {RUNTIME} for the release one")
-            }
-            _ => format!("LZ4: installing the release runtime at {RUNTIME}"),
-        });
-        Some(runtime::RELEASE)
     } else {
-        None
+        // Pack installs a runtime whatever `eboot.bin` says (the check above refuses a
+        // non-AMPR one).
+        match rt.action(ampr || target, target) {
+            RuntimeAction::Install | RuntimeAction::Replace => {
+                ctx.log(release_log(kind));
+                Some(runtime::RELEASE)
+            }
+            RuntimeAction::Keep => {
+                keep_log(&rt, ctx);
+                None
+            }
+            RuntimeAction::Untouched => None,
+        }
     };
-    let dropped = |p: &str| p == JOURNAL || p == INDEX || LOGS.contains(&p);
+    // Into a `.pkg` the builder writes the index from exactly what it packages (as in
+    // [`plain`]); a non-AMPR title's own stays listed so that the builder rebuilds it too.
+    let pkg = req.format == Format::Pkg;
+    let dropped = |p: &str| p == JOURNAL || LOGS.contains(&p) || (p == INDEX && (ampr || !pkg));
     let mut files: Vec<SourceFile> = Vec::with_capacity(tree.files().len() + 2);
     for f in tree.files() {
         if !dropped(&f.path) {
@@ -374,6 +416,13 @@ pub(crate) fn prepare(
     if let Some(bytes) = installed {
         put(&mut files, RUNTIME, bytes.len() as u64);
         generated.insert(RUNTIME.into(), Cow::Borrowed(bytes));
+    }
+    if pkg {
+        return Ok(Prepared {
+            tree: overlay(tree, files, generated),
+            findings,
+            pack: None,
+        });
     }
     // The `Lz4` target always writes a new one: the space bound counts exactly that. Unpatch
     // promises a fresh one.
@@ -390,21 +439,6 @@ pub(crate) fn prepare(
         .records;
     put(&mut files, INDEX, index.len() as u64);
     generated.insert(INDEX.into(), Cow::Owned(index));
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    let mut dirs = HashSet::new();
-    for f in &files {
-        let mut at = 0;
-        while let Some(i) = f.path[at..].find('/') {
-            dirs.insert(&f.path[..at + i]);
-            at += i + 1;
-        }
-    }
-    let empty_dirs: Vec<String> = tree
-        .empty_dirs()
-        .iter()
-        .filter(|d| !dirs.contains(d.as_str()))
-        .cloned()
-        .collect();
     let pack = if target {
         Some(plan(
             tree.as_mut(),
@@ -428,14 +462,181 @@ pub(crate) fn prepare(
         );
     }
     Ok(Prepared {
-        tree: Box::new(Overlay {
-            inner: tree,
-            files,
-            empty_dirs,
-            generated,
-        }),
+        tree: overlay(tree, files, generated),
         findings,
         pack,
+    })
+}
+
+/// The job log's line for the release runtime going in where `kind` was.
+fn release_log(kind: RuntimeKind) -> String {
+    match kind {
+        RuntimeKind::ForgeTrace => {
+            format!("LZ4: swapping the tracing runtime at {RUNTIME} for the release one")
+        }
+        RuntimeKind::Other => format!(
+            "LZ4: replacing the game's runtime at {RUNTIME} with the bundled ampr_emu {}",
+            runtime::VERSION
+        ),
+        _ => format!("LZ4: installing the release runtime at {RUNTIME}"),
+    }
+}
+
+/// The job log's line for a runtime left as it is (another build, not older than ours).
+fn keep_log(rt: &Runtime, ctx: &Ctx) {
+    if let (RuntimeKind::Other, Some(v)) = (rt.kind, &rt.version) {
+        ctx.log(format!(
+            "LZ4: keeping the game's ampr_emu {v} at {RUNTIME} (the bundled one is {})",
+            runtime::VERSION
+        ));
+    }
+}
+
+/// A conversion without LZ4 options (by user decision). An AMPR title (`eboot.bin` imports
+/// libSceAmpr) gets the release runtime per [`Runtime::action`] (installed where there is none,
+/// replacing an older or unknown one, another as new as ours kept) and keeps its
+/// `ampr_emu.index` only when it lists exactly the files written ([`index_state`]); else a new
+/// one is written, and the journal and logs are left out with the old one: the journal's file
+/// ids follow its record order. Into a `.pkg` the builder writes the index from the files it
+/// packages, so the old one, the journal and logs are left out here. A packed source keeps its
+/// index, journal and logs byte for byte. Forge's trace runtime is swapped whatever the title.
+/// Anything else comes back untouched.
+fn plain(
+    req: &ConvertRequest,
+    mut tree: Box<dyn SourceTree>,
+    packed: bool,
+    rt: &Runtime,
+    ampr: bool,
+    mtime: i64,
+    ctx: &Ctx,
+) -> anyhow::Result<Prepared> {
+    let untouched = |tree| {
+        Ok(Prepared {
+            tree,
+            findings: Vec::new(),
+            pack: None,
+        })
+    };
+    let action = rt.action(ampr, packed);
+    let release = match action {
+        RuntimeAction::Untouched => return untouched(tree),
+        RuntimeAction::Keep => {
+            keep_log(rt, ctx);
+            false
+        }
+        RuntimeAction::Install | RuntimeAction::Replace => {
+            ctx.log(release_log(rt.kind));
+            true
+        }
+    };
+    let mut generated: HashMap<String, Cow<'static, [u8]>> = HashMap::new();
+    let mut all = tree.files().to_vec();
+    if release {
+        generated.insert(RUNTIME.into(), Cow::Borrowed(runtime::RELEASE));
+        put(&mut all, RUNTIME, runtime::RELEASE.len() as u64);
+    }
+    if packed {
+        // The pack manifest's file ids are the index's records: never rebuilt.
+        ctx.log(format!(
+            "LZ4: keeping {INDEX} as it is: it must match the packs"
+        ));
+        return untouched(if release {
+            overlay(tree, all, generated)
+        } else {
+            tree
+        });
+    }
+    let traces = |f: &SourceFile| f.path == JOURNAL || LOGS.contains(&f.path.as_str());
+    if req.format == Format::Pkg {
+        // Built only after the builder leaves out SDK leftovers, from exactly what it packages
+        // (an AMPR title's always; another's only when it has one, so that one stays).
+        let before = all.len();
+        all.retain(|f| {
+            let out = traces(f) || (ampr && f.path == INDEX);
+            if out && f.path != INDEX {
+                ctx.log(format!("LZ4: leaving out {}", f.path));
+            }
+            !out
+        });
+        if all.len() == before && !release {
+            return untouched(tree);
+        }
+        return untouched(overlay(tree, all, generated));
+    }
+    let mut files = plain_listing(tree.files(), action);
+    let state = index_state(tree.as_mut(), &files)?;
+    match state {
+        IndexState::Ok(_) => {
+            return untouched(if release {
+                overlay(tree, all, generated)
+            } else {
+                tree
+            });
+        }
+        IndexState::Stale => ctx.log(format!(
+            "LZ4: {INDEX} does not list exactly the files written (stale)"
+        )),
+        IndexState::Damaged => ctx.log(format!("LZ4: {INDEX} does not read (damaged)")),
+        IndexState::Missing => ctx.log(format!("LZ4: no {INDEX} yet")),
+    }
+    for f in all.iter().filter(|f| traces(f)) {
+        ctx.log(format!("LZ4: leaving out {}", f.path));
+    }
+    let mut findings = Vec::new();
+    let Some(index) = final_index(tree.as_mut(), &files, false, mtime, ctx, &mut findings)? else {
+        return Ok(Prepared {
+            tree,
+            findings,
+            pack: None,
+        });
+    };
+    put(&mut files, INDEX, index.len() as u64);
+    generated.insert(INDEX.into(), Cow::Owned(index));
+    untouched(overlay(tree, files, generated))
+}
+
+/// `listing` as written beside `ampr_emu.index` by a conversion without LZ4 options: without
+/// the index, the journal and the logs, with the release runtime when `action` installs or
+/// replaces one. What [`index_state`] compares with there.
+pub(crate) fn plain_listing(listing: &[SourceFile], action: RuntimeAction) -> Vec<SourceFile> {
+    let mut files: Vec<SourceFile> = listing
+        .iter()
+        .filter(|f| f.path != INDEX && f.path != JOURNAL && !LOGS.contains(&f.path.as_str()))
+        .cloned()
+        .collect();
+    if matches!(action, RuntimeAction::Install | RuntimeAction::Replace) {
+        put(&mut files, RUNTIME, runtime::RELEASE.len() as u64);
+    }
+    files
+}
+
+/// `inner` as `files`, the `generated` ones served from memory; its empty folders that now
+/// hold a file are left out. `files` keeps the source's order (no sort): a solid archive is read
+/// front to back, and an entry it already went past starts its decode again.
+fn overlay(
+    inner: Box<dyn SourceTree>,
+    files: Vec<SourceFile>,
+    generated: HashMap<String, Cow<'static, [u8]>>,
+) -> Box<dyn SourceTree> {
+    let mut dirs = HashSet::new();
+    for f in &files {
+        let mut at = 0;
+        while let Some(i) = f.path[at..].find('/') {
+            dirs.insert(&f.path[..at + i]);
+            at += i + 1;
+        }
+    }
+    let empty_dirs: Vec<String> = inner
+        .empty_dirs()
+        .iter()
+        .filter(|d| !dirs.contains(d.as_str()))
+        .cloned()
+        .collect();
+    Box::new(Overlay {
+        inner,
+        files,
+        empty_dirs,
+        generated,
     })
 }
 
@@ -446,6 +647,61 @@ fn put(files: &mut Vec<SourceFile>, path: &str, size: u64) {
         path: path.into(),
         size,
     });
+}
+
+/// How the source's `ampr_emu.index` fits the files written beside it.
+pub(crate) enum IndexState {
+    /// It lists exactly their paths and sizes (its bytes).
+    Ok(Vec<u8>),
+    /// It reads but lists other files or sizes, or is too big to list just these.
+    Stale,
+    /// It does not read, or is too big to be any index.
+    Damaged,
+    Missing,
+}
+
+/// The one comparison of the source's `ampr_emu.index` with `files` (every file written but the
+/// index itself), for conversions and Inspect alike.
+pub(crate) fn index_state(
+    tree: &mut dyn SourceTree,
+    files: &[SourceFile],
+) -> anyhow::Result<IndexState> {
+    let Some(size) = size_of(tree, INDEX) else {
+        return Ok(IndexState::Missing);
+    };
+    // Bounded before it is read: one that lists exactly `files` is about a fresh one's size, so
+    // anything bigger is `Stale`; one that could fit but is over the read cap is `Damaged`.
+    if size > index_bound(files) {
+        return Ok(IndexState::Stale);
+    }
+    if size > MAX_INDEX_CHECK {
+        return Ok(IndexState::Damaged);
+    }
+    let old = read_all(tree, INDEX, size)?;
+    let Ok(index) = ps5_dump_forge_lz4::index::read_index(&old) else {
+        return Ok(IndexState::Damaged);
+    };
+    let want: BTreeSet<(&str, u64)> = files.iter().map(|f| (f.path.as_str(), f.size)).collect();
+    let have: BTreeSet<(&str, u64)> = index
+        .records
+        .iter()
+        .map(|(p, s)| (p.as_str(), *s))
+        .collect();
+    Ok(if have == want {
+        IndexState::Ok(old)
+    } else {
+        IndexState::Stale
+    })
+}
+
+/// The largest `ampr_emu.index` that could list exactly `files`: four times a fresh one's size
+/// (0x30-byte header, 24 bytes a record, the `/app0/` paths, 16-byte slots at twice the
+/// records), plus 1 MiB, room for another tool's slot table or padding.
+fn index_bound(files: &[SourceFile]) -> u64 {
+    let n = files.len() as u64;
+    let paths: u64 = files.iter().map(|f| f.path.len() as u64 + 7).sum();
+    let fresh = 0x30 + 24 * n + paths + 16 + 16 * (2 * n).next_power_of_two().max(2);
+    4 * fresh + (1 << 20)
 }
 
 /// `ampr_emu.index` for `files` (every file but the index itself): with `keep`, the source's
@@ -459,19 +715,13 @@ fn final_index(
     ctx: &Ctx,
     findings: &mut Vec<String>,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    let rows: Vec<(String, u64)> = files.iter().map(|f| (f.path.clone(), f.size)).collect();
-    if let Some(size) = size_of(tree, INDEX).filter(|&s| keep && s <= MAX_INDEX) {
-        let old = read_all(tree, INDEX, size)?;
-        if let Ok(index) = ps5_dump_forge_lz4::index::read_index(&old) {
-            let want: BTreeSet<&(String, u64)> = rows.iter().collect();
-            if index.records.iter().collect::<BTreeSet<_>>() == want {
-                ctx.log(format!(
-                    "LZ4: keeping {INDEX}, it lists exactly these files"
-                ));
-                return Ok(Some(old));
-            }
-        }
+    if keep && let IndexState::Ok(old) = index_state(tree, files)? {
+        ctx.log(format!(
+            "LZ4: keeping {INDEX}, it lists exactly these files"
+        ));
+        return Ok(Some(old));
     }
+    let rows: Vec<(String, u64)> = files.iter().map(|f| (f.path.clone(), f.size)).collect();
     match ps5upload_fpkg::ampr_index::build(&rows, mtime) {
         Ok(index) => {
             ctx.log(format!(
@@ -487,10 +737,18 @@ fn final_index(
     }
 }
 
-/// All `size` bytes of `path`.
+/// All `size` bytes of `path`, in as many reads as the source takes (an `.pkg`'s serves at
+/// most 64 MiB each); only one that returns nothing early is a short file.
 fn read_all(tree: &mut dyn SourceTree, path: &str, size: u64) -> anyhow::Result<Vec<u8>> {
     let len = usize::try_from(size).context("too big")?;
-    let bytes = tree.read_range(path, 0, len)?;
+    let mut bytes = Vec::with_capacity(len);
+    while bytes.len() < len {
+        let chunk = tree.read_range(path, bytes.len() as u64, len - bytes.len())?;
+        if chunk.is_empty() {
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     if bytes.len() != len {
         anyhow::bail!("{path}: read {} of {size} bytes", bytes.len());
     }
@@ -1098,6 +1356,130 @@ pub(crate) fn largest_file(files: &[PackFile], profile: bool, index: u64) -> u64
 mod tests {
     use super::*;
     use ps5_dump_forge_lz4::PackSpec;
+
+    /// A listing whose `ampr_emu.index` serves zeros and fails any read past 1 MiB.
+    struct Sized(Vec<SourceFile>);
+
+    impl SourceTree for Sized {
+        fn files(&self) -> &[SourceFile] {
+            &self.0
+        }
+        fn read(&mut self, path: &str) -> ps5upload_fpkg::Result<Vec<u8>> {
+            let size = size_of(self, path).unwrap_or(0);
+            self.read_range(path, 0, size as usize)
+        }
+        fn read_range(&mut self, _: &str, _: u64, len: usize) -> ps5upload_fpkg::Result<Vec<u8>> {
+            assert!(len <= 1 << 20, "a {len}-byte read");
+            Ok(vec![0; len])
+        }
+        fn describe(&self) -> String {
+            "sized".into()
+        }
+    }
+
+    #[test]
+    fn an_index_too_big_for_the_listing_is_not_read() {
+        let file = |path: &str, size| SourceFile {
+            path: path.into(),
+            size,
+        };
+        let files = vec![file("eboot.bin", 100), file("data/a.bin", 5)];
+        let mut tree = Sized(vec![file(INDEX, 200 << 20)]);
+        assert!(matches!(
+            index_state(&mut tree, &files).unwrap(),
+            IndexState::Stale
+        ));
+        let mut tree = Sized(vec![file(INDEX, 4096)]);
+        assert!(matches!(
+            index_state(&mut tree, &files).unwrap(),
+            IndexState::Damaged
+        ));
+        // 200,000 files of 60-byte paths: their index fits the bound.
+        let many: Vec<SourceFile> = (0..200_000)
+            .map(|i| file(&format!("data/{i:0>55}"), 1))
+            .collect();
+        let fresh = ps5upload_fpkg::ampr_index::build(
+            &many
+                .iter()
+                .map(|f| (f.path.clone(), f.size))
+                .collect::<Vec<_>>(),
+            0,
+        )
+        .unwrap();
+        assert!((fresh.len() as u64) < index_bound(&many) / 3);
+        // Within that bound but past the whole-file cap: damaged, never read.
+        assert!(index_bound(&many) > 100 << 20);
+        let mut tree = Sized(vec![file(INDEX, 100 << 20)]);
+        assert!(matches!(
+            index_state(&mut tree, &many).unwrap(),
+            IndexState::Damaged
+        ));
+    }
+
+    /// Serves `index` for whatever `files` lists, at most 1000 bytes a read.
+    struct Chunked {
+        files: Vec<SourceFile>,
+        index: Vec<u8>,
+    }
+
+    impl SourceTree for Chunked {
+        fn files(&self) -> &[SourceFile] {
+            &self.files
+        }
+        fn read(&mut self, path: &str) -> ps5upload_fpkg::Result<Vec<u8>> {
+            let size = size_of(self, path).unwrap_or(0);
+            self.read_range(path, 0, size as usize)
+        }
+        fn read_range(&mut self, _: &str, at: u64, len: usize) -> ps5upload_fpkg::Result<Vec<u8>> {
+            let at = (at as usize).min(self.index.len());
+            let end = (at + len.min(1000)).min(self.index.len());
+            Ok(self.index[at..end].to_vec())
+        }
+        fn describe(&self) -> String {
+            "chunked".into()
+        }
+    }
+
+    #[test]
+    fn an_index_is_read_in_as_many_reads_as_the_source_takes() {
+        let files: Vec<SourceFile> = (0..500)
+            .map(|i| SourceFile {
+                path: format!("data/{i}.bin"),
+                size: i,
+            })
+            .collect();
+        let rows: Vec<(String, u64)> = files.iter().map(|f| (f.path.clone(), f.size)).collect();
+        let index = ps5upload_fpkg::ampr_index::build(&rows, 0).unwrap();
+        assert!(index.len() > 10_000);
+        let listed = |size| {
+            vec![SourceFile {
+                path: INDEX.into(),
+                size,
+            }]
+        };
+        let mut tree = Chunked {
+            files: listed(index.len() as u64),
+            index: index.clone(),
+        };
+        match index_state(&mut tree, &files).unwrap() {
+            IndexState::Ok(bytes) => assert!(bytes == index),
+            _ => panic!("the index lists exactly these files"),
+        }
+        // A file that ends before its listed size is short.
+        let mut tree = Chunked {
+            files: listed(index.len() as u64 + 10),
+            index: index.clone(),
+        };
+        let err = index_state(&mut tree, &files).err().unwrap().to_string();
+        assert!(
+            err.contains(&format!(
+                "read {} of {} bytes",
+                index.len(),
+                index.len() + 10
+            )),
+            "{err}"
+        );
+    }
 
     #[test]
     fn packed_files_are_not_the_largest_output_file() {

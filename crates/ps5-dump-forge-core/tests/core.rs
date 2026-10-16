@@ -707,7 +707,7 @@ fn image_round_trip(
     match (format, inner) {
         (Format::Ffpfs, _) => assert!(checks.contains("geometry: PFS v2 at byte 0"), "{checks}"),
         (Format::Ffpfsc, inner) => {
-            let (ext, geometry) = match inner.unwrap_or(Format::Exfat) {
+            let (ext, geometry) = match inner.unwrap_or(Format::Ffpkg) {
                 Format::Exfat => ("exfat", "geometry: raw volume at byte 0"),
                 Format::Ffpkg => ("ffpkg", "geometry: UFS2 at byte 0"),
                 _ => ("ffpfs", "geometry: PFS v2 at byte 0"),
@@ -1276,6 +1276,276 @@ fn a_plain_conversion_swaps_the_trace_runtime() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// A conversion without LZ4 options of an AMPR title (by user decision): the release runtime
+/// installed where there is none and in place of an older or unknown one, another as new as
+/// ours kept (by Pack only when it reads packs); the index kept only when it lists exactly the
+/// files written, else a new one without the journal and logs. A non-AMPR title is untouched.
+#[test]
+fn a_plain_conversion_repairs_an_ampr_title() {
+    let root = dir("lz4-plain-repair");
+    let src = root.join("src");
+    ampr_game(&src);
+    let runtime = |root: &Path| std::fs::read(root.join("fakelib/libSceAmpr.sprx")).ok();
+
+    // No runtime and no index: both written.
+    let fixed = root.join("fixed");
+    let (events, result) = run(request(&src, Format::Folder, &fixed));
+    result.unwrap();
+    assert!(
+        logged(&events, "installing the release runtime"),
+        "{events:?}"
+    );
+    assert!(logged(&events, "no ampr_emu.index yet"), "{events:?}");
+    assert!(runtime(&fixed).unwrap() == RELEASE);
+    assert_indexes_folder(&fixed);
+    assert_eq!(assets(&fixed), tree_bytes(&src));
+    write(&fixed, "ampr_commands.bin", b"a session's journal");
+    write(&fixed, "ampr_emu.log", b"log");
+
+    // An exact index beside Forge's release runtime: everything kept as it is.
+    let exact = root.join("exact");
+    let (events, result) = run(request(&fixed, Format::Folder, &exact));
+    result.unwrap();
+    assert!(!logged(&events, "LZ4"), "{events:?}");
+    assert_eq!(tree_bytes(&exact), tree_bytes(&fixed));
+
+    // A file added since: a new index, the journal and logs left out.
+    write(&fixed, "data/added.bin", b"new");
+    let image = root.join("PPSA01234.exfat");
+    let (events, result) = run(request(&fixed, Format::Exfat, &image));
+    result.unwrap();
+    assert!(
+        logged(&events, "does not list exactly the files written (stale)"),
+        "{events:?}"
+    );
+    assert!(logged(&events, "leaving out ampr_commands.bin"));
+    assert!(logged(&events, "leaving out ampr_emu.log"));
+    let back = root.join("back");
+    run(request(&image, Format::Folder, &back)).1.unwrap();
+    assert!(!back.join("ampr_commands.bin").exists() && !back.join("ampr_emu.log").exists());
+    assert_indexes_folder(&back);
+    assert!(runtime(&back).unwrap() == RELEASE);
+
+    // A damaged index is written anew too.
+    write(&fixed, "ampr_emu.index", b"not an index");
+    let out = root.join("damaged");
+    let (events, result) = run(request(&fixed, Format::Folder, &out));
+    result.unwrap();
+    assert!(logged(&events, "ampr_emu.index does not read (damaged)"));
+    assert_indexes_folder(&out);
+
+    // Another ampr_emu as new as the bundled one: kept, its index repaired. Pack keeps it only
+    // when it holds the pack format.
+    let newer: &[u8] = b"\x7fELF AMPRPAK4 AMPRDAT3 9.9 (c) Drakmor";
+    let no_packs: &[u8] = b"\x7fELF 0.4.2.1 (c) Drakmor";
+    for (name, bytes, packs) in [("newer", newer, true), ("no-packs", no_packs, false)] {
+        let other = root.join(name);
+        copy_tree(&back, &other);
+        write(&other, "fakelib/libSceAmpr.sprx", bytes);
+        let out = root.join(format!("{name}-out"));
+        let (events, result) = run(request(&other, Format::Folder, &out));
+        result.unwrap();
+        assert!(logged(&events, "keeping the game's ampr_emu"), "{events:?}");
+        assert!(logged(&events, "(stale)"), "{events:?}");
+        assert!(runtime(&out).unwrap() == bytes, "{name}");
+        assert_indexes_folder(&out);
+        let packed = root.join(format!("{name}-packed"));
+        run(request(&other, Format::Lz4, &packed)).1.unwrap();
+        let want = if packs { bytes } else { RELEASE };
+        assert!(runtime(&packed).unwrap() == want, "{name}");
+    }
+
+    // An older one, or one naming no version: replaced.
+    for (name, bytes) in [
+        ("older", &b"\x7fELF AMPRPAK4 AMPRDAT3 0.4.2 (c) Drakmor"[..]),
+        ("unknown", &b"\x7fELF someone else's AMPR"[..]),
+    ] {
+        let other = root.join(name);
+        copy_tree(&back, &other);
+        write(&other, "fakelib/libSceAmpr.sprx", bytes);
+        let out = root.join(format!("{name}-out"));
+        let (events, result) = run(request(&other, Format::Folder, &out));
+        result.unwrap();
+        assert!(
+            logged(&events, "replacing the game's runtime"),
+            "{events:?}"
+        );
+        assert!(runtime(&out).unwrap() == RELEASE, "{name}");
+        assert_indexes_folder(&out);
+    }
+
+    // No runtime but an index (it lists the runtime): the runtime goes in, the index is kept.
+    let none = root.join("none");
+    copy_tree(&src, &none);
+    std::fs::copy(exact.join("ampr_emu.index"), none.join("ampr_emu.index")).unwrap();
+    let out = root.join("none-out");
+    let (events, result) = run(request(&none, Format::Folder, &out));
+    result.unwrap();
+    assert!(logged(&events, "installing the release runtime"));
+    assert!(runtime(&out).unwrap() == RELEASE);
+    assert!(
+        std::fs::read(out.join("ampr_emu.index")).unwrap()
+            == std::fs::read(exact.join("ampr_emu.index")).unwrap()
+    );
+
+    // A title that does not use AMPR: nothing changes.
+    let plain = root.join("plain");
+    game(&plain);
+    write(&plain, "ampr_emu.index", b"not an index");
+    let out = root.join("plain-out");
+    let (events, result) = run(request(&plain, Format::Folder, &out));
+    result.unwrap();
+    assert!(!logged(&events, "LZ4"), "{events:?}");
+    assert_eq!(tree_bytes(&out), tree_bytes(&plain));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A STORED `.zip` of `entries` at `path`.
+fn stored_zip(path: &Path, entries: &[(String, Vec<u8>)]) {
+    let (mut out, mut central) = (Vec::new(), Vec::new());
+    for (name, data) in entries {
+        let at = out.len() as u32;
+        // version 20, no flags, stored, 1980-01-01 00:00, crc, sizes, name length, no extra
+        let fields = |b: &mut Vec<u8>| {
+            for v in [20u16, 0, 0, 0, 0x21] {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in [crc32fast::hash(data), data.len() as u32, data.len() as u32] {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+            b.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            b.extend_from_slice(&0u16.to_le_bytes());
+        };
+        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        fields(&mut out);
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(data);
+        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        central.extend_from_slice(&20u16.to_le_bytes());
+        fields(&mut central);
+        central.extend_from_slice(&[0; 10]); // comment, disk, attributes
+        central.extend_from_slice(&at.to_le_bytes());
+        central.extend_from_slice(name.as_bytes());
+    }
+    let (cd_at, cd_len, n) = (out.len() as u32, central.len() as u32, entries.len() as u16);
+    out.append(&mut central);
+    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    out.extend_from_slice(&[0; 4]);
+    for v in [n, n] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [cd_len, cd_at] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(&[0; 2]);
+    std::fs::write(path, out).unwrap();
+}
+
+/// Into a `.pkg`, neither a plain conversion nor an unpatch builds an `ampr_emu.index` of its
+/// own: the builder writes one after leaving out SDK leftovers, so names only they share in
+/// case don't refuse the job.
+#[test]
+fn a_pkg_of_an_ampr_title_leaves_its_index_to_the_builder() {
+    let root = dir("lz4-plain-pkg");
+    let src = root.join("src");
+    ampr_game(&src);
+    write(&src, "ampr_commands.bin", b"a session's journal");
+    write(&src, "ampr_emu.log", b"log");
+    write(&src, "ampr_emu.index", b"a stale index");
+    let mut entries = tree_bytes(&src);
+    entries.push(("sce_sc/a".into(), b"an SDK leftover".to_vec()));
+    entries.push(("sce_sc/A".into(), b"another one".to_vec()));
+    let zip = root.join("game.zip");
+    stored_zip(&zip, &entries);
+    for (name, mode) in [("plain", None), ("unpatch", Some(Lz4Mode::Unpatch))] {
+        let pkg = root.join(format!("{name}.pkg"));
+        let (events, result) = run(lz4_request(&zip, Format::Pkg, &pkg, mode));
+        result.unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(
+            logged(&events, "installing the release runtime"),
+            "{name}: {events:?}"
+        );
+        assert!(logged(&events, "leaving out ampr_commands.bin"), "{name}");
+        assert!(logged(&events, "leaving out ampr_emu.log"), "{name}");
+        assert!(!logged(&events, "LZ4: writing a new"), "{name}: {events:?}");
+        // The package as built, not a conversion of it (which would write its own index).
+        let mut tree = ps5_dump_forge_fpkg::FpkgSource::open(&pkg, None).unwrap();
+        let index = tree.read("ampr_emu.index").unwrap();
+        let mut got = ps5_dump_forge_lz4::index::read_index(&index)
+            .unwrap()
+            .records;
+        let mut want: Vec<(String, u64)> = tree
+            .files()
+            .iter()
+            .filter(|f| f.path != "ampr_emu.index")
+            .map(|f| (f.path.clone(), f.size))
+            .collect();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "{name}");
+        assert!(
+            got.contains(&("fakelib/libSceAmpr.sprx".to_string(), RELEASE.len() as u64)),
+            "{name}"
+        );
+        assert!(
+            tree.read("fakelib/libSceAmpr.sprx").unwrap() == RELEASE,
+            "{name}"
+        );
+        assert!(
+            !got.iter()
+                .any(|(p, _)| p.starts_with("ampr_") || p.starts_with("sce_sc/")),
+            "{name}: {got:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A packed source converted without LZ4 options: its index and packs byte for byte, the
+/// runtime replaced by the release one; Forge still unpacks the result.
+#[test]
+fn a_packed_source_keeps_its_index_and_gets_the_release_runtime() {
+    let root = dir("lz4-plain-packed");
+    let src = root.join("src");
+    ampr_game(&src);
+    let packed = root.join("packed");
+    run(request(&src, Format::Lz4, &packed)).1.unwrap();
+    write(&packed, "fakelib/libSceAmpr.sprx", TRACE);
+    write(&packed, "ampr_emu.log", b"log");
+    let image = root.join("PPSA01234.ffpkg");
+    let (events, result) = run(request(&packed, Format::Ffpkg, &image));
+    result.unwrap();
+    assert!(
+        logged(&events, "swapping the tracing runtime"),
+        "{events:?}"
+    );
+    assert!(logged(&events, "keeping ampr_emu.index as it is"));
+    let back = root.join("back");
+    run(request(&image, Format::Folder, &back)).1.unwrap();
+    assert!(std::fs::read(back.join("fakelib/libSceAmpr.sprx")).unwrap() == RELEASE);
+    for same in [
+        "ampr_emu.index",
+        "ampr_emu.log",
+        "ampr_assets.index",
+        "ampr_assets-000.pak",
+    ] {
+        assert!(
+            std::fs::read(back.join(same)).unwrap() == std::fs::read(packed.join(same)).unwrap(),
+            "{same}"
+        );
+    }
+    let unpacked = root.join("unpacked");
+    run(lz4_request(
+        &back,
+        Format::Folder,
+        &unpacked,
+        Some(Lz4Mode::Unpack),
+    ))
+    .1
+    .unwrap();
+    assert_eq!(assets(&unpacked), tree_bytes(&src));
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn lz4_refusals() {
     let root = dir("lz4-refusals");
@@ -1376,13 +1646,6 @@ fn lz4_refusals() {
         "named like an LZ4 pack file",
     );
     std::fs::remove_file(src.join("ampr_assets-000.PAK")).unwrap();
-
-    // A packed folder that carries the tracing runtime cannot be converted as it is.
-    write(&packed, "fakelib/libSceAmpr.sprx", TRACE);
-    refused(
-        request(&packed, Format::Folder, &root.join("k")),
-        "carries Forge's LZ4 trace runtime",
-    );
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1861,6 +2124,132 @@ fn facts_runtime(image: &Path) -> (String, Option<u64>) {
     (facts.runtime, facts.journal_bytes)
 }
 
+/// Inspect's `index`: the plain conversion's own comparison, journal and logs left out, a
+/// runtime it installs or replaces counted at the release runtime's size, one it keeps at its
+/// own; `None` where no conversion touches the index.
+#[test]
+fn inspect_reports_the_index_state() {
+    let root = dir("lz4-facts-index");
+    let src = root.join("src");
+    ampr_game(&src);
+    let index = |path: &Path| inspect(path).unwrap().lz4.unwrap().index;
+    assert_eq!(
+        index(&src),
+        Some("missing"),
+        "no runtime, no index: both written"
+    );
+
+    let game = root.join("game");
+    run(lz4_request(
+        &src,
+        Format::Folder,
+        &game,
+        Some(Lz4Mode::Unpatch),
+    ))
+    .1
+    .unwrap();
+    write(&game, "ampr_commands.bin", b"a session's journal");
+    write(&game, "ampr_emu.log", b"log");
+    assert_eq!(index(&game), Some("ok"));
+    let image = root.join("PPSA01234.ffpkg");
+    run(request(&game, Format::Ffpkg, &image)).1.unwrap();
+    assert_eq!(index(&image), Some("ok"));
+    write(
+        &game,
+        "fakelib/libSceAmpr.sprx",
+        b"\x7fELF AMPRPAK4 AMPRDAT3 9.9 (c) Drakmor",
+    );
+    assert_eq!(index(&game), Some("stale"), "a newer runtime is kept");
+    write(
+        &game,
+        "fakelib/libSceAmpr.sprx",
+        b"\x7fELF AMPRPAK4 AMPRDAT3 0.4.2 (c) Drakmor",
+    );
+    assert_eq!(index(&game), Some("ok"), "an older one is replaced");
+
+    let packed = root.join("packed");
+    run(request(&game, Format::Lz4, &packed)).1.unwrap();
+    assert_eq!(index(&packed), None, "kept byte for byte");
+
+    write(&game, "data/added.bin", b"new");
+    assert_eq!(index(&game), Some("stale"));
+    write(&game, "ampr_emu.index", b"not an index");
+    assert_eq!(index(&game), Some("damaged"));
+    std::fs::remove_file(game.join("ampr_emu.index")).unwrap();
+    assert_eq!(index(&game), Some("missing"));
+    std::fs::remove_file(game.join("fakelib/libSceAmpr.sprx")).unwrap();
+    assert_eq!(index(&game), Some("missing"), "no runtime: both written");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Inspect's `runtime_action` (a plain conversion) and `pack_runtime_action` (Pack, or Unpack
+/// of a packed source): `lz4::Runtime::action`, `None` for a non-AMPR title.
+#[test]
+fn inspect_reports_the_runtime_action() {
+    let root = dir("lz4-facts-runtime");
+    let src = root.join("src");
+    ampr_game(&src);
+    let actions = |path: &Path| {
+        let f = inspect(path).unwrap().lz4.unwrap();
+        (f.runtime_action, f.pack_runtime_action)
+    };
+    let both = |a| (Some(a), Some(a));
+    assert_eq!(actions(&src), both("install"), "no runtime");
+
+    let game = root.join("game");
+    run(lz4_request(
+        &src,
+        Format::Folder,
+        &game,
+        Some(Lz4Mode::Unpatch),
+    ))
+    .1
+    .unwrap();
+    assert_eq!(actions(&game), both("keep"), "Forge's release runtime");
+    let packed = root.join("packed");
+    run(request(&game, Format::Lz4, &packed)).1.unwrap();
+    assert_eq!(
+        actions(&packed),
+        both("keep"),
+        "packed, Unpack keeps it too"
+    );
+
+    let traced = root.join("traced");
+    run(lz4_request(
+        &src,
+        Format::Folder,
+        &traced,
+        Some(Lz4Mode::Trace),
+    ))
+    .1
+    .unwrap();
+    assert_eq!(actions(&traced), both("replace"), "Forge's trace runtime");
+
+    let runtime = |bytes: &[u8]| write(&game, "fakelib/libSceAmpr.sprx", bytes);
+    runtime(b"\x7fELF AMPRPAK4 AMPRDAT3 9.9 (c) Drakmor");
+    assert_eq!(actions(&game), both("keep"), "newer, reads packs");
+    let f = inspect(&game).unwrap().lz4.unwrap();
+    assert_eq!(f.runtime_version.as_deref(), Some("9.9"));
+    runtime(b"\x7fELF 9.9 (c) Drakmor");
+    assert_eq!(
+        actions(&game),
+        (Some("keep"), Some("replace")),
+        "newer without the pack format: Pack replaces it"
+    );
+    runtime(b"\x7fELF AMPRPAK4 AMPRDAT3 0.4.2 (c) Drakmor");
+    assert_eq!(actions(&game), both("replace"), "older");
+    runtime(b"\x7fELF AMPRPAK4 AMPRDAT3 no version");
+    assert_eq!(actions(&game), both("replace"), "no version");
+
+    let other = root.join("other");
+    self::game(&other);
+    write(&other, "ampr_emu.index", b"an index");
+    let f = inspect(&other).unwrap().lz4.unwrap();
+    assert!(!f.imports_ampr);
+    assert_eq!((f.runtime_action, f.pack_runtime_action), (None, None));
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Patch then unpatch an `.exfat` and an `.ffpkg` in place: each time the image is replaced
 /// by a verified copy with the requested runtime, under its own name, and nothing else stays.
 #[test]
@@ -1878,7 +2267,8 @@ fn lz4_patch_and_unpatch_an_image_in_place() {
             Format::Ffpkg
         };
         let plain = run(request(&src, format, &image)).1.unwrap().bytes;
-        assert_eq!(facts_runtime(&image), ("none".to_string(), None));
+        // A plain conversion of an AMPR title installs the release runtime.
+        assert_eq!(facts_runtime(&image), ("forge_release".to_string(), None));
 
         let (events, result) = run(in_place(&image, Lz4Mode::Trace));
         let report = result.unwrap();

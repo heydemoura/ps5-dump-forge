@@ -410,42 +410,6 @@ fn leave_out_backport(
     source
 }
 
-/// The pack list a Pack job of `req` would resolve, up to its LZ4 preparation, writing
-/// nothing: the source opened, packs decoded, the backport left out on request, then the rules,
-/// the keep-loose list and auto-loose. LZ4 findings are the error.
-pub(crate) fn lz4_plan(
-    req: &ConvertRequest,
-    ctx: &Ctx,
-) -> anyhow::Result<(crate::lz4::PackPlan, GameInfo)> {
-    anyhow::ensure!(
-        crate::lz4::packing(req),
-        "a pack plan needs an LZ4 Pack request"
-    );
-    let kind = Kind::of(&req.source)?;
-    let source = match kind {
-        Kind::Archive(format) => {
-            let stamp = SourceStamp::take(&req.source, kind)?;
-            crate::archive::open(req, ctx, format, stamp)?.0
-        }
-        _ => open_source(&req.source, kind, ctx.cancel)?,
-    };
-    ctx.log(format!("source: {}", source.describe()));
-    let (mut source, packs) = crate::lz4::open(req, source, ctx)?;
-    let (info, _) = preflight::input(source.as_mut());
-    let mut findings = Vec::new();
-    let source = leave_out_backport(req, source, &info, &packs, ctx, &mut findings);
-    let mtime = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    let prepared = crate::lz4::prepare(req, source, packs, mtime, ctx)?;
-    findings.extend(prepared.findings);
-    if !findings.is_empty() {
-        bail!("{}", findings.join("\n"));
-    }
-    let pack = prepared.pack.context("no pack plan")?;
-    Ok((pack, info))
-}
-
 /// U5 on FreeBSD: `write` puts every byte of the image through `SyncEvery`, sharing the
 /// job's `cadence`; its finish is the image's sync.
 #[cfg(target_os = "freebsd")]
@@ -642,7 +606,7 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
             ));
             None
         }
-        Format::Ffpfsc => match req.inner.unwrap_or(Format::Exfat) {
+        Format::Ffpfsc => match req.inner.unwrap_or(Format::Ffpkg) {
             inner @ (Format::Exfat | Format::Ffpkg | Format::Ffpfs) => {
                 planned(inner, &mut findings).map(|image| {
                     // SMP picks the inner image's driver by its extension.

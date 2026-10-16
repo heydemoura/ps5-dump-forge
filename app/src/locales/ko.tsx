@@ -49,14 +49,25 @@ const ko: Messages = {
     alreadyFolder: "소스가 이미 폴더임",
     lz4Backport:
       "이 게임의 에셋은 LZ4로 패킹되어 있고 LZ4 매니페스트에 백포트가 포함되어 있습니다. 먼저 ‘LZ4’ 탭에서 언패킹한 다음 여기에서 백포트를 제거하세요.",
-    lz4Trace:
-      "이 패킹된 게임에는 LZ4 트레이스 런타임이 들어 있습니다. 먼저 ‘LZ4’ 탭에서 언패킹하거나 다시 패킹하세요.",
     unreadable: "빌드할 수 없습니다: 이 소스를 읽지 못했습니다(‘소스’ 참고).",
     noContentId: "fpkg로 빌드할 수 없습니다: 이 게임의 param.json에 패키지에 필요한 Content ID가 없습니다.",
     blocked: (first, more) =>
       `빌드할 수 없습니다: ${first}${more > 0 ? ` (외 ${num(more)}개, ‘소스’ 참고)` : ""}.`,
-    runtime: "AMPR 업데이트",
-    runtimeHint: "이 게임의 ampr_emu는 최신 버전이 아닙니다.",
+    amprRuntime: (a, own, version) => {
+      if (a === "install") return `이 게임은 AMPR을 사용하지만 ampr_emu가 없습니다. 변환하면 번들된 ampr_emu ${version} 버전을 설치합니다.`;
+      if (a === "trace") return `변환하면 LZ4 트레이스 런타임이 번들된 릴리스 ampr_emu ${version} 버전으로 바뀝니다.`;
+      if (a === "replace")
+        return own
+          ? `변환하면 이 게임의 ampr_emu ${own} 버전이 번들된 ampr_emu ${version} 버전으로 바뀝니다.`
+          : `변환하면 버전을 알 수 없는 이 게임의 ampr_emu가 번들된 ampr_emu ${version} 버전으로 바뀝니다.`;
+      return own
+        ? `이 게임의 ampr_emu ${own} 버전은 번들된 ${version} 버전과 같거나 더 새로우므로 변환해도 그대로 유지됩니다.`
+        : `이 게임에는 이미 번들된 ampr_emu ${version} 버전이 있어 변환해도 그대로 유지됩니다.`;
+    },
+    amprIndex: (state, traces) =>
+      `${state === "stale" ? "ampr_emu.index가 이 게임의 파일과 맞지 않습니다" : state === "damaged" ? "ampr_emu.index를 읽을 수 없습니다" : "이 게임에는 ampr_emu.index가 없습니다"}. ${traces ? "변환하면 새 인덱스를 쓰고 이전 트레이스는 제외합니다." : "변환하면 새 인덱스를 씁니다."}`,
+    amprPkgIndex: (traces) =>
+      traces ? `패키지에는 담긴 파일로 만든 새 ampr_emu.index가 들어가고 이전 트레이스는 제외됩니다.` : `패키지에는 담긴 파일로 만든 새 ampr_emu.index가 들어갑니다.`,
     removeBackport: "백포트 제거",
     removeHint: (libs, emulators, other) =>
       emulators.length === 0
@@ -109,7 +120,7 @@ const ko: Messages = {
       ["검증", "쓰기가 끝난 모든 출력을 검증합니다. 기본은 빠른 샘플 검증이며, 원하면 모든 바이트를 확인합니다."],
       ["삭제", "확인을 거쳐 디스크에서 게임을 삭제합니다."],
       ["LZ4", "AMPR 게임을 트레이스한 다음 에셋을 패킹합니다(실험적)."],
-      ["AMPR 런타임", "변환된 사본에 ampr_emu를 설치하거나 업데이트합니다."],
+      ["AMPR 런타임", "변환할 때마다 게임의 ampr_emu를 설치하거나 업데이트하고(같거나 더 새로운 버전은 유지) 오래된 ampr_emu.index를 갱신합니다."],
       ["PS5 페이로드", "콘솔에서 실행되는 같은 앱으로, 네트워크의 어느 기기에서나 열 수 있습니다."],
     ],
     howToConnect: "연결 방법",
@@ -285,8 +296,6 @@ const ko: Messages = {
         ? "릴리스 런타임으로 이 이미지를 다시 빌드한 다음 교체합니다."
         : "이 폴더에 릴리스 런타임을 되돌립니다.",
     noAmpr: "게임이 AMPR을 사용하지 않음",
-    noRuntime: "게임에 ampr_emu가 없음",
-    noRuntimeWarn: "이 게임에는 ampr_emu가 없어 LZ4로 변환할 수 없습니다.",
     packedFirst: "소스가 LZ4로 패킹됨: 먼저 언패킹하세요",
     damaged: "LZ4 팩이 손상됨",
     archive: "압축 파일은 트레이스할 수 없음: 먼저 변환하세요",
@@ -305,7 +314,15 @@ const ko: Messages = {
     blocked: (a, first, more) =>
       `${{ patch: "패치할", unpatch: "패치를 해제할", pack: "패킹할", unpack: "언패킹할" }[a]} 수 없습니다: ${first}${more > 0 ? ` (외 ${num(more)}개, ‘소스’ 참고)` : ""}.`,
     chooseGame: "먼저 게임 폴더나 이미지를 선택하세요.",
-    nothing: "할 작업이 없습니다. 이 게임은 AMPR을 사용하지 않고 LZ4로 패킹되어 있지도 않습니다.",
+    noAmprGame: "이 게임은 AMPR을 사용하지 않으므로 여기서는 LZ4를 쓸 수 없습니다.",
+    installsRuntime: (a, version) =>
+      a === "pack"
+        ? `이 게임에는 ampr_emu가 없습니다. 패킹하면 번들된 ampr_emu ${version} 버전이 설치됩니다.`
+        : a === "patch"
+          ? `이 게임에는 ampr_emu가 없습니다. 패치하면 번들된 트레이스 런타임(ampr_emu ${version})이 설치됩니다.`
+          : `이 게임에는 ampr_emu가 없습니다. 패치 해제하면 번들된 릴리스 런타임(ampr_emu ${version})이 설치됩니다.`,
+    freshIndex: (state, a) =>
+      `${state === "stale" ? "ampr_emu.index가 이 게임의 파일과 맞지 않습니다" : state === "damaged" ? "ampr_emu.index를 읽을 수 없습니다" : "이 게임에는 ampr_emu.index가 없습니다"}. ${a === "pack" ? "패킹하면" : a === "patch" ? "패치하면" : "패치 해제하면"} 새 인덱스를 씁니다.`,
     unavailable: (items) => `이 소스에는 사용할 수 없습니다: ${items.join("; ")}.`,
     readOnly: (kind) => <>
       <b>{kind}</b> 형식은 콘솔에서 읽기 전용이라 트레이스할 수 없습니다. 먼저 <b>ffpkg</b>나 <b>exfat</b>으로 변환하세요.
@@ -346,11 +363,6 @@ const ko: Messages = {
       n === null
         ? "패킹된 파일을 일반 파일로 되돌립니다."
         : `패킹된 파일 ${num(n)}개를 일반 파일로 되돌립니다.`,
-    waitJobs: "실행 중인 작업이 끝날 때까지 기다리세요",
-    saveHint: "‘패킹’의 파일 목록을 편집 가능한 규칙 프로필로 저장합니다",
-    saving: "저장 중…",
-    saveProfile: "프로필로 저장",
-    saved: (name, packed, loose) => `${name} 저장됨: 패킹할 파일 ${num(packed)}개, 그대로 둘 파일 ${num(loose)}개.`,
     likelyFail: (fmt) => <>
       <b>{fmt}</b> 형식으로는 실패할 가능성이 높습니다. ‘소스’에 나열된 파일 이름을 허용하지 않습니다.
     </>,
@@ -413,6 +425,7 @@ const ko: Messages = {
           <li>
             패킹된 소스에서는 대신 <b>언패킹</b>이 표시되며, 개별 파일이 원래대로 돌아옵니다.
           </li>
+          <li>게임의 ampr_emu가 번들 버전 이상이고 LZ4 팩을 읽을 수 있으면 패킹은 그대로 둡니다. 아니면 번들된 릴리스 ampr_emu를 설치합니다. LZ4 트레이스 런타임이나 ampr_emu가 없는 게임도 마찬가지입니다.</li>
         </ol>
 
         <h3>2. 트레이스</h3>
@@ -495,6 +508,17 @@ const ko: Messages = {
     journal: (size) => `저널 ${size}`,
     noJournal: "아직 저널 없음",
     runtimeIs: (label) => `런타임: ${label}`,
+    index: {
+      stale: "ampr_emu.index 오래됨: 변환 시 갱신",
+      damaged: "ampr_emu.index 손상됨: 변환 시 다시 씀",
+      missing: "ampr_emu.index 없음: 변환 시 작성",
+    },
+    runtimeAction: (a, version) =>
+      a === "install"
+        ? `변환 시 번들된 ampr_emu ${version} 버전 설치`
+        : a === "replace"
+          ? `변환 시 번들된 ampr_emu ${version} 버전으로 런타임 교체`
+          : `ampr_emu ${version} 버전: 변환 시 유지`,
     backportLibs: (exclusive, n) =>
       exclusive
         ? `fakelib2/(단독 마운트), 백포트 라이브러리 ${num(n)}개`
@@ -653,8 +677,6 @@ const ko: Messages = {
     generate: "내용을 바탕으로 이름 생성",
     generatePattern: "[게임 이름]-[타이틀 ID]",
   },
-  // transport-tauri.tsx: the native save dialog
-  tauri: { saveProfile: "프로필로 저장", profileFilter: "LZ4 프로필(TOML)" },
   // UpdateToast.tsx
   update: {
     available: (v) => `v${v} 업데이트가 있습니다`,
