@@ -27,7 +27,7 @@ const DECODED_CACHE: usize = 4;
 /// mount holds at most ~4.2 M of them (1 TiB / 256 KiB), ~7.9 M blocks in all.
 // ponytail: 32 MiB descriptor, held whole with ~100 B per block while it is walked (~0.8 GB at
 // the ~7.9 M-block worst case)
-pub(crate) const MAX_DESCRIPTOR: u64 = 32 << 20;
+pub(crate) const MAX_DESCRIPTOR: u64 = 64 << 20;
 /// The compression type every layout this reader decodes declares (Kraken, or no payload).
 const COMP_KRAKEN: u64 = 2;
 
