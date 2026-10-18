@@ -224,21 +224,21 @@ impl FpkgSource {
         let image_ino = child(&mut outer, &nodes, uroot, "pfs_image.dat")?;
         let naps_ino = child(&mut outer, &nodes, uroot, "naps_pkg_layout.dat")?;
         let image = OuterFile::map(&mut outer, &nodes[image_ino], "pfs_image.dat")?;
-        if nodes[naps_ino].size > mount::MAX_DESCRIPTOR {
+        // `Layout::parse` bounds what the descriptor's counts cost; this bounds the blob itself.
+        if nodes[naps_ino].size > mount::MAX_OPEN {
             return Err(err(
                 CORRUPT,
                 format!(
                     "the layout descriptor is {} bytes (at most {} read)",
                     nodes[naps_ino].size,
-                    mount::MAX_DESCRIPTOR
+                    mount::MAX_OPEN
                 ),
             ));
         }
         let naps_file = OuterFile::map(&mut outer, &nodes[naps_ino], "naps_pkg_layout.dat")?;
         let mut blob = vec![0u8; naps_file.size as usize];
         naps_file.read(&mut outer, 0, &mut blob)?;
-        let layout = Layout::parse(&blob, image.size)?;
-        drop(blob);
+        let layout = Layout::parse(blob, image.size)?;
 
         let meta_base = h.meta_base;
         let mount_size = match &layout {
