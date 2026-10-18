@@ -52,6 +52,9 @@ pub struct LibraryEntry {
     /// LZ4 packed (ampr_emu asset packs): `ampr_assets.index` at the root starts with the
     /// manifest magic, the rule of `reader::detect` (and of inspect's Packed).
     pub lz4_packed: bool,
+    /// No `eboot.bin` at the root (a DLC, an update or another package), as
+    /// `Inspection::additional_content`.
+    pub additional_content: bool,
 }
 
 /// What a Library scan found.
@@ -201,7 +204,8 @@ impl Walk<'_> {
             };
             names.sort_by(|a, b| a.0.cmp(&b.0));
             let has = |n: &str| names.iter().any(|(name, _)| name == n);
-            if has("eboot.bin") && has("sce_sys") {
+            // Without `eboot.bin` too: additional content (a DLC, an update) is listed.
+            if has("sce_sys") {
                 // Folder probes are cheap (metadata and one small read), so they run here:
                 // an accepted game is never entered, a rejected folder is searched on.
                 if let Some(found) = probe_folder(&dir) {
@@ -366,6 +370,7 @@ fn entry(
     param: &[u8],
     has_cover: bool,
     lz4_packed: bool,
+    additional_content: bool,
 ) -> Option<LibraryEntry> {
     let info = parse_param(param);
     let json = info.param_json.as_ref()?;
@@ -381,6 +386,7 @@ fn entry(
             .map(str::to_string),
         has_cover,
         lz4_packed,
+        additional_content,
     })
 }
 
@@ -400,7 +406,8 @@ fn folder_packed(dir: &Path, dev: u64) -> bool {
 /// its own business: no warning).
 fn probe_folder(dir: &Path) -> Option<LibraryEntry> {
     let dev = path_id(dir).ok()?.0.0;
-    folder_open(dir, "eboot.bin", dev)?;
+    // Without one it is additional content (a DLC, an update), listed too.
+    let no_eboot = folder_open(dir, "eboot.bin", dev).is_none();
     if !plain_dir(&dir.join("sce_sys"), dev) {
         return None;
     }
@@ -409,7 +416,14 @@ fn probe_folder(dir: &Path) -> Option<LibraryEntry> {
     let cover = folder_open(dir, "sce_sys/icon0.png", dev)
         .is_some_and(|(_, len)| (1..=MAX_LIBRARY_COVER).contains(&len));
     let packed = folder_packed(dir, dev);
-    entry(dir.to_path_buf(), Format::Folder, &param, cover, packed)
+    entry(
+        dir.to_path_buf(),
+        Format::Folder,
+        &param,
+        cover,
+        packed,
+        no_eboot,
+    )
 }
 
 /// An image's entry. Opening reads the image's own metadata, so this costs more than a folder.
@@ -418,9 +432,7 @@ fn probe_image(path: &Path, kind: Kind) -> Result<Option<LibraryEntry>, String> 
         .map_err(|e| format!("skipped, cannot open: {e}"))?;
     let size = |name: &str| tree.files().iter().find(|f| f.path == name).map(|f| f.size);
     let (cover, param_size) = (size("sce_sys/icon0.png"), size("sce_sys/param.json"));
-    if size("eboot.bin").is_none() {
-        return Err("skipped, no eboot.bin at the root".to_string());
-    }
+    let no_eboot = size("eboot.bin").is_none();
     if param_size.is_none_or(|s| s == 0 || s > MAX_PARAM_JSON) {
         return Err("skipped, sce_sys/param.json is missing or too big".to_string());
     }
@@ -440,9 +452,16 @@ fn probe_image(path: &Path, kind: Kind) -> Result<Option<LibraryEntry>, String> 
     let has_cover = cover.is_some_and(|s| (1..=MAX_LIBRARY_COVER).contains(&s));
     // The image is open already: its file list, then 8 bytes of the manifest when listed.
     let packed = ps5_dump_forge_lz4::reader::detect(tree.as_mut()).unwrap_or(false);
-    entry(path.to_path_buf(), format, &param, has_cover, packed)
-        .map(Some)
-        .ok_or_else(|| "skipped, param.json has no usable title ID".to_string())
+    entry(
+        path.to_path_buf(),
+        format,
+        &param,
+        has_cover,
+        packed,
+        no_eboot,
+    )
+    .map(Some)
+    .ok_or_else(|| "skipped, param.json has no usable title ID".to_string())
 }
 
 /// The cover of a supported image or plain game folder as a PNG data URL. `None` when the
@@ -596,13 +615,30 @@ fn plain_spelling(path: PathBuf) -> PathBuf {
 
 /// Errors when the chosen folder (canonical) is a system one.
 fn refuse_folder(root: &Path) -> anyhow::Result<()> {
-    let Some(os) = Os::HOST else { return Ok(()) };
-    let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let home = home().map(|h| h.canonicalize().unwrap_or(h));
-    match refusal(&real, home.as_deref(), os, system_drive()) {
+    match folder_refusal(root) {
         Some(why) => anyhow::bail!(why),
         None => Ok(()),
     }
+}
+
+/// Why `path` is a folder (or inside one) the Library refuses as a chosen folder, as its
+/// error says it; `None` when allowed, and always on the PS5. Compared canonical: a path that
+/// isn't there yet (a move's target) by its folder's canonical path and its name, one whose
+/// folder isn't there either as typed.
+pub(crate) fn folder_refusal(path: &Path) -> Option<String> {
+    let os = Os::HOST?;
+    let real = dunce::canonicalize(path)
+        .ok()
+        .or_else(|| {
+            Some(
+                dunce::canonicalize(path.parent()?)
+                    .ok()?
+                    .join(path.file_name()?),
+            )
+        })
+        .unwrap_or_else(|| path.to_path_buf());
+    let home = home().map(|h| dunce::canonicalize(&h).unwrap_or(h));
+    refusal(&real, home.as_deref(), os, system_drive())
 }
 
 /// The walk of a chosen folder. The folder itself must be a readable directory (an error:
@@ -758,16 +794,25 @@ pub(crate) fn archive_game_root(
         .map(|e| (e.path.as_str(), e.size))
         .collect();
     let param = |root: &str| format!("{root}sce_sys/param.json");
-    let mut roots: Vec<&str> = files
-        .keys()
-        .filter_map(|p| p.strip_suffix("eboot.bin"))
-        .filter(|r| (r.is_empty() || r.ends_with('/')) && r.matches('/').count() <= ARCHIVE_DEPTH)
-        .filter(|r| {
-            files
-                .get(param(r).as_str())
-                .is_some_and(|s| (1..=MAX_PARAM_JSON).contains(s))
-        })
-        .collect();
+    let candidates = |marker: &str| -> Vec<&str> {
+        files
+            .keys()
+            .filter_map(|p| p.strip_suffix(marker))
+            .filter(|r| {
+                (r.is_empty() || r.ends_with('/')) && r.matches('/').count() <= ARCHIVE_DEPTH
+            })
+            .filter(|r| {
+                files
+                    .get(param(r).as_str())
+                    .is_some_and(|s| (1..=MAX_PARAM_JSON).contains(s))
+            })
+            .collect()
+    };
+    let mut roots = candidates("eboot.bin");
+    // No game: additional content (param.json without eboot.bin, by user decision).
+    if roots.is_empty() {
+        roots = candidates("sce_sys/param.json");
+    }
     roots.sort_unstable();
     if roots.len() > ARCHIVE_CANDIDATES {
         return Err(several_games(&roots));
@@ -1011,6 +1056,32 @@ mod tests {
             assert!(why.contains("system folder"), "{why}");
         }
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The desktop explorer's rule: the Library's refusals, a path not there yet by its folder.
+    #[test]
+    fn folder_refusal_matches_the_library() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        assert_eq!(folder_refusal(&base), None);
+        assert_eq!(folder_refusal(&base.join("forge-not-there")), None);
+        if Os::HOST.is_none() {
+            return; // FreeBSD (the PS5) has no system-folder list.
+        }
+        let system = match cfg!(windows) {
+            true => format!("{}:\\Windows", system_drive()),
+            false => "/usr".to_string(),
+        };
+        let system = Path::new(&system);
+        let why = folder_refusal(system).unwrap();
+        assert_eq!(why, refuse_folder(system).unwrap_err().to_string());
+        assert!(!why.starts_with(r"\\?\"), "{why}");
+        let inside = folder_refusal(&system.join("forge-not-there")).unwrap();
+        assert!(inside.contains("system folder"), "{inside}");
+        let root = match cfg!(windows) {
+            true => format!("{}:\\", system_drive()),
+            false => "/".to_string(),
+        };
+        assert!(folder_refusal(Path::new(&root)).is_some(), "{root}");
     }
 
     /// The PS5's automatic scan with the real `statfs` classifier (run by scripts/test-freebsd.sh).

@@ -6,6 +6,8 @@ version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Roots spelled `C:\x` on Windows, as core's `list_dir` spells the folders it lists.
+dunce = "1.0.5"
 getrandom.workspace = true
 libc.workspace = true
 # `GET /api/qr`: the page's address for a phone; no image/svg features (api.rs draws the SVG).

@@ -27,6 +27,12 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # The tests run optimized but without the shipped profile's fat LTO and single codegen
+    # unit, which made every test binary a slow whole-program link (worst with MSVC's linker).
+    # The release jobs, fsck and ps5 still build the shipped profile.
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     strategy:
       fail-fast: false
       # Every platform that ships builds and tests the whole workspace, the Tauri app included
@@ -40,6 +46,11 @@ jobs:
           - os: windows-11-arm
           - os: ubuntu-22.04-arm
     steps:
+      # Defender scans every file the build and the tests write; the runner is throwaway.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        continue-on-error: true
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -216,17 +227,22 @@ jobs:
       - run: fuzz/seed.sh
       - run: cargo +nightly fuzz build --target "$FUZZ_TARGET"
         working-directory: fuzz
+      # One libFuzzer process per core (each is single-threaded), each target its full 60 s;
+      # the logs follow, one group per target.
       - name: Run each target for 60 s
         working-directory: fuzz
         run: |
-          failed=()
+          mkdir -p logs
+          : > failed.txt
+          cargo +nightly fuzz list | xargs -P "$(nproc)" -I{} sh -c \
+            'cargo +nightly fuzz run --target "$FUZZ_TARGET" {} -- -max_total_time=60 > logs/{}.log 2>&1 || echo {} >> failed.txt'
           for t in $(cargo +nightly fuzz list); do
             echo "::group::$t"
-            cargo +nightly fuzz run --target "$FUZZ_TARGET" "$t" -- -max_total_time=60 || failed+=("$t")
+            cat "logs/$t.log"
             echo "::endgroup::"
           done
-          if [ ${#failed[@]} -gt 0 ]; then
-            echo "::error::fuzz targets with findings: ${failed[*]} (inputs in the fuzz-artifacts artifact)"
+          if [ -s failed.txt ]; then
+            echo "::error::fuzz targets with findings: $(tr '\n' ' ' < failed.txt)(inputs in the fuzz-artifacts artifact)"
             exit 1
           fi
       - if: failure()

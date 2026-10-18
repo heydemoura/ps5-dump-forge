@@ -2488,12 +2488,14 @@ dependencies = [
  "anyhow",
  "blake3",
  "crc32fast",
+ "dunce",
  "getrandom 0.4.3",
  "libc",
  "ps5-dump-forge-archive",
  "ps5-dump-forge-exfat",
  "ps5-dump-forge-fpkg",
  "ps5-dump-forge-lz4",
+ "ps5-dump-forge-patch",
  "ps5-dump-forge-pfs",
  "ps5-dump-forge-ufs2",
  "ps5upload-fpkg",
@@ -2506,6 +2508,7 @@ dependencies = [
 name = "ps5-dump-forge-exfat"
 version = "0.2.0"
 dependencies = [
+ "ps5-dump-forge-patch",
  "ps5upload-fpkg",
  "unicode-normalization",
 ]
@@ -2522,6 +2525,7 @@ name = "ps5-dump-forge-gui"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "dunce",
  "ps5-dump-forge-core",
  "tauri",
  "tauri-build",
@@ -2542,11 +2546,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps5-dump-forge-patch"
+version = "0.2.0"
+dependencies = [
+ "crc32fast",
+]
+
+[[package]]
 name = "ps5-dump-forge-pfs"
 version = "0.2.0"
 dependencies = [
  "flate2",
  "ps5-dump-forge-exfat",
+ "ps5-dump-forge-patch",
  "ps5-dump-forge-ufs2",
  "ps5upload-fpkg",
 ]
@@ -2559,6 +2571,7 @@ version = "0.2.0"
 name = "ps5-dump-forge-server"
 version = "0.2.0"
 dependencies = [
+ "dunce",
  "flate2",
  "getrandom 0.4.3",
  "libc",
@@ -2573,6 +2586,7 @@ dependencies = [
 name = "ps5-dump-forge-ufs2"
 version = "0.2.0"
 dependencies = [
+ "ps5-dump-forge-patch",
  "ps5upload-fpkg",
  "ps5upload-pkg",
  "unicode-normalization",
