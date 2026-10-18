@@ -129,7 +129,7 @@ const pt: Messages = {
       ["LZ4", "rastrear um jogo AMPR e depois empacotar os assets dele com reparo inteligente (experimental)."],
       ["Em streaming", "de qualquer origem para qualquer destino: sem cópia temporária, nem para a imagem dentro de um ffpfsc ou um jogo em um arquivo compactado."],
       ["Arquivos compactados", "um .zip, .7z ou .rar com um jogo é explorado, convertido ou empacotado como uma pasta."],
-      ["Biblioteca", "os jogos deste computador ou console, prontos para converter e editar."],
+      ["Armazenamento", "uma Biblioteca dos seus jogos e um Explorador de arquivos para renomear, mover e excluir."],
       ["Seguro", "seu jogo nunca é alterado a menos que você peça; arquivos inúteis são ignorados e nomes de arquivo inválidos são avisados antes."],
       ["USB e cartões SD", "gravado em pendrives e cartões formatados em exFAT ou FAT32."],
       ["No lugar ou refeito", "as edições vão direto na imagem quando cabem; senão, vão para uma nova imagem que a substitui depois de verificada."],

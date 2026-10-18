@@ -56,7 +56,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   over `sevenz-rust2` (decode only), `rar.rs` our FFI wrapper over `unrar_sys` (bundles UnRAR's C++; every target,
   the PS5 payload included), `parts.rs` multi-part naming, `stream.rs` the `Reader`. Glue: `core/src/archive.rs` (`ArchiveTree`), `inspect.rs`,
   `library::archive_game_root`. Licence: `vendor/LICENSE-UnRAR.txt`, `vendor/LICENSE-UnRAR-exception.md` (copied into every release).
-- `crates/ps5-dump-forge-cli`: binary `ps5-dump-forge` (`inspect`, `convert`, `serve`), JSON-lines events.
+- `crates/ps5-dump-forge-cli`: binary `ps5-dump-forge` (`inspect`, `convert`, `lz4-patch`, `lz4-unpatch`, `serve`), JSON-lines events.
 - `crates/ps5-dump-forge-ps5`: the payload's global allocator (`Pool`, installed by the CLI only for
   the PS5): freed blocks of 64 B..4 MiB kept in power-of-two classes, since the PS5 libc serializes
   every malloc across threads (a `.pkg`'s Kraken pool: 12.7 → 49.3 MB/s at 4 threads).
@@ -237,8 +237,10 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
      `.pkg` are read-only on the console; on the PS5 an image ShadowMount+ has mounted or one inside
      `/mnt/shadowmnt`, `smp_finding`, in preflight and again before the replace). `output` is ignored: the job writes `<source>.<job>-<pid>.part`
      beside the source (the destination check counts the whole new image), verifies it as usual, re-checks
-     the source's `SourceStamp`, closes the source and renames the part over it (`Part::replace`, one
-     atomic rename, folder synced). Any failure leaves the source byte-identical and the `.part` deleted.
+     the source's `SourceStamp`, closes the source and puts the part in its place (`Part::replace`: the original kept as
+     `*.orig.part` (a hard link, or a rename where the volume has none), folder synced, the part renamed over
+     the source, folder synced, the backup removed). Any failure leaves the source byte-identical and the
+     `.part` deleted (where putting the original back fails, the error names its `*.orig.part` backup).
      The server's stale-part filter takes an in-place job's `.part` from its source.
   3. Deleting the Edit tab's source, a Library entry or a File explorer row (the trash button of the Edit
      card, of a Library card/row or of an explorer row, or its Delete key; one **No** / **Yes, delete**
@@ -434,7 +436,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     `/private/tmp`, ...; Linux `/proc`, `/usr`, `/run` except `/run/media/…`, ...; Windows, Program Files,
     ... on the system drive). A path at or inside the canonical home is allowed first (a `/var/home/me` or
     `/root` home works). Everything else is allowed (home and its children, `/Volumes`, `/media`, `/mnt`,
-    volume and drive roots). `library_cover` refuses only links, devices and `/mnt/shadowmnt`.
+    volume and drive roots). `library_cover` refuses links, devices, `/mnt/shadowmnt`, a file
+    without one of the five image extensions and an image on another filesystem than its folder.
     Walk exclusions: 12 skip names, the home's app-data folder, `.part`, non-UTF-8 names.
   - **Limits** (`library.rs`): depth 6 (root 0), 20,000 directories and 200,000 entries per root, 10,000
     entries per directory, 256 image opens, 2,000 games, 15 s budget, 20 warnings; hitting one sets
@@ -497,7 +500,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   FPKG is labelled `fpkg`; its files, the `Format`/`Kind` id and the CLI flag stay `pkg`. Format copy and
   the About tab's formats table (`app/src/Formats.tsx`) follow ShadowMountPlus 1.7's README and release notes.
   About's feature list (`formats.features`: bold name + a few words) is the user's text (by user decision):
-  Convert, Edit, Delete, LZ4 "with smart healing", Streamed, Archives, Library, Safe, USB and SD cards, In
+  Convert, Edit, Delete, LZ4 "with smart healing", Streamed, Archives, Storage (Library + File explorer), Safe, USB and SD cards, In
   place or rebuilt; sized so the card matches the QR card's height at 1200px; every language translates it.
 - UI languages: English (the fallback), Russian, Simplified Chinese (`zh`), German, Spanish, French,
   Japanese, Brazilian Portuguese (`pt`), Italian, Korean and Arabic; UI text only (`app/src/i18n.ts`). Backend text

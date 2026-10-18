@@ -133,7 +133,7 @@ const it: Messages = {
       ["LZ4", "traccia un gioco AMPR, poi impacchettane gli asset con riparazione intelligente (sperimentale)."],
       ["In streaming", "da qualsiasi origine a qualsiasi destinazione: senza copia temporanea, nemmeno per l’immagine dentro un ffpfsc o un gioco in un archivio."],
       ["Archivi", "uno .zip, .7z o .rar con un gioco si sfoglia, converte o impacchetta come una cartella."],
-      ["Libreria", "i giochi su questo computer o console, pronti da convertire e modificare."],
+      ["Archiviazione", "una Libreria dei tuoi giochi ed Esplora file per rinominare, spostare ed eliminare."],
       ["Sicuro", "il tuo gioco non cambia mai se non lo chiedi; i file spazzatura vengono saltati e i nomi di file errati segnalati in anticipo."],
       ["USB e schede SD", "scritto su chiavette e schede formattate exFAT o FAT32."],
       ["Sul posto o ricostruito", "le modifiche vanno direttamente nell’immagine se ci stanno, altrimenti in una nuova immagine che la sostituisce dopo il controllo."],

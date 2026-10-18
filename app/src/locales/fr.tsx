@@ -127,7 +127,7 @@ const fr: Messages = {
       ["LZ4", "traçage d’un jeu AMPR, puis empaquetage de ses ressources avec réparation intelligente (expérimental)."],
       ["En flux", "de n’importe quelle source vers n’importe quelle cible : sans copie temporaire, même pour l’image dans un ffpfsc ou un jeu dans une archive."],
       ["Archives", "un .zip, .7z ou .rar contenant un jeu se parcourt, se convertit ou s’empaquette comme un dossier."],
-      ["Bibliothèque", "les jeux de cet ordinateur ou de cette console, prêts à convertir et à modifier."],
+      ["Stockage", "une Bibliothèque de vos jeux et un Explorateur de fichiers pour renommer, déplacer et supprimer."],
       ["Sûr", "votre jeu n’est jamais modifié sans que vous le demandiez ; les fichiers parasites sont ignorés et les mauvais noms de fichiers signalés d’avance."],
       ["USB et cartes SD", "écrit sur des clés et cartes formatées en exFAT ou FAT32."],
       ["Sur place ou reconstruit", "les modifications vont directement dans l’image si elles tiennent, sinon dans une nouvelle image qui la remplace après vérification."],

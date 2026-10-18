@@ -1,8 +1,8 @@
 <p align="center"><img src="app/src-tauri/icons/128x128@2x.png" width="128" alt="PS5 Dump Forge"></p>
 
-Runs on everything (including your PS5) and converts everything: **folder**, **exfat**, **ffpfs**, **ffpfsc**, **pkg**.
+Runs on everything (including your PS5), converts and edits everything: game `folders`, `exfat`, `ffpkg`, `ffpfs`,
+`ffpfsc` and debug `FPKG` packages, straight from `zip`, `7z` and `rar` too, with experimental `LZ4` asset packs for AMPR games.
 
-Can utilize LZ4 compression and unpack archives (**zip**/**7zip**/**rar**).
 
 The interface is in **11 languages**.
 
@@ -28,11 +28,11 @@ The interface is in **11 languages**.
 ## Formats
 
 Images are mounted by [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus); the debug FPKG is
-installed. Every format can be created and read back (an image or `.fpkg` can be extracted to a folder).
+installed. Every format can be created and read back (an image or a debug FPKG `.pkg` can be extracted to a folder).
 
 | Format | Console speed | Size on disk | Notes |
 |---|---|---|---|
-| `.fpkg` (debug FPKG, saved as `.pkg`) | Native, full speed | 30–60% less, depending on the game | Installs on firmware 11.60 or lower with kstuff + fpkg-enable + ppr-patch. Kraken level (`--kraken`): **Fast** (default), **Balanced** / **Smallest** ≈ 2.6% smaller at ~6× / ~9× the compression time, **Stored** uncompressed (for a console that installs a compressed package but won't start it). Reads packages from this builder and compatible debug builders. |
+| `.fpkg` (debug FPKG, saved as `.pkg`) | Native, full speed | 30–60% less, depending on the game | Installs on firmware 11.60 or lower. Reads packages from this builder and compatible debug builders. |
 | `.ffpkg` (UFS2) | Full image speed | Equal to the game size | ShadowMountPlus's recommendation. |
 | `.exfat` (512 B sectors, 64 KiB clusters) | Full image speed | Equal to the game size | For games that only run like external-drive content. |
 | `.ffpfs` (PFS, uncompressed) | Full image speed | Equal to the game size | Experimental in ShadowMountPlus. ASCII file names only. |
@@ -54,24 +54,21 @@ Before you press Apply the tab says how the changes will go in:
   marked unclean, or a `.ffpkg` not laid out the way Forge writes one, takes Rebuild instead. If the check after writing fails, or the computer or console stops part way, the image is put back
   from an undo file beside it (`<image>.forge-undo`); one left by a crash is restored on the next edit.
 - **Rebuild**: a new image of the same format is written beside the original from the original plus your
-  changes, verified, then put in its place. It needs about the image's size of free space beside it. It is
+  changes, verified, then put in its place. It needs free space beside the original for the new image (the tab says how much: for `.ffpfsc` and `.pkg`
+  it can be more than the original's size). It is
   the only way for `.ffpfsc` and `.pkg`, and the way when the changes don't fit in place.
-
-A folder is changed directly, with no undo: a failure part way leaves the earlier changes in. Archives can be
-browsed and extracted from, not edited; a game with LZ4 packs must be unpacked first. For an AMPR title, a change to its file
-list writes a fresh `ampr_emu.index` and drops the old traces; the ampr_emu runtime is left as it is. On the
-PS5, an image ShadowMountPlus has mounted can't be edited: stop the game and move the image out of
-ShadowMountPlus's folders (or turn it off) first. In a browser on another device, dropped files are uploaded to the console
-when you press Apply, so they need that much free space beside the game until the job ends. Close the game
-before applying; once applied there is no undo.
 
 **Extract** copies a file or folder (a row's Extract button, or **Extract folder** for the folder shown, the
 whole game at the top) out of any source, images, `.pkg` and archives included, into a folder you choose.
 Nothing there is ever replaced: a name that already exists stops it before anything is copied.
 
-A source with a `sce_sys/param.json` naming a title ID but no `eboot.bin` is **additional content** (a DLC, an update or
-another package) and is labelled so everywhere. It can be edited and extracted like a game, and converted
-to a folder or an `.fpkg` (not to an image).
+## Storage
+
+The **Storage** tab holds the **Library** (the games found in a folder you choose, or on the PS5's drives)
+and a **File explorer**. Both open a game in Edit or Convert. The File explorer renames, moves and deletes at
+once, after you confirm: a delete is permanent (no Trash), a move stays on the same drive and never replaces
+anything, and anything an unfinished job uses is refused. On the PS5, images ShadowMountPlus has mounted are
+tagged **Mounted** in the File explorer and can't be edited, moved or deleted.
 
 ## LZ4 asset packs
 
@@ -91,6 +88,12 @@ Without traces or a profile, Pack falls back to a built-in guess of which files 
 ampr_emu 0.4.2.1 is an upstream test build: some games crash when saving. Details, CLI options and
 caveats: [docs/LZ4.md](docs/LZ4.md).
 
+A plain conversion (Convert, or the CLI without LZ4 options) also repairs an AMPR title: it installs the bundled
+ampr_emu where there is none, replaces an older, unknown or trace build, and writes a fresh `ampr_emu.index` when
+the old one doesn't match the files written, dropping the old traces and logs with it (into a `.pkg`, the package
+builder writes the index). An LZ4-packed source keeps its index, traces and logs as they are. Convert says up
+front what it will do.
+
 ## Download and run
 
 Every release archive on the Releases page holds the app and the `ps5-dump-forge` command-line tool. Nothing to install; the app writes nothing beyond its own
@@ -102,7 +105,7 @@ WebView data, so keep it in any folder you can write to.
   (`nc -w 3 <ps5-ip> 9021 < ps5-dump-forge-<version>-ps5.elf`), or list it in an autoloader's
   `autoload.txt`. A notification says Dump Forge is launched; open it from its icon.
 - **Open the UI** from the Dump Forge icon, or in any browser on the same network:
-  `http://<ps5-ip>:8095`.
+  `http://<ps5-ip>:8095`. In the console's browser, **L2** / **R2** switch tabs.
 
 ### macOS (11 or later)
 

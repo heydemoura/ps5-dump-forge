@@ -123,7 +123,7 @@ const de: Messages = {
       ["LZ4", "Tracing eines AMPR-Spiels, dann Packen seiner Assets mit intelligenter Reparatur (experimentell)."],
       ["Gestreamt", "von jeder Quelle zu jedem Ziel: ohne temporäre Kopie, auch für das Image in einem ffpfsc oder ein Spiel in einem Archiv."],
       ["Archive", "ein .zip, .7z oder .rar mit einem Spiel wird wie ein Ordner durchsucht, konvertiert oder gepackt."],
-      ["Bibliothek", "die Spiele auf diesem Computer oder dieser Konsole, bereit zum Konvertieren und Bearbeiten."],
+      ["Speicher", "eine Bibliothek Ihrer Spiele und ein Datei-Explorer zum Umbenennen, Verschieben und Löschen."],
       ["Sicher", "Ihr Spiel wird nie verändert, außer Sie wünschen es; Müll-Dateien werden übersprungen, ungültige Dateinamen vorab gemeldet."],
       ["USB und SD-Karten", "geschrieben auf Sticks und Karten mit exFAT oder FAT32."],
       ["An Ort und Stelle oder neu gebaut", "Änderungen gehen direkt ins Image, wenn sie passen, sonst in ein neues Image, das es nach der Prüfung ersetzt."],

@@ -58,7 +58,7 @@ gradient notice bar) and the app icon (near-black navy with a blue edge and an o
 | ffpfs | `fmt-ffpfs` | teal `#7ee0e0` |
 | ffpfsc | `fmt-ffpfsc` | amber `#ffc580` |
 | fpkg | `fmt-pkg` | green `#8fe0ab` (Convert's default target) |
-| LZ4 packed folder | `fmt-lz4` | lime `#d6e875` (only the LZ4 tab's Pack target picker offers it) |
+| LZ4 packed folder | `fmt-lz4` | lime `#d6e875` (a job row's pill for a Pack into a folder; the Pack target picker shows that target as Folder) |
 
 **Semantic tags.** Tinted pills for states: `.tag.blue` Writing, `.tag.green` Done, `.tag.red` Failed,
 `.tag.orange` Backport, `.tag.violet` DLC and Additional content (a source without `eboot.bin`, beside
@@ -300,8 +300,8 @@ tiles and tags. Two columns from 880px; Edit splits 1:2 from 1100px (its game ca
     shows the red reason and a `.small` **Enter password** (lock icon) in `.row.locked`. The password
     stays in memory with that source (inspect, naming and its jobs), never stored or shown.
   - **Delete** (`confirmDelete` in `delete.tsx`, `role="alertdialog"`, shared by Edit, the Library and
-    the File explorer): the warn icon, "Delete this folder?" / "Delete this image?" (the explorer: also
-    "Delete this file?"), the whole path in an
+    the File explorer): the trash icon in the warn amber (`.head-icon.warn`), "Delete this folder?" / "Delete this image?" /
+    "Delete this archive?" (the explorer: also "Delete this file?"), the whole path in an
     `.out-box`, a muted line (for good, no Trash or undo), and two buttons: **No** (focused first) and
     **Yes, delete** (`.danger`). Afterwards a muted "Deleted <path>".
 
@@ -341,8 +341,8 @@ tiles and tags. Two columns from 880px; Edit splits 1:2 from 1100px (its game ca
     "Skipped locations and files" fold. No roots: "No folders are available to scan."
 - **File explorer** (`Files.tsx`, `.explorer.files`): Edit's explorer card (head with the folder icon,
   "File explorer", on a computer the root's `PathLine`, **Refresh**, **Choose folder**; Up and
-  crumbs, the filter and count, the `xgrid` well) without a pending bar: a muted info line says changes
-  happen at once. Row actions, icon-only (`aria-label` + `title`): Rename (pencil; inline name input, F2),
+  crumbs, the filter and count, the `xgrid` well) without a pending bar: an info `.note-line` (`.explorer-note`, `--fg-2`) says
+  changes happen at once. Row actions, icon-only (`aria-label` + `title`): Rename (pencil; inline name input, F2),
   Move to (the `move` icon; the folder picker), Delete (trash, `.danger`), then for a folder or an
   image/archive a ⋯ (`dots`) `ChooseMenu` with Edit and Convert ("More actions for <name>"; it opens
   upwards, or from its other edge, where the well would clip it: `.menu.up`, `.menu.start`), then a

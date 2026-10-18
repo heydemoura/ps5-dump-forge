@@ -137,7 +137,7 @@ const es: Messages = {
       ["LZ4", "trazar un juego con AMPR y luego empaquetar sus recursos con reparación inteligente (experimental)."],
       ["En streaming", "de cualquier origen a cualquier destino: sin copia temporal, ni siquiera para la imagen dentro de un ffpfsc o un juego en un archivo comprimido."],
       ["Archivos comprimidos", "un .zip, .7z o .rar con un juego se explora, convierte o empaqueta como una carpeta."],
-      ["Biblioteca", "los juegos de este ordenador o consola, listos para convertir y editar."],
+      ["Almacenamiento", "una Biblioteca de tus juegos y un Explorador de archivos para renombrar, mover y eliminar."],
       ["Seguro", "tu juego nunca cambia salvo que lo pidas; los archivos basura se omiten y los nombres de archivo incorrectos se avisan de antemano."],
       ["USB y tarjetas SD", "se escribe en memorias y tarjetas formateadas en exFAT o FAT32."],
       ["En el sitio o reconstruido", "los cambios van directo a la imagen si caben; si no, a una imagen nueva que la reemplaza tras comprobarla."],

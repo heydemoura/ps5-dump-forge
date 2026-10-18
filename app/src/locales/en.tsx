@@ -134,7 +134,7 @@ const en = {
       ["LZ4", "trace an AMPR game, then pack its assets with smart healing (experimental)."],
       ["Streamed", "from any source to any target: no temporary copy, not even the image inside an ffpfsc or a game in an archive."],
       ["Archives", "a .zip, .7z or .rar holding one game is browsed, converted or packed like a folder."],
-      ["Library", "the games on this computer or console, ready to convert and edit."],
+      ["Storage", "a Library of your games and a File explorer to rename, move and delete."],
       ["Safe", "your game is never changed unless you ask; junk files are skipped and bad file names reported up front."],
       ["USB and SD cards", "written onto sticks and cards formatted exFAT or FAT32."],
       ["In place or rebuilt", "edits go straight into an image when they fit, else into a new image that replaces it once checked."],

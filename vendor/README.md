@@ -11,7 +11,7 @@ inspection), taken from ps5upload with a small local patch series on top.
 | License | GPL-3.0-or-later (see `LICENSE-ps5upload`, and the note below) |
 | Edition | 2021, as upstream, on purpose: it keeps the diff to upstream small |
 
-The trees here are upstream plus every patch in `patches/`, in order. Nothing else differs.
+The trees here are upstream plus every patch in `patches/` except 0021 (lzma-rust2, below), in order. Nothing else differs.
 
 `LICENSE-UnRAR.txt` and `LICENSE-UnRAR-exception.md` are not vendored code: UnRAR's license and the
 GPLv3 §7 permission for the UnRAR source that `unrar_sys` (crates.io) builds into every target. The
@@ -84,6 +84,7 @@ rm -rf /tmp/series && mkdir /tmp/series
 cp -R /tmp/ps5upload/engine/crates/ps5upload-fpkg /tmp/ps5upload/engine/crates/ps5upload-pkg /tmp/series/
 (cd /tmp/series && git init -q && git add -A && git commit -qm pristine)
 for p in patches/*.patch; do
+    case $p in *0021-*) continue ;; esac
     (cd /tmp/series && git apply "$OLDPWD/$p" && git add -A && \
         git commit -qm "$(basename "$p" .patch | cut -d- -f2-)")
 done
@@ -98,7 +99,7 @@ it on top. Then write every patch again, each against its parent:
 ```sh
 cd /tmp/series && n=0
 for c in $(git rev-list --reverse HEAD~$(($(git rev-list --count HEAD) - 1))..HEAD); do
-    n=$((n + 1))
+    n=$((n + 1)); [ $n = 21 ] && n=22
     git diff --binary --histogram "$c~1" "$c" > "$OLDPWD/patches/$(printf %04d $n)-$(git log -1 --format=%s "$c" | tr ' ' -).patch"
 done
 ```
