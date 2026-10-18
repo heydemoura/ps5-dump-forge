@@ -9,6 +9,8 @@ rust-version.workspace = true
 anyhow.workspace = true
 blake3.workspace = true
 crc32fast = "1.5"
+# Plain `C:\x` spellings of canonical Windows paths (already locked through Tauri; std-only).
+dunce = "1.0.5"
 getrandom.workspace = true
 libc.workspace = true
 serde.workspace = true
@@ -21,6 +23,7 @@ ps5-dump-forge-pfs.workspace = true
 ps5-dump-forge-fpkg.workspace = true
 ps5-dump-forge-lz4.workspace = true
 ps5-dump-forge-archive.workspace = true
+ps5-dump-forge-patch.workspace = true
 
 [lints.rust]
 # `ps5/x86_64-ps5-freebsd.json` sets `env: ps5` for the PS5-only bits (ps5/README.md).

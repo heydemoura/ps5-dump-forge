@@ -10,7 +10,7 @@ scripts/release-ps5.sh           # dist/ps5-dump-forge-<version>-ps5.elf, checke
 scripts/test-freebsd.sh          # core + server tests on FreeBSD UFS, FAT32 and nullfs volumes (qemu VM in Docker)
 cargo run -p ps5-dump-forge-cli -- serve --root <dir>       # the web UI on this computer, http://localhost:8095
 (cd app && npm run build:http && node scripts/smoke.mjs)    # the web bundle + client against the real serve
-FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never shipped (release-ps5.sh refuses it)
+FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug, GET /probe, POST/GET /api/debug_input; never shipped (release-ps5.sh refuses it)
 ```
 
 ## Harness (`ps5/`)
@@ -81,11 +81,12 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
   `statfs` names it as its own mount point with blocks: those folders exist with nothing plugged in;
   re-checked on each use), canonicalized and logged; on a computer the `--root` folders.
 - **No protections, by decision**: no pairing, token, `Host`/`Origin`/CSRF checks, security headers or
-  path confinement; paths go to core as given, as in the Tauri app. One delete route, by user decision
-  (`delete_path`, Inspect's; the page's question authenticates nobody).
-- Limits: head 16 KiB, body 1 MiB (`Content-Length` only), 10 s per request, 30 s per write (a download:
+  path confinement; paths go to core as given, as in the Tauri app. One delete route and one move route,
+  by user decision (`delete_path`, Edit's and the Storage tab's; `move_path`, its File explorer's; the
+  page's question authenticates nobody).
+- Limits: head 16 KiB, body 1 MiB (`Content-Length` only; `edit_upload` streams any size, 30 s idle per read), 10 s per request, 30 s per write (a download:
   per 1 MiB chunk), 16 handler
-  threads (then 503), 8 unfinished jobs (then 429), 2 inspections or naming requests at once (429,
+  threads (then 503), 8 unfinished jobs (then 429), 2 inspections, naming, `host_tree` or `edit_check` requests at once (429,
   `Retry-After: 1`), 32 finished jobs and 200 log lines each kept, `list_dir` 10,000 entries (`truncated`),
   `stale_parts` 1,000. `compression_threads: null` is `max(1, cores − 1)`; on the PS5
   `cores` is the payload's 5 CPUs (`compat.c`) and two are left free (3 workers), for the console's
@@ -96,24 +97,29 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug; never sh
 
 | Route | Body | Returns |
 |---|---|---|
-| `GET /api/session` | | `{app: "ps5-dump-forge", version, platform: "ps5"\|"host", instance, stopping, self_copy, separator: "/"\|"\\", url, handover: true}` (`url`: the page header's host:port; `handover`: takes `quit {"if_idle": true}`) |
+| `GET /api/session` | | `{app: "ps5-dump-forge", version, platform: "ps5"\|"host", instance, stopping, self_copy, separator: "/"\|"\\", url, handover: true, debug}` (`url`: the page header's host:port; `handover`: takes `quit {"if_idle": true}`; `debug`: true only in a `FORGE_DEBUG_API` PS5 build, the page then shows **Input probe**) |
 | `GET /api/qr` | | `url` as a QR code, `image/svg+xml` (the header's and About's); 404 when the server can't tell its IP |
 | `POST /api/inspect` | `{path}` | `Inspection` |
 | `POST /api/default_output` | `{source, format, dir}` | path |
 | `POST /api/generated_output` | `{source, format, dir, taken}` | path |
-| `POST /api/start_job` | `{request: ConvertRequest}` | job id (`lz4_in_place: true` replaces an `.exfat`/`.ffpkg` source; `output` ignored) |
+| `POST /api/start_job` | `{request: ConvertRequest}` | job id (`lz4_in_place: true` replaces an `.exfat`/`.ffpkg` source; `output` ignored; non-empty `edits` is an edit job of the source, in place or with `edit_rebuild`, `output` and `format` ignored; non-empty `extract` copies those game paths into the folder `output`, `format` `folder`) |
 | `POST /api/cancel_job` | `{id}` | `null` (idempotent) |
-| `POST /api/stale_parts` | `{dirs}` | `string[]`, without running jobs' parts (an in-place job's beside its source) |
+| `POST /api/stale_parts` | `{dirs}` | `string[]`, without running jobs' parts (an in-place or edit job's beside its source) or a staging folder an upload or unfinished job uses |
+| `POST /api/edit_check` | `{request: ConvertRequest}` | `EditCheck {in_place, rebuild, needed_inside, free_inside, rebuild_needs, free_beside}`: why each mode can't apply (empty = it can) and the sizes (bytes, `null` where they don't apply); reads only, except that a leftover undo journal no job uses is restored first (after the ShadowMount+ check) and the U1 probe writes and removes its file. The source and every `Add.from` must be a folder or regular file (else 400); counts as an inspection (429), 409 once stopping |
+| `POST /api/host_tree` | `{path}` | `{kind: "file"\|"dir", size, files: [{path, size}], empty_dirs, truncated}`: a file or folder as an edit's add will read it (junk left out; a link or special file refused); `truncated` past 200,000 entries or 15 s. 404 missing, counts as an inspection (429), 409 once stopping, 500 with core's message |
+| `POST /api/edit_upload?source=&path=` | raw bytes (`Content-Length` required) | `{path}`: the staged file, `<source>.forge-upload-<pid>.part/<path>`, where the UI sends `path` as `<tag>-<k>/<game path>` (`stagingNames`: a random tag per Apply) (canonical source; folders made on demand, 0777 on the PS5), written to a temporary name and renamed over. 411 no length, 400 bad query, game path or a body that ended early or stalled, 404 source missing, 409 a non-file in the way, the same target uploading, an unfinished job using it, or stopping |
+| `POST /api/edit_discard` | `{source}` | `null`: the source's staging folder removed by `delete_path`'s rules (missing: `null`); 409 while an upload into it or a job using it is unfinished, or stopping |
 | `POST /api/lz4_patch` | `{source}` | `Lz4Patch`; 409 while a job is queued or running |
 | `POST /api/lz4_unpatch` | `{source}` | `Lz4Patch` (release runtime); 409 while a job is queued or running |
 | `GET /api/lz4_traces?source=` | | both trace files as one zip download (below) |
 | `POST /api/delete_path` | `{path}` | `null`: the file or folder is gone for good (below); 400 refused, 404 missing, 409 a job uses it or stopping, 500 failed (a folder may be partly gone) |
-| `POST /api/library_scan` | `{}` (an object; `root` string scans just that folder on any filesystem (a network share included; a chosen root that is a link is resolved first, links inside the walk are never followed, `/mnt/shadowmnt` refused; system folders such as `/` or `/usr` are refused with core's message), non-string 400; `root` is required on a computer (400 "choose a folder to scan" without it) and optional on the PS5) | `{roots, entries: [{path, kind, title_id, title_name, version, has_cover, lz4_packed}], truncated, warnings, storage?}`: the Library's scan of that folder, or on the PS5 of the server's current roots (browse roots without `/mnt/shadowmnt`, re-resolved each call so a newly attached drive appears on Refresh). `storage` `{free, total}` (bytes, `statfs` of `/data`) only on the PS5, read on each scan. Reads only; counts as an inspection (429 past 2), 409 once stopping, 500 with core's message. Partial results set `truncated` and add `warnings` (core's scan limits and 15 s cooperative budget). The request deadline governs receiving the request, not core's work, which can't be interrupted |
+| `POST /api/move_path` | `{from, to}` | `null`: moved or renamed on its volume, `to` never replaced; `from` refused as `delete_path` refuses it (same roots kept), `to` refused inside `from`, on another drive, taken, or with an undo journal pending; 400 refused, 404 missing (source or target folder), 409 a job uses either or stopping, 500 failed |
+| `POST /api/library_scan` | `{}` (an object; `root` string scans just that folder on any filesystem (a network share included; a chosen root that is a link is resolved first, links inside the walk are never followed, `/mnt/shadowmnt` refused; system folders such as `/` or `/usr` are refused with core's message), non-string 400; `root` is required on a computer (400 "choose a folder to scan" without it) and optional on the PS5) | `{roots, entries: [{path, kind, title_id, title_name, version, has_cover, lz4_packed, additional_content}], truncated, warnings, storage?}`: the Library's scan of that folder, or on the PS5 of the server's current roots (browse roots without `/mnt/shadowmnt`, re-resolved each call so a newly attached drive appears on Refresh). `storage` `{free, total}` (bytes, `statfs` of `/data`) only on the PS5, read on each scan. Reads only; counts as an inspection (429 past 2), 409 once stopping, 500 with core's message. Partial results set `truncated` and add `warnings` (core's scan limits and 15 s cooperative budget). The request deadline governs receiving the request, not core's work, which can't be interrupted |
 | `POST /api/library_cover` | `{path}` | a PNG data-URL string, or `null` (no icon, too large, not a PNG); fetched lazily per card. Same cap, 409 and 500 rules (an unreadable source is a 500) |
-| `POST /api/list_dir` | `{path: string\|null}` | `{path, parent, entries: [{name, path, dir, size}], truncated}` |
+| `POST /api/list_dir` | `{path: string\|null, explorer?: bool}` | `{path, parent, entries: [{name, path, dir, size, link, mounted}], truncated}` (`null`: the browse roots; `parent` `null` at a root; `link`: the entry is a link, its `path` the resolved target; with `explorer` the roots are the Library's, and on the PS5 `/mnt/shadowmnt` is hidden (a path in it 400) and `mounted` marks an image ShadowMount+ has mounted) |
 | `GET /api/jobs` | | `{instance, jobs: [{id, request, progress, done, log, log_total}]}` |
 | `POST /api/quit` | `{}` | `{}`, then cancels every job, waits for cleanup and exits |
-| `POST /api/quit` | `{"if_idle": true}` | `{}`, then exits as above, only when idle: 409 "Dump Forge is busy: …" while a job is queued or running, a `lz4_traces` download streams or a patch or delete holds admission past 1 s, 409 "Dump Forge is stopping" (the handover's request) |
+| `POST /api/quit` | `{"if_idle": true}` | `{}`, then exits as above, only when idle: 409 "Dump Forge is busy: …" while a job is queued or running, a `lz4_traces` download streams or a patch, delete or move holds admission past 1 s, 409 "Dump Forge is stopping" (the handover's request) |
 | `GET /api/elfldr` | — | `{up}`: elfldr accepts a connection (1 s; connect and close, nothing sent); 404 on a computer |
 | `POST /api/self_update` | `{version}` (`X.Y.Z`, newer than this one) | `{}` once elfldr has answered (downloaded and started it); this server keeps serving until the new copy takes over when idle (below); 404 on a computer, 400 bad or not newer, 409 stopping, a job queued or running, a patch or delete holding admission past 1 s, or another update in flight, 502 elfldr refused or failed, 503 elfldr not listening |
 
@@ -135,13 +141,22 @@ mid-transfer closes the connection short of `Content-Length`.
 `delete_path` (core's `Jobs::delete_path`): a file, or a folder with what is inside (links removed, not
 followed), then its folder fsynced. Refused (400): an empty path, a link itself, a special file, a volume
 root or mount point, a folder with another volume mounted inside (by `st_dev`), every browse root
-(configured and mounted now) and the folders holding one. 409: anything at, in or above what an unfinished
+(configured and mounted now) and the folders holding one; on the PS5 also Forge's own files (its self copy,
+that copy's lock and the tile owner record), anything at or in `/mnt/shadowmnt`, an image ShadowMount+ has
+mounted and a folder holding one (fails closed), and an undo journal while its image is there. 409: anything at, in or above what an unfinished
 job reads or writes (source, output, `.part`s, profile, traces), by identity after resolving links. The
 check and the removal hold the job table and admission, so no job or quit starts in between. No Trash, no
 undo.
 
-`instance` is random per start, so the page notices a restart and rebuilds its job list. `list_dir` with
-`null` lists the roots; directories first, then by name; non-UTF-8 names left out; symlinks resolved.
+`move_path` (core's `Jobs::move_path`): one rename, never replacing, then both folders fsynced. `from` is
+refused as `delete_path` refuses it, and so is a folder with a volume mounted inside; `to` must be a plain name in an existing folder (404 when it is
+missing), not inside `from`, on the same drive (400 "can't move between drives"), not taken (400), not at,
+in or above an unfinished job's paths (409); an image with an undo journal beside it is refused (400: open
+it in Edit first). Same locks as `delete_path`.
+
+`instance` is random per start, so the page notices a restart and rebuilds its job list. `list_dir` (core's `list_dir`) with
+`null` lists the roots; directories first, then by name; non-UTF-8 names left out; symlinks resolved
+(`link: true`, `path` the target; a dangling one as itself).
 Events keep core's serde shape (`{"Ok": …}` / `{"Err": "cancelled"}`); ids stay below 2^53. A job's table
 entry is made by its first event (core can emit `Done` before `Jobs::start` returns). Quit closes
 admission first (`start_job` → 409); on a computer SIGINT/SIGTERM does the same. A port already taken by
@@ -259,6 +274,16 @@ transiently; sparse files on PS5 UFS collapse to 2–3 MiB/s. `/data` is `bfs` o
   core and server tests on md-backed UFS, FAT32 and nullfs-over-UFS volumes (`tests/freebsd_volumes.rs`:
   every target end to end per volume, BLAKE3 read-back, a late failure that publishes nothing). FreeBSD has
   no native exFAT, so `exfatfs` stays covered by the probe only.
+- **Edits** (the Edit tab): an image ShadowMountPlus has mounted is refused in place and for a rebuild (an
+  entry `<stem>_<8 hex>` of `/mnt/shadowmnt` or `/mnt/shadowmnt/pfsc` whose `st_dev` differs from its
+  folder's; a listing error other than not found refuses too), at scan and again right before writing or
+  replacing: the kernel's cached view of a mounted (`image_rw=`) image would undo or damage the edit. The
+  undo journal (`<image>.forge-undo`) and the image are synced through U4 (a retried sync fails the job),
+  room for the journal is checked through U1 on the image's folder, and so is the room for a rebuild;
+  `edit_check` runs that probe too, so each check writes and removes a probe file there. A folder edit and
+  an Extract run the U1 probe on the game folder or the destination (room for the added bytes + 1 MiB) and
+  U2's name rules from it; their folders and files are opened up to 0777 like every payload write. Uploads
+  are staged 0777 beside the source. Not yet run on the console.
 - Read-ahead (`prefetch.rs`): the source is read one range (≤ 8 MiB) ahead on its own thread, overlapping
   hashing and writing.
 

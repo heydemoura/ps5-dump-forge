@@ -21,7 +21,7 @@ const ICON: &[u8] = include_bytes!("../../../ps5/icon0.png");
 /// PDFG00001 that is then never ours (delete it by hand); and a filesystem that hands a deleted
 /// folder's inode number to another app's new PDFG00001 makes that one look ours.
 #[cfg(target_env = "ps5")]
-const OWNER_FILE: &str = "/data/dumpforge/tile-PDFG00001.owner";
+pub(crate) const OWNER_FILE: &str = "/data/dumpforge/tile-PDFG00001.owner";
 /// Where earlier versions kept it. `ps5/entry.c` renames that folder to `/data/dumpforge`; when
 /// that failed (or both folders existed) the record is still there, and is taken over while
 /// `OWNER_FILE` is missing, only from a real folder (not the compatibility link to the new one).

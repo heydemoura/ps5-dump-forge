@@ -1,6 +1,6 @@
 // Pieces shared by the screens.
 
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 import {
@@ -129,8 +129,12 @@ export function TabList<T extends string>(props: {
   value: T;
   onChange: (id: T) => void;
   className?: string;
+  /** Controls on either side of the tab bar, outside it (the PS5's L2 / R2 badges). */
+  start?: ReactNode;
+  end?: ReactNode;
 }) {
   const ids = props.tabs.map((t) => t.id);
+  const framed = props.start !== undefined || props.end !== undefined;
   const onKey = (e: KeyboardEvent) => {
     const i = ids.indexOf(props.value);
     const next =
@@ -144,7 +148,7 @@ export function TabList<T extends string>(props: {
     props.onChange(next);
     document.getElementById(tabId(props.prefix, next))?.focus();
   };
-  return (
+  const list = (
     <div
       className={`seg ${props.className ?? ""}`}
       role="tablist"
@@ -171,6 +175,15 @@ export function TabList<T extends string>(props: {
         return t.sep ? [<span key={`${t.id}-sep`} className="tab-sep" aria-hidden="true" />, tab] : tab;
       })}
     </div>
+  );
+  return framed ? (
+    <div className="seg-wrap">
+      {props.start}
+      {list}
+      {props.end}
+    </div>
+  ) : (
+    list
   );
 }
 
@@ -364,18 +377,19 @@ export function Modal(props: {
 
 const deletedSubs = new Set<(path: string) => void>();
 
-/** Calls `f` with every path Inspect or the Library deletes; returns the unsubscribe. */
+/** Calls `f` with every path Edit or the Storage tab deletes, renames or moves away; returns the unsubscribe. */
 export function onDeleted(f: (path: string) => void): () => void {
   deletedSubs.add(f);
   return () => void deletedSubs.delete(f);
 }
 
-/** A game Library handed to Inspect or Convert; a new `id` is a new request, even for the same
+/** A game the Storage tab handed to Edit or Convert; a new `id` is a new request, even for the same
  * path (the screen reads it again). */
 export interface SourceSelection {
   id: number;
   path: string;
-  kind: Kind;
+  /** An archive's comes from the Storage tab's File explorer (by extension). */
+  kind: Kind | ArchiveKind;
 }
 
 export function notifyDeleted(path: string): void {
@@ -409,17 +423,17 @@ export async function pickSource(
 }
 
 /** "Folder" / "Image/Archive": a game folder, or an image or archive file. */
-function PickButtons(props: { onPick: (path: string, isImage: boolean) => void; big?: boolean }) {
+function PickButtons(props: { onPick: (path: string, isImage: boolean) => void; big?: boolean; disabled?: boolean }) {
   const t = useMessages().common;
   const pickFolder = () => pickSource("folder", props.onPick);
   const pickImage = () => pickSource("image", props.onPick);
   return (
     <>
-      <button className={props.big ? "primary" : "small"} onClick={pickFolder}>
+      <button className={props.big ? "primary" : "small"} onClick={pickFolder} disabled={props.disabled}>
         <Icon name="folder" />
         {t.pickFolderButton}
       </button>
-      <button className={props.big ? undefined : "small"} onClick={pickImage}>
+      <button className={props.big ? undefined : "small"} onClick={pickImage} disabled={props.disabled}>
         <Icon name="archive" />
         {t.pickImageButton}
       </button>
@@ -434,7 +448,9 @@ export function isPasswordRequired(error: string | null): boolean {
 
 /**
  * The Source card: an empty state with the pickers until a source is chosen, then the game
- * it holds (or why it can't be read). `full` adds what only Inspect shows.
+ * it holds (or why it can't be read). `full` adds what only Edit shows; `compact` (Edit) keeps the
+ * card to the cover, title, kind, title ID, version and findings, with `children` (Edit's folds)
+ * at its foot.
  */
 export function SourceCard(props: {
   path: string | null;
@@ -443,14 +459,20 @@ export function SourceCard(props: {
   error: string | null;
   ins: Inspection | null;
   full?: boolean;
+  /** Edit's small card: the facts beyond title ID and version go into `children`'s folds. */
+  compact?: boolean;
+  /** At the card's foot once a source is chosen (Edit's folds). */
+  children?: ReactNode;
   /** Keeps element ids apart per screen; default "i" with `full`, else "c". */
   prefix?: string;
   /** Stands in for the default empty state (the LZ4 tab's). */
   empty?: ReactNode;
-  /** More buttons in the title row once a source is chosen (Inspect's Delete). */
+  /** More buttons in the title row once a source is chosen (Edit's Delete). */
   actions?: ReactNode;
   /** An archive that needs a password was left locked (Cancel): ask again. */
   onUnlock?: () => void;
+  /** The source can't change now (Edit, while changes are applied): the pick buttons are off. */
+  locked?: boolean;
 }) {
   const t = useMessages().common;
   const { path, ins } = props;
@@ -470,12 +492,12 @@ export function SourceCard(props: {
 
   return (
     <section
-      className={`card hero${props.full ? " full" : ""}${glow.ready ? " lit" : ""}`}
+      className={`card hero${props.full ? " full" : ""}${props.compact ? " compact-src" : ""}${glow.ready ? " lit" : ""}`}
       style={glow.style}
       aria-labelledby={headId}
     >
       <CardHead icon="disc" title={t.source} id={headId} focusable>
-        {path && <PickButtons onPick={props.onPick} />}
+        {path && <PickButtons onPick={props.onPick} disabled={props.locked} />}
         {/* Last, like the Library's: a destructive button away from the pickers. */}
         {path && props.actions}
       </CardHead>
@@ -513,7 +535,8 @@ export function SourceCard(props: {
           ) : (
             props.error && <p className="bad backend">{props.error}</p>
           )}
-          {ins && <InspectSummary ins={ins} full={props.full} />}
+          {ins && (props.compact ? <CompactSummary ins={ins} /> : <InspectSummary ins={ins} full={props.full} />)}
+          {props.children}
         </>
       )}
     </section>
@@ -556,6 +579,7 @@ function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; 
           {ins && ins.backport.length > 0 && <span className="tag orange">{t.backport}</span>}
           {ins && ins.emulators.length > 0 && <span className="tag">{t.emulators}</span>}
           {ins && ins.dlcs.length > 0 && <span className="tag violet">DLC</span>}
+          {ins?.additional_content && <span className="tag violet">{t.additionalContent}</span>}
         </div>
         <PathLine path={props.path} />
       </div>
@@ -564,7 +588,7 @@ function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; 
 }
 
 /** The game's facts as inset tiles. */
-function Facts({ ins, full }: { ins: Inspection; full: boolean }) {
+function Facts({ ins, full, rest }: { ins: Inspection; full: boolean; rest?: boolean }) {
   const t = useMessages().common;
   const bp = ins.backport.length > 0;
   const emus = emulatorNames(ins);
@@ -580,14 +604,7 @@ function Facts({ ins, full }: { ins: Inspection; full: boolean }) {
   if (full && ins.sdk) fwNote.push(t.sdk(ins.sdk));
   return (
     <dl className="tiles">
-      <div className="tile">
-        <dt>{t.titleId}</dt>
-        <dd className={ins.title_id ? "value mono" : "value"}>{ins.title_id ?? "—"}</dd>
-      </div>
-      <div className="tile">
-        <dt>{t.version}</dt>
-        <dd className="value">{ins.version ?? "—"}</dd>
-      </div>
+      {!rest && <IdTiles ins={ins} />}
       <div className="tile">
         <dt>{t.firmware}</dt>
         <dd>
@@ -628,7 +645,7 @@ function Facts({ ins, full }: { ins: Inspection; full: boolean }) {
   );
 }
 
-/** An archive source, in Inspect: its parts and how it is packed, and where the game sits. */
+/** An archive source, in Edit: its parts and how it is packed, and where the game sits. */
 function ArchiveTile({ facts }: { facts: NonNullable<Inspection["archive"]> }) {
   const t = useMessages().common;
   const notes = [facts.root ? t.archiveRoot(facts.root) : t.archiveAtRoot];
@@ -806,13 +823,43 @@ function dlcNote(d: Inspection["dlcs"][number]): string {
   return t.dlcMerged;
 }
 
+/** The title ID and version tiles. */
+function IdTiles({ ins }: { ins: Inspection }) {
+  const t = useMessages().common;
+  return (
+    <>
+      <div className="tile">
+        <dt>{t.titleId}</dt>
+        <dd className={ins.title_id ? "value mono" : "value"}>{ins.title_id ?? "—"}</dd>
+      </div>
+      <div className="tile">
+        <dt>{t.version}</dt>
+        <dd className="value">{ins.version ?? "—"}</dd>
+      </div>
+    </>
+  );
+}
+
+/** Edit's compact card: title ID and version, then the findings. */
+function CompactSummary({ ins }: { ins: Inspection }) {
+  return (
+    <div className="summary">
+      <dl className="tiles">
+        <IdTiles ins={ins} />
+      </dl>
+      <Findings lines={ins.findings} />
+    </div>
+  );
+}
+
 /** The game's facts, its embedded DLC (and backport and emulator files, `full`), then the
- * findings. */
-export function InspectSummary({ ins, full = false }: { ins: Inspection; full?: boolean }) {
+ * findings. `rest`: Edit's facts fold, without what its compact card already shows (title ID,
+ * version, findings). */
+export function InspectSummary({ ins, full = false, rest = false }: { ins: Inspection; full?: boolean; rest?: boolean }) {
   const t = useMessages().common;
   return (
     <div className="summary">
-      <Facts ins={ins} full={full} />
+      <Facts ins={ins} full={full} rest={rest} />
       {(ins.dlcs.length > 0 ||
         (full && (ins.backport.length > 0 || ins.emulators.length > 0))) && (
         <div className="folds">
@@ -848,26 +895,51 @@ export function InspectSummary({ ins, full = false }: { ins: Inspection; full?: 
           )}
         </div>
       )}
-      <Findings lines={ins.findings} />
+      {!rest && <Findings lines={ins.findings} />}
     </div>
   );
 }
 
 /** A button that opens a short menu of choices: the native dialog picks files or folders,
  * never both (rfd), so the kind is asked first. Esc or a click outside closes it; focus goes
- * back to the button before the choice runs, so a cancelled dialog leaves it there. */
+ * back to the button before the choice runs, so a cancelled dialog leaves it there. The menu
+ * opens upwards, or towards the other side, where its scrolling container would clip it. */
 export function ChooseMenu<K extends string>(props: {
-  id: string;
+  id?: string;
   label: ReactNode;
   /** The menu's accessible name. */
   menuLabel: string;
   items: { id: K; icon: IconName; label: string }[];
   onChoose: (what: K) => void;
   className?: string;
+  /** An icon-only button: no trailing chevron, this as its aria-label and tip. */
+  buttonLabel?: string;
+  tabIndex?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const [flip, setFlip] = useState("");
   const box = useRef<HTMLSpanElement>(null);
   const btn = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const m = menu.current;
+    if (!open || !m) return setFlip("");
+    // The nearest ancestor that clips (scrolls), else the window.
+    let bound = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+    for (let el = m.parentElement; el && el !== document.body; el = el.parentElement) {
+      const st = getComputedStyle(el);
+      if (st.overflowY !== "visible" || st.overflowX !== "visible") {
+        const r = el.getBoundingClientRect();
+        bound = { top: Math.max(r.top, 0), bottom: Math.min(r.bottom, bound.bottom), left: Math.max(r.left, 0), right: Math.min(r.right, bound.right) };
+        break;
+      }
+    }
+    const r = m.getBoundingClientRect();
+    const b = btn.current?.getBoundingClientRect();
+    const up = r.bottom > bound.bottom && b !== undefined && b.top - bound.top > bound.bottom - b.bottom;
+    const side = r.left < bound.left || r.right > bound.right;
+    setFlip(`${up ? " up" : ""}${side ? " start" : ""}`);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     box.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
@@ -902,18 +974,22 @@ export function ChooseMenu<K extends string>(props: {
   return (
     <span className="menu-wrap" ref={box} onKeyDown={onKey}>
       <button
+        type="button"
         id={props.id}
         ref={btn}
         className={props.className ?? "small"}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={props.buttonLabel}
+        title={props.buttonLabel}
+        tabIndex={props.tabIndex}
         onClick={() => setOpen((o) => !o)}
       >
         {props.label}
-        <Icon name="chevron" />
+        {props.buttonLabel === undefined && <Icon name="chevron" />}
       </button>
       {open && (
-        <span className="menu" role="menu" aria-label={props.menuLabel}>
+        <span ref={menu} className={`menu${flip}`} role="menu" aria-label={props.menuLabel}>
           {props.items.map((it) => (
             <button key={it.id} type="button" role="menuitem" onClick={() => choose(it.id)}>
               <Icon name={it.icon} />

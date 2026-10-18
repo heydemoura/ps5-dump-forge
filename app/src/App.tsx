@@ -5,7 +5,7 @@
 
 import { useEffect, useReducer, useRef, useState } from "react";
 
-import { api, APP_NAME, errorText, events, prettyDuration, runtimePlatform, serverAddress, useOffline, web } from "./api";
+import { api, APP_NAME, debugBuild, errorText, events, prettyDuration, runtimePlatform, serverAddress, useOffline, web, type RuntimePlatform } from "./api";
 import logo from "./assets/logo.png";
 import { basename, closeOverlays, dirname, Modal, panelId, tabId, TabList, type SourceSelection } from "./common";
 import { Convert } from "./Convert";
@@ -13,14 +13,17 @@ import { Formats, openConnect } from "./Formats";
 import { useMessages } from "./i18n";
 import type { Messages } from "./locales/en";
 import { Icon } from "./icons";
-import { Inspect } from "./Inspect";
-import { Library } from "./Library";
+import { Edit } from "./Edit";
 import { Lz4 } from "./Lz4";
+import { Storage } from "./Storage";
+import { stepTab, watchShoulders, type Step } from "./shoulders";
 import { UpdateToast } from "./UpdateToast";
 import { jobsReducer, type Job } from "./jobs";
 
-// Tabs: [Convert Inspect] | LZ4 | Library | About (ids unchanged; the dividers are drawn only).
-type Tab = "convert" | "library" | "lz4" | "inspect" | "formats";
+// Tabs: [Convert Edit] | LZ4 | Storage | About (the dividers are drawn only).
+type Tab = "convert" | "storage" | "lz4" | "edit" | "formats";
+/** The bar's order, which L2 / R2 step through. */
+const TAB_ORDER: readonly Tab[] = ["convert", "edit", "lz4", "storage", "formats"];
 
 export function App() {
   const t = useMessages().app;
@@ -28,21 +31,26 @@ export function App() {
   const [jobs, dispatch] = useReducer(jobsReducer, []);
   const [closing, setClosing] = useState<"ask" | "stopping" | "stopped" | "failed" | null>(null);
   const offline = useOffline();
-  // Library handoffs: a new id per action, so the same path is read again.
-  const [inspectSel, setInspectSel] = useState<SourceSelection | null>(null);
+  // Storage handoffs (Library, File explorer): a new id per action, so the same path is read again.
+  const [editSel, setEditSel] = useState<SourceSelection | null>(null);
   const [convertSel, setConvertSel] = useState<SourceSelection | null>(null);
   const selId = useRef(0);
-  const handOff = (to: "inspect" | "convert", e: { path: string; kind: SourceSelection["kind"] }) => {
+  const handOff = (to: "edit" | "convert", e: { path: string; kind: SourceSelection["kind"] }) => {
     const sel = { id: ++selId.current, path: e.path, kind: e.kind };
-    (to === "inspect" ? setInspectSel : setConvertSel)(sel);
+    (to === "edit" ? setEditSel : setConvertSel)(sel);
     setTab(to);
     document.getElementById(tabId("screen", to))?.focus();
   };
-  // http build: the payload on a PS5 (its tile starts it again), or `serve` on a computer.
-  const [ps5, setPs5] = useState(true);
+  // http build: the payload on a PS5 (its tile starts it again), or `serve` on a computer;
+  // null until the server answers.
+  const [platform, setPlatform] = useState<RuntimePlatform | null>(null);
   useEffect(() => {
-    if (web) runtimePlatform().then((p) => setPs5(p === "ps5"), () => {});
+    if (web) runtimePlatform().then(setPlatform, () => {});
   }, []);
+  const ps5 = platform !== "host";
+  // L2 / R2 (badges in the nav, the pad's triggers, which arrive as F7 / F8): only once the
+  // server says PS5.
+  const shoulders = platform === "ps5";
   // The server's host:port (http build), read once before the app rendered.
   const address = serverAddress();
 
@@ -95,6 +103,20 @@ export function App() {
   const dismiss = () => setClosing(null);
   const dismissable = closing === "ask" || closing === "failed";
 
+  // L2 / R2: the previous or next tab in the bar's order, wrapping; focus follows as a click's
+  // does. Not while a dialog (the quit prompt included) is up.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  const step = (s: Step) => {
+    if (document.querySelector('[aria-modal="true"]')) return;
+    const next = stepTab(TAB_ORDER, tabRef.current, s);
+    setTab(next);
+    document.getElementById(tabId("screen", next))?.focus();
+  };
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  useEffect(() => (shoulders ? watchShoulders((s) => stepRef.current(s)) : undefined), [shoulders]);
+
   // Folders this session wrote outputs to: interrupted jobs leave `.part` files there.
   const [outputDirs, setOutputDirs] = useState<string[]>([]);
   useEffect(() => {
@@ -132,9 +154,11 @@ export function App() {
             <TabList
               label={t.screens}
               prefix="screen"
-              className="nav"
+              className={shoulders ? "nav shoulders" : "nav"}
               value={tab}
               onChange={setTab}
+              start={shoulders ? <Shoulder name="L2" label={t.prevTab} onClick={() => step(-1)} /> : undefined}
+              end={shoulders ? <Shoulder name="R2" label={t.nextTab} onClick={() => step(1)} /> : undefined}
               tabs={[
                 {
                   id: "convert",
@@ -152,18 +176,9 @@ export function App() {
                     </>
                   ),
                 },
-                { id: "inspect", label: t.inspect },
+                { id: "edit", label: t.edit },
                 { id: "lz4", label: "LZ4", className: "tab-lz4", sep: true },
-                {
-                  id: "library",
-                  label: (
-                    <>
-                      <Icon name="library" />
-                      {t.library}
-                    </>
-                  ),
-                  sep: true,
-                },
+                { id: "storage", label: t.storage, sep: true },
                 { id: "formats", label: t.about, sep: true },
               ]}
             />
@@ -172,6 +187,12 @@ export function App() {
                 <span className="tag orange" role="status">
                   {t.offline}
                 </span>
+              )}
+              {/* Debug builds only (never released): English, untranslated on purpose. */}
+              {web && debugBuild() && (
+                <button className="small" onClick={() => location.assign("/probe")}>
+                  Input probe
+                </button>
               )}
               {web && (
                 <button className="small" ref={stopButton} onClick={askStop}>
@@ -203,14 +224,14 @@ export function App() {
             />
           </div>
           <div
-            id={panelId("screen", "library")}
+            id={panelId("screen", "storage")}
             role="tabpanel"
-            aria-labelledby={tabId("screen", "library")}
-            hidden={tab !== "library"}
+            aria-labelledby={tabId("screen", "storage")}
+            hidden={tab !== "storage"}
           >
-            <Library
-              visible={tab === "library"}
-              onInspect={(e) => handOff("inspect", e)}
+            <Storage
+              visible={tab === "storage"}
+              onEdit={(e) => handOff("edit", e)}
               onConvert={(e) => handOff("convert", e)}
             />
           </div>
@@ -223,12 +244,12 @@ export function App() {
             <Lz4 jobs={jobs} dispatch={dispatch} />
           </div>
           <div
-            id={panelId("screen", "inspect")}
+            id={panelId("screen", "edit")}
             role="tabpanel"
-            aria-labelledby={tabId("screen", "inspect")}
-            hidden={tab !== "inspect"}
+            aria-labelledby={tabId("screen", "edit")}
+            hidden={tab !== "edit"}
           >
-            <Inspect outputDirs={outputDirs} visible={tab === "inspect"} selection={inspectSel} />
+            <Edit outputDirs={outputDirs} visible={tab === "edit"} selection={editSel} jobs={jobs} dispatch={dispatch} />
           </div>
           <div
             id={panelId("screen", "formats")}
@@ -349,6 +370,16 @@ export function App() {
         </Modal>
       )}
     </div>
+  );
+}
+
+/** A trigger hint (L2 / R2) that also works as a button. Out of the Tab order: the arrow keys
+ * already move through the tabs. */
+function Shoulder(props: { name: "L2" | "R2"; label: string; onClick: () => void }) {
+  return (
+    <button type="button" className="shoulder" tabIndex={-1} aria-label={props.label} title={props.label} onClick={props.onClick}>
+      <span aria-hidden="true">{props.name}</span>
+    </button>
   );
 }
 

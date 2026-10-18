@@ -1,8 +1,9 @@
-// The Library tab: the game dumps under one folder, as cards or rows. On a computer the user
-// chooses the folder (nothing scans before that; a refused folder gets an error screen); on the
-// PS5 the first visit scans the server's roots. The list, the folder and the view live in memory;
-// only the first visit (PS5), Refresh and a newly chosen folder scan. Covers load one at a time
-// after the list.
+// The Storage tab's Library view: the game dumps under one folder, as cards or rows. On a
+// computer the user chooses the folder (nothing scans before that; a refused folder gets an
+// error screen), here or in the File explorer (one folder for both views); on the PS5 the first
+// visit scans the server's roots. The list, the folder and the view live in memory; only the
+// first visit (PS5), Refresh and a newly chosen folder scan. Covers load one at a time after
+// the list.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -24,7 +25,11 @@ const gb = (bytes: number) => {
 
 export function Library(props: {
   visible: boolean;
-  onInspect: (entry: LibraryEntry) => void;
+  /** The folder both Storage views share (computer); a new one from the File explorer is
+   * scanned once this view shows, and dropped (null) if refused. */
+  folder: string | null;
+  onFolder: (folder: string | null) => void;
+  onEdit: (entry: LibraryEntry) => void;
   onConvert: (entry: LibraryEntry) => void;
 }) {
   const t = useMessages().library;
@@ -34,7 +39,11 @@ export function Library(props: {
   const setFolder = (f: string | null) => {
     folderRef.current = f;
     setFolderState(f);
+    props.onFolder(f);
   };
+  // The shared folder as the File explorer last set it, read when a scan ends.
+  const shared = useRef(props.folder);
+  shared.current = props.folder;
   const [target, setTarget] = useState<string | null>(null); // the folder being scanned
   const [refused, setRefused] = useState(false); // a newly chosen folder failed: the error screen
   const [view, setView] = useState<"cards" | "list">("cards");
@@ -122,6 +131,10 @@ export function Library(props: {
     setError(null);
     setNotice(null);
     setDeleteError(null);
+    // A folder chosen in the File explorer while this scan ran wins: this one's outcome then
+    // leaves the shared folder alone (the newer one is scanned next).
+    const asked = shared.current;
+    const superseded = () => shared.current !== asked && shared.current !== (root ?? null);
     try {
       const r = await api.libraryScan(root);
       const gone = goneDuring.current ?? [];
@@ -130,11 +143,11 @@ export function Library(props: {
       covers.current = new Map();
       tried.current = new Set();
       commit({ ...r, entries: r.entries.filter((e) => !gone.some((g) => isWithin(e.path, g))) });
-      if (fresh) setFolder(root ?? null);
+      if (fresh && !superseded()) setFolder(root ?? null);
       setRefused(false);
     } catch (e) {
       setError(errorText(e));
-      if (fresh) {
+      if (fresh && !superseded()) {
         // The old folder and list no longer match what the user asked for.
         generation.current += 1;
         covers.current = new Map();
@@ -171,12 +184,19 @@ export function Library(props: {
     if (props.visible && platform === "ps5" && !attempted.current) void scan();
   }, [props.visible, platform]);
 
+  // A folder chosen in the File explorer: scanned as if chosen here (`busy`: once a scan that
+  // ran meanwhile has ended).
+  useEffect(() => {
+    if (props.visible && platform === "host" && !busy && props.folder !== null && props.folder !== folderRef.current)
+      void scan(props.folder, true);
+  }, [props.visible, platform, busy, props.folder]);
+
   // Covers load once a list is there and no scan runs (the effect sees committed state).
   useEffect(() => {
     if (result && !busy && props.visible) void pump();
   }, [result, busy, props.visible]);
 
-  // Deleted anywhere (here or Inspect): drop what is gone.
+  // Deleted anywhere (here or Edit): drop what is gone.
   useEffect(
     () =>
       onDeleted((path) => {
@@ -227,7 +247,7 @@ export function Library(props: {
   const entries = result?.entries ?? [];
   const host = platform === "host";
   const storage = platform === "ps5" ? result?.storage : undefined; // the PS5's /data, as of the last scan
-  const empty = host && !folder && !refused; // a computer with no folder chosen yet
+  const empty = host && !folder && !props.folder && !refused; // a computer with no folder chosen yet
   const body = busy ? (
     <div className="library-busy" role="status" aria-live="polite">
       <span className="spinner" aria-hidden="true" />
@@ -292,7 +312,7 @@ export function Library(props: {
       {entries.length > 0 && (
         <ul className={view === "cards" ? "library-cards" : "library-rows"}>
           {entries.map((e) => (
-            <Item key={e.path} entry={e} cover={covers.current.get(e.path)} list={view === "list"} onInspect={props.onInspect} onConvert={props.onConvert} remove={remove} />
+            <Item key={e.path} entry={e} cover={covers.current.get(e.path)} list={view === "list"} onEdit={props.onEdit} onConvert={props.onConvert} remove={remove} />
           ))}
         </ul>
       )}
@@ -311,53 +331,51 @@ export function Library(props: {
   );
 
   return (
-    <div className="screen">
-      <section className="card library" aria-labelledby="library-title">
-        <div className="library-head">
-          <h2 id="library-title">
-            <Icon name="library" />
-            {t.library}
-            {result && <span className="count">{num(entries.length)}</span>}
-          </h2>
-          <div className="library-ctl">
-            {storage && (
-              <span className="library-storage" title={t.storageTip}>
-                <Icon name="drive" />
-                <span>{t.free(gb(storage.free), gb(storage.total))}</span>
-              </span>
-            )}
-            {host && folder && (
-              <span className="library-folder">
-                <PathLine path={folder} />
-              </span>
-            )}
-            {(platform !== null || error !== null) && !empty && !refused && (
-              <button type="button" className="small" ref={refreshRef} disabled={busy} onClick={() => void refresh()}>
-                <Icon name="refresh" />
-                {t.refresh}
-              </button>
-            )}
-            {host && folder && (
-              <button type="button" className="small" disabled={busy} onClick={() => void choose()}>
-                <Icon name="folder" />
-                {t.choose}
-              </button>
-            )}
-            {platform !== null && !empty && !refused && <div className="library-views">
-              <button type="button" className="small icon-only" aria-pressed={view === "cards"} aria-label={t.cards} title={t.cards} onClick={() => setView("cards")}>
-                <Icon name="grid" />
-              </button>
-              <button type="button" className="small icon-only" aria-pressed={view === "list"} aria-label={t.list} title={t.list} onClick={() => setView("list")}>
-                <Icon name="list" />
-              </button>
-            </div>}
-          </div>
+    <section className="card library" aria-labelledby="library-title">
+      <div className="library-head">
+        <h2 id="library-title">
+          <Icon name="library" />
+          {t.library}
+          {result && <span className="count">{num(entries.length)}</span>}
+        </h2>
+        <div className="library-ctl">
+          {storage && (
+            <span className="library-storage" title={t.storageTip}>
+              <Icon name="drive" />
+              <span>{t.free(gb(storage.free), gb(storage.total))}</span>
+            </span>
+          )}
+          {host && folder && (
+            <span className="library-folder">
+              <PathLine path={folder} />
+            </span>
+          )}
+          {(platform !== null || error !== null) && !empty && !refused && (
+            <button type="button" className="small" ref={refreshRef} disabled={busy} onClick={() => void refresh()}>
+              <Icon name="refresh" />
+              {t.refresh}
+            </button>
+          )}
+          {host && folder && (
+            <button type="button" className="small" disabled={busy} onClick={() => void choose()}>
+              <Icon name="folder" />
+              {t.choose}
+            </button>
+          )}
+          {platform !== null && !empty && !refused && <div className="library-views">
+            <button type="button" className="small icon-only" aria-pressed={view === "cards"} aria-label={t.cards} title={t.cards} onClick={() => setView("cards")}>
+              <Icon name="grid" />
+            </button>
+            <button type="button" className="small icon-only" aria-pressed={view === "list"} aria-label={t.list} title={t.list} onClick={() => setView("list")}>
+              <Icon name="list" />
+            </button>
+          </div>}
         </div>
-        <div className="library-well" ref={wellRef} tabIndex={0} aria-busy={busy} aria-label={t.games}>
-          {body}
-        </div>
-      </section>
-    </div>
+      </div>
+      <div className="library-well" ref={wellRef} tabIndex={0} aria-busy={busy} aria-label={t.games}>
+        {body}
+      </div>
+    </section>
   );
 }
 
@@ -365,11 +383,12 @@ function Item(props: {
   entry: LibraryEntry;
   cover: string | undefined;
   list: boolean;
-  onInspect: (e: LibraryEntry) => void;
+  onEdit: (e: LibraryEntry) => void;
   onConvert: (e: LibraryEntry) => void;
   remove: (e: LibraryEntry) => void;
 }) {
   const t = useMessages().library;
+  const c = useMessages().common;
   const { entry: e } = props;
   const n = name(e);
   const cover = props.cover ? (
@@ -381,8 +400,8 @@ function Item(props: {
   );
   const actions = (
     <span className="library-actions">
-      <button type="button" className="small icon-only" aria-label={t.inspect(n)} title={t.inspect(n)} onClick={() => props.onInspect(e)}>
-        <Icon name="search" />
+      <button type="button" className="small icon-only" aria-label={t.edit(n)} title={t.edit(n)} onClick={() => props.onEdit(e)}>
+        <Icon name="pencil" />
       </button>
       <button type="button" className="small icon-only" aria-label={t.convert(n)} title={t.convert(n)} onClick={() => props.onConvert(e)}>
         <Icon name="convert" />
@@ -393,6 +412,7 @@ function Item(props: {
     </span>
   );
   const packed = e.lz4_packed === true;
+  const ac = e.additional_content === true && <span className="tag violet">{c.additionalContent}</span>;
   const box = (
     <div className="library-cover-box">
       {cover}
@@ -411,6 +431,7 @@ function Item(props: {
         </div>
       </div>
       <FormatPill kind={e.kind} />
+      {ac}
       <div className="library-path">
         <PathLine path={e.path} />
       </div>
@@ -429,7 +450,10 @@ function Item(props: {
         <PathLine path={e.path} />
       </div>
       <div className="library-foot">
-        <FormatPill kind={e.kind} />
+        <span className="library-tags">
+          <FormatPill kind={e.kind} />
+          {ac}
+        </span>
         {actions}
       </div>
     </li>

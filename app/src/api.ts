@@ -4,7 +4,9 @@
 
 import { transport } from "forge-transport";
 import { msg, num } from "./i18n";
-import type { PickOptions, Unlisten } from "./transport";
+import type { DropEvent, DropItem, PickOptions, Unlisten } from "./transport";
+
+export type { DropEvent, DropItem, HostTree } from "./transport";
 
 type UnlistenFn = Unlisten;
 const invoke = transport.call;
@@ -12,7 +14,7 @@ const listen = transport.listen;
 
 /** What a source can be (its containing file system or package); each is also a target. */
 export type Kind = "folder" | "exfat" | "ffpkg" | "ffpfs" | "ffpfsc" | "pkg";
-/** An archive holding one game folder: a source only (Inspect, Convert, LZ4 Pack/Unpack), never a
+/** An archive holding one game folder: a source only (Edit, Convert, LZ4 Pack/Unpack), never a
  * target. Jobs read it in place, with nothing unpacked to disk. */
 export type ArchiveKind = "zip" | "7z" | "rar";
 /** Core's two password errors (`ps5_dump_forge_archive`), matched as they are; the UI shows its
@@ -31,6 +33,33 @@ export type InnerFormat = "exfat" | "ffpkg" | "ffpfs";
 /** How hard a `.pkg` build compresses (Kraken); `stored`: every inner block raw, same layout. */
 export type KrakenLevel = "fast" | "balanced" | "smallest" | "stored";
 export type JobId = number;
+
+/** One change of an edit job (`ConvertRequest.edits`), applied in order (core's `Edit`). Game
+ * paths are relative and `/`-separated, with no empty, `.` or `..` component and no `\`. */
+export type Edit =
+  /** Copy `from` (a file or folder on the machine that runs the job; http build: a staged upload)
+   * to game path `to`, replacing a file there; a folder onto a folder merges. */
+  | { op: "add"; from: string; to: string }
+  /** Delete a file, or a folder with everything in it. */
+  | { op: "delete"; path: string }
+  /** Move or rename a file or folder; `to` must not exist. */
+  | { op: "rename"; from: string; to: string }
+  /** A new empty folder (parents created too). */
+  | { op: "mkdir"; path: string };
+
+/** Whether an edit can be applied in place and/or rebuilt (core's `EditCheck`; reads only). */
+export interface EditCheck {
+  /** Why it can't be applied in place (empty: it can). */
+  in_place: string[];
+  /** Why it can't be rebuilt (empty: it can; a folder is never rebuilt). */
+  rebuild: string[];
+  /** Bytes the changes need inside the image, and what it has free (images only). */
+  needed_inside: number | null;
+  free_inside: number | null;
+  /** Free bytes a rebuild needs beside the source, and what that folder has. */
+  rebuild_needs: number | null;
+  free_beside: number | null;
+}
 
 export interface ConvertRequest {
   source: string;
@@ -66,6 +95,13 @@ export interface ConvertRequest {
   /** For an archive source: the password inspect accepted. Never echoed back (the job list
    * from the server has none). */
   archive_password?: string | null;
+  /** Non-empty: an edit job; `output` and `format` are ignored (the source itself is changed). */
+  edits?: Edit[];
+  /** An edit job on an image: write a new image beside it and swap it in, instead of in place. */
+  edit_rebuild?: boolean;
+  /** Non-empty: an extract job; game-relative `/` paths of files or folders, each copied into
+   * `output` (an existing folder) under its own last component. `format` is `"folder"`. */
+  extract?: string[];
 }
 
 /** How the output was verified. `samples` and `seed` are 0 for full. */
@@ -226,6 +262,8 @@ export interface Inspection {
   forge_version: string | null;
   /** DLC embedded in the dump. */
   dlcs: Dlc[];
+  /** No eboot.bin but a param.json with a title ID: a DLC, an update or another package. */
+  additional_content?: boolean;
   /** LZ4 asset packs; null (or missing from an older server) when the title has nothing to do
    * with AMPR. */
   lz4?: Lz4Facts | null;
@@ -239,6 +277,10 @@ export interface Inspection {
   findings: string[];
   /** An archive source: the archive's own facts (`files` and `total_bytes` are unpacked). */
   archive?: ArchiveFacts | null;
+  /** An image whose last in-place edit was interrupted: its undo journal (`<image>.forge-undo`)
+   * is beside it, and the next edit (or check) puts the image back first. Missing from an older
+   * backend. */
+  interrupted_edit?: boolean;
 }
 
 /** What patching (or unpatching) a folder in place for LZ4 tracing did. */
@@ -281,12 +323,16 @@ export const APP_NAME = web ? "Dump Forge" : "PS5 Dump Forge";
 
 /** A folder or file chosen in the native dialog, or (http build) the server's folder browser. */
 export const pick = (o: PickOptions): Promise<string | null> => transport.pick(o);
+/** Several files at once (file mode), or null when cancelled. */
+export const pickFiles = (o: PickOptions): Promise<string[] | null> => transport.pickFiles(o);
 
 /** The server can't be reached (http build); polling goes on. */
 export const useOffline = transport.useOffline;
 
 /** The server's `host:port` from its session (http build); null in the app or when unknown. */
 export const serverAddress = transport.address;
+/** A debug build of the PS5 payload (http build). */
+export const debugBuild = transport.debug;
 
 export type RuntimePlatform = "host" | "ps5";
 
@@ -301,6 +347,8 @@ export interface LibraryEntry {
   has_cover: boolean;
   /** LZ4 packed (ampr_emu asset packs: `ampr_assets.index` at the root). Missing from an older backend. */
   lz4_packed?: boolean;
+  /** No eboot.bin but a param.json with a title ID: a DLC, an update or another package. */
+  additional_content?: boolean;
 }
 
 export interface LibraryScan {
@@ -310,6 +358,32 @@ export interface LibraryScan {
   warnings: string[];
   /** The PS5 only: the internal storage (`/data`) in bytes, as of this scan. */
   storage?: { free: number; total: number };
+}
+
+/** One entry of a folder (`list_dir`). A link's `path` is where it points, resolved. */
+export interface DirEntry {
+  name: string;
+  path: string;
+  dir: boolean;
+  /** A file's size; null for a folder. */
+  size: number | null;
+  /** The entry itself is a link (never deleted, renamed or moved from the explorer). */
+  link?: boolean;
+  /** An image ShadowMount+ has mounted (the explorer on the PS5): never deleted, renamed or moved. */
+  mounted?: boolean;
+  /** Files.tsx only: a link row's resolved target (its `path` is then the link's own). */
+  target?: string;
+}
+
+/** A folder's entries, folders first (`list_dir`). */
+export interface DirListing {
+  /** The folder, canonical; null: the server's browse roots. */
+  path: string | null;
+  /** The folder above; null at a filesystem or browse root. */
+  parent: string | null;
+  entries: DirEntry[];
+  /** More than 10,000 entries: the rest are left out. */
+  truncated?: boolean;
 }
 
 /** Where the backend runs (the server's own answer in the http build); rejects when unknown. */
@@ -330,6 +404,22 @@ export const api = {
   generatedOutput: (source: string, format: Format, dir: string, taken: string[], password: string | null = null) =>
     invoke<string>("generated_output", { source, format, dir, taken, password }),
   startJob: (request: ConvertRequest) => invoke<JobId>("start_job", { request }),
+  /** A file or folder on the machine that runs the job, as an edit would add it (sizes; a
+   * folder's files and empty folders, junk left out; bounded: `truncated`). */
+  hostTree: (path: string) => transport.hostTree(path),
+  /** Whether `request`'s edits can go in place and/or be rebuilt, before Apply (reads only). */
+  editCheck: (request: ConvertRequest) => invoke<EditCheck>("edit_check", { request }),
+  /** http build: upload a dropped file for `gamePath` of `source`; resolves with the staged path
+   * an `add` takes as `from`. The app rejects (its drops are host paths). */
+  stage: (
+    source: string,
+    gamePath: string,
+    file: File,
+    onProgress?: (sent: number, total: number) => void,
+    signal?: AbortSignal,
+  ) => transport.stage(source, gamePath, file, onProgress, signal),
+  /** http build: drop `source`'s staged uploads (after Discard all, or once the job is done). */
+  discardStaged: (source: string) => transport.discardStaged(source),
   cancelJob: (id: JobId) => invoke<void>("cancel_job", { id }),
   /** Patch a game folder in place for LZ4 tracing: the trace runtime in fakelib/, a fresh
    * index, stale traces removed. Not a job; core refuses it while a job runs. */
@@ -340,6 +430,14 @@ export const api = {
   /** Delete a file or folder for good (the page asks first). Refused for a link, a drive or
    * browse root or a folder holding one, and anything an unfinished job reads or writes. */
   deletePath: (path: string) => invoke<null>("delete_path", { path }).then(() => undefined),
+  /** Move or rename a file or folder on its drive: `to` (the new path) is never replaced;
+   * refused as `deletePath` refuses `from`, and between drives. */
+  movePath: (from: string, to: string) => invoke<null>("move_path", { from, to }).then(() => undefined),
+  /** One folder's entries; null (http build only): the server's browse roots. */
+  listDir: (path: string | null) => invoke<DirListing>("list_dir", { path, explorer: true }),
+  /** The app: this user's home folder (the File explorer's start), or null when there is none.
+   * The http build has none (it starts at the server's roots). */
+  homeFolder: () => (web ? Promise.resolve(null) : invoke<string | null>("home_folder")),
   /** Discover game dumps under the chosen folder, or the PS5's roots (read-only, bounded). */
   libraryScan: (root?: string) => invoke<LibraryScan>("library_scan", root ? { root } : {}),
   /** A dump's cover as a data URL, or null. */
@@ -377,6 +475,39 @@ export const events = {
   restore: (f: (e: JobsRestore) => void): Promise<UnlistenFn> =>
     listen<JobsRestore>("jobs://restore", f),
 };
+
+/** Files and folders dropped on the window (`over`: the pointer while dragging, null once gone).
+ * Positions are CSS pixels, for `document.elementFromPoint`. */
+export const onDrop = (f: (d: DropEvent) => void, over?: (at: { x: number; y: number } | null) => void): Unlisten =>
+  transport.onDrop(f, over);
+
+/** What an http drop holds, as game-relative paths under `item.name`: every file and every empty
+ * folder (a folder entry walked to the end). An item without an entry is its one file. */
+export async function dropContents(item: DropItem): Promise<{ files: { path: string; file: File }[]; emptyDirs: string[] }> {
+  const files: { path: string; file: File }[] = [];
+  const emptyDirs: string[] = [];
+  const walk = async (e: FileSystemEntry, path: string): Promise<void> => {
+    if (e.isFile) {
+      const file = await new Promise<File>((ok, fail) => (e as FileSystemFileEntry).file(ok, fail));
+      files.push({ path, file });
+      return;
+    }
+    if (!e.isDirectory) return;
+    const reader = (e as FileSystemDirectoryEntry).createReader();
+    let any = false;
+    // readEntries answers in batches (Chrome: 100) until an empty one.
+    for (;;) {
+      const batch = await new Promise<FileSystemEntry[]>((ok, fail) => reader.readEntries(ok, fail));
+      if (batch.length === 0) break;
+      any = true;
+      for (const c of batch) await walk(c, `${path}/${c.name}`);
+    }
+    if (!any) emptyDirs.push(path);
+  };
+  if (item.entry) await walk(item.entry, item.name);
+  else if (item.file) files.push({ path: item.name, file: item.file });
+  return { files, emptyDirs };
+}
 
 /** Invoke errors arrive as the command's `String` error. */
 export function errorText(e: unknown): string {

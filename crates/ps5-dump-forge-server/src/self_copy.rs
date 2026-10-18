@@ -18,6 +18,11 @@ use sha2::{Digest, Sha256};
 use crate::compare_versions as compare;
 
 const MAGIC: &[u8; 8] = b"PDFGSELF";
+/// Where the payload keeps its copy, and `ensure`'s lock beside it (`.<name>.lock`).
+#[cfg(target_env = "ps5")]
+pub(crate) const TARGET: &str = "/data/dumpforge/ps5-dump-forge.elf";
+#[cfg(target_env = "ps5")]
+pub(crate) const TARGET_LOCK: &str = "/data/dumpforge/.ps5-dump-forge.elf.lock";
 const HEADER: usize = 8 + 8 + 8 + 32;
 /// More than any payload this will ever be; a bad descriptor can't ask for more memory.
 const MAX_ELF: u64 = 256 << 20;
@@ -152,12 +157,11 @@ mod payload {
     use std::sync::Mutex;
     use std::thread::JoinHandle;
 
-    use super::Outcome;
+    use super::{Outcome, TARGET};
 
     // `static SELF_ELF: Option<&[u8]>`: stage 2's blob, `None` in stage 1 (build.rs).
     include!(concat!(env!("OUT_DIR"), "/self_elf.rs"));
 
-    const TARGET: &str = "/data/dumpforge/ps5-dump-forge.elf";
     static STATUS: Mutex<String> = Mutex::new(String::new());
     static SAVING: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 

@@ -1,6 +1,8 @@
 //! `POST /api/debug {path}`: what the platform's file calls return for `path`, raw and as std
-//! decodes them. Only in builds made with `FORGE_DEBUG_API` set, to any value (`FORGE_DEBUG_API=1
-//! ps5/build.sh`), for bringing up the PS5 payload; release builds have no such route.
+//! decodes them; `GET /probe`, the input probe page, which `POST`s each event it sees to
+//! `/api/debug_input` (read back with `GET /api/debug_input`). Only in builds made with
+//! `FORGE_DEBUG_API` set, to any value (`FORGE_DEBUG_API=1 ps5/build.sh`), for bringing up the
+//! PS5 payload; release builds have none of these routes.
 
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -209,4 +211,85 @@ mod raw {
             "readdir": readdir(&c),
         })
     }
+}
+
+/// `GET /probe`: a page of its own (no app, never cached: the manifest's `NETWORK: *`) that
+/// shows every input event the console's browser gives it, and `POST`s each line to
+/// `/api/debug_input`, read back with `GET /api/debug_input`, to learn what the PS5 browser
+/// makes of the controller (L2/R2, sent as F7/F8, for shoulders.ts).
+pub(crate) const PROBE_PAGE: &[u8] = br##"<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Forge input probe</title>
+<style>body{background:#111;color:#eee;font:18px monospace;margin:16px}#head{color:#8f8}
+#log{white-space:pre-wrap}input{font-size:18px;margin:8px 0}</style></head>
+<body><div id="head">probe on</div><p><a href="/" style="color:#9cf;font-size:22px">Back to Dump Forge</a></p>
+<input id="field" placeholder="focus me, then press buttons too">
+<div id="log"></div>
+<script>
+var log = document.getElementById("log"), head = document.getElementById("head"), lines = [];
+function add(s) {
+  lines.unshift(new Date().toISOString().slice(11, 23) + " " + s);
+  lines.length = Math.min(lines.length, 30);
+  log.textContent = lines.join("\n");
+  try { fetch("/api/debug_input", { method: "POST", body: s }); } catch (e) {}
+}
+// Something to go back to, so a "back" button shows as popstate instead of leaving.
+for (var i = 0; i < 20; i++) history.pushState({ i: i }, "", "#" + i);
+var mods = function (e) { return (e.ctrlKey ? " ctrl" : "") + (e.altKey ? " alt" : "") + (e.shiftKey ? " shift" : "") + (e.metaKey ? " meta" : ""); };
+["keydown", "keyup", "keypress"].forEach(function (t) {
+  window.addEventListener(t, function (e) {
+    add(t + " key=" + JSON.stringify(e.key) + " code=" + JSON.stringify(e.code) + " keyCode=" + e.keyCode + " which=" + e.which + " loc=" + e.location + mods(e) + (e.repeat ? " repeat" : ""));
+  }, true);
+});
+["mousedown", "mouseup", "click", "auxclick", "contextmenu", "pointerdown", "pointerup", "touchstart"].forEach(function (t) {
+  window.addEventListener(t, function (e) { add(t + " button=" + e.button + " buttons=" + e.buttons + " type=" + (e.pointerType || "") + " at " + e.clientX + "," + e.clientY); }, true);
+});
+window.addEventListener("wheel", function (e) { add("wheel dx=" + e.deltaX + " dy=" + e.deltaY + " dz=" + e.deltaZ + " mode=" + e.deltaMode + mods(e)); }, true);
+["focus", "blur", "popstate", "hashchange", "pageshow", "pagehide", "resize", "gamepadconnected", "gamepaddisconnected"].forEach(function (t) {
+  window.addEventListener(t, function (e) { add(t + (e.gamepad ? " " + JSON.stringify(e.gamepad.id) + " mapping=" + e.gamepad.mapping : "") + (t === "hashchange" ? " " + location.hash : "")); }, true);
+});
+document.addEventListener("visibilitychange", function () { add("visibility " + document.visibilityState); });
+var lastScroll = 0;
+window.addEventListener("scroll", function () { var n = Date.now(); if (n - lastScroll > 500) { lastScroll = n; add("scroll y=" + scrollY); } }, true);
+var getPads = navigator.getGamepads ? function () { return navigator.getGamepads(); } : navigator.webkitGetGamepads ? function () { return navigator.webkitGetGamepads(); } : null;
+var seen = {};
+function poll() {
+  var pads = getPads ? getPads() : [], n = 0;
+  for (var i = 0; i < pads.length; i++) {
+    var p = pads[i]; if (!p) continue; n++;
+    var before = seen[p.index] || { b: [], a: [] };
+    var b = [], a = [];
+    for (var j = 0; j < p.buttons.length; j++) {
+      var v = typeof p.buttons[j] === "object" ? p.buttons[j].value : p.buttons[j];
+      b.push(v);
+      if ((v > 0.5) !== ((before.b[j] || 0) > 0.5)) add("pad" + p.index + " button " + j + (v > 0.5 ? " down " : " up ") + v.toFixed(2) + " id=" + JSON.stringify(p.id) + " mapping=" + p.mapping);
+    }
+    for (var k = 0; k < p.axes.length; k++) {
+      var x = p.axes[k]; a.push(x);
+      if (Math.abs(x - (before.a[k] || 0)) > 0.5) add("pad" + p.index + " axis " + k + " " + x.toFixed(2));
+    }
+    seen[p.index] = { b: b, a: a };
+  }
+  head.textContent = "probe on | gamepad API: " + (navigator.getGamepads ? "yes" : navigator.webkitGetGamepads ? "webkit" : "no") + " | pads: " + n + " | " + document.visibilityState + " | focus: " + document.hasFocus() + " | " + navigator.userAgent;
+  requestAnimationFrame(poll);
+}
+add("loaded " + navigator.userAgent);
+requestAnimationFrame(poll);
+</script></body></html>
+"##;
+
+static INPUT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// One probe line (at most 1 KiB), the last 500 kept.
+pub(crate) fn input_push(body: &[u8]) {
+    let line = String::from_utf8_lossy(&body[..body.len().min(1024)]).into_owned();
+    let mut all = INPUT.lock().unwrap_or_else(|e| e.into_inner());
+    if all.len() == 500 {
+        all.remove(0);
+    }
+    all.push(line);
+}
+
+pub(crate) fn input_lines() -> Value {
+    json!(*INPUT.lock().unwrap_or_else(|e| e.into_inner()))
 }

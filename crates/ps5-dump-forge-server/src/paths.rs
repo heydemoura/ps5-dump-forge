@@ -167,10 +167,11 @@ fn statfs(_: &Path) -> Option<Mount> {
     None
 }
 
-/// A root as listed: canonical, not `/`, a folder. It may resolve elsewhere (`/data` can
-/// be a symlink on the PS5, `/tmp` is `/private/tmp` on macOS).
+/// A root as listed: canonical (Windows: `C:\x`, as core's `list_dir` spells it), not `/`, a
+/// folder. It may resolve elsewhere (`/data` can be a symlink on the PS5, `/tmp` is
+/// `/private/tmp` on macOS).
 fn pin(path: &Path) -> Result<PathBuf, String> {
-    let canon = path.canonicalize().map_err(|e| e.to_string())?;
+    let canon = dunce::canonicalize(path).map_err(|e| e.to_string())?;
     if canon.parent().is_none() {
         return Err("it is the filesystem root".into());
     }

@@ -282,7 +282,7 @@ fn list_dir_shape() {
 
     let (status, v) = list(Value::Null);
     assert_eq!(status, 200);
-    let entry = json!({ "name": s(root), "path": s(root), "dir": true, "size": null });
+    let entry = json!({ "name": s(root), "path": s(root), "dir": true, "size": null, "link": false, "mounted": false });
     let roots = json!({ "path": null, "parent": null, "entries": [entry], "truncated": false });
     assert_eq!(v, roots);
     let (_, v) = list(json!(s(root)));
@@ -300,12 +300,23 @@ fn list_dir_shape() {
         .collect();
     assert_eq!(names, ["y", "z", "a.bin", "b.bin", "dangling"]);
     assert_eq!(entries[4]["path"], s(&root.join("dangling"))); // a broken link as itself
-    let y = json!({ "name": "y", "path": s(&root.join("y")), "dir": true, "size": null });
+    assert_eq!(entries[4]["link"], true);
+    let y = json!({ "name": "y", "path": s(&root.join("y")), "dir": true, "size": null, "link": false, "mounted": false });
     assert_eq!(entries[0], y);
     assert_eq!(entries[3]["size"], 3);
     let (_, v) = list(json!(s(&root.join("y"))));
     assert_eq!(v["parent"], s(root));
     assert_eq!(list(json!(s(&root.join("b.bin")))).0, 500); // not a folder
+    // The Storage explorer: the Library's roots (no /mnt/shadowmnt, which a computer has
+    // none of), `parent` null at one; off the PS5 the same listing.
+    let explore =
+        |path: Value| srv.post("/api/list_dir", json!({ "path": path, "explorer": true }));
+    assert_eq!(explore(Value::Null), (200, roots));
+    let (status, e) = explore(json!(s(root)));
+    assert_eq!(status, 200);
+    assert_eq!(e, list(json!(s(root))).1);
+    assert_eq!(e["entries"][3]["mounted"], false);
+    assert_eq!(explore(json!(s(&root.join("y")))).1["parent"], s(root));
 }
 
 #[test]
@@ -648,6 +659,51 @@ fn delete_path_route() {
     std::fs::remove_dir_all(&outside).unwrap();
 }
 
+/// `POST /api/move_path`: `null` once moved; refusals 400 (a browse root, a link, an existing
+/// target, into itself), a missing source or target folder 404, a bad body 400.
+#[test]
+fn move_path_route() {
+    let srv = start("move");
+    game(&srv.root.join("game"));
+    std::fs::create_dir(srv.root.join("into")).unwrap();
+    write(&srv.root, "a.exfat", b"image");
+    write(&srv.root, "b.exfat", b"other");
+    symlink(srv.root.join("a.exfat"), srv.root.join("alias.exfat")).unwrap();
+    let mv = |from: &Path, to: &Path| {
+        srv.post("/api/move_path", json!({ "from": s(from), "to": s(to) }))
+    };
+    let refused = |from: &Path, to: &Path| {
+        let (status, v) = mv(from, to);
+        assert_eq!(status, 400, "{} -> {}: {v}", from.display(), to.display());
+        assert!(v["error"].is_string(), "{v}");
+    };
+    refused(&srv.root, &srv.root.join("into/root")); // a browse root
+    refused(&srv.root.join("alias.exfat"), &srv.root.join("c.exfat")); // a link itself
+    refused(&srv.root.join("a.exfat"), &srv.root.join("b.exfat")); // never replaced
+    refused(&srv.root.join("game"), &srv.root.join("game/inner")); // into itself
+    assert_eq!(mv(&srv.root.join("nope"), &srv.root.join("x")).0, 404);
+    assert_eq!(
+        mv(&srv.root.join("a.exfat"), &srv.root.join("none/a.exfat")).0,
+        404
+    );
+    assert_eq!(
+        exchange(
+            srv.addr,
+            raw_post("/api/move_path", "{\"from\": \"/x\"}").as_bytes()
+        )
+        .0,
+        400
+    );
+    assert_eq!(std::fs::read(srv.root.join("b.exfat")).unwrap(), b"other");
+    let renamed = srv.root.join("renamed.exfat");
+    assert_eq!(mv(&srv.root.join("a.exfat"), &renamed), (200, Value::Null));
+    assert_eq!(std::fs::read(&renamed).unwrap(), b"image");
+    let moved = srv.root.join("into/game");
+    assert_eq!(mv(&srv.root.join("game"), &moved), (200, Value::Null));
+    assert!(!srv.root.join("a.exfat").exists() && !srv.root.join("game").exists());
+    assert!(moved.join("sce_sys/param.json").is_file());
+}
+
 #[test]
 fn quit_closes_admission() {
     let srv = start("quit");
@@ -669,6 +725,11 @@ fn quit_closes_admission() {
     let (status, v) = srv.post(
         "/api/delete_path",
         json!({ "path": s(&srv.root.join("game")) }),
+    );
+    assert_eq!(status, 409, "{v}");
+    let (status, v) = srv.post(
+        "/api/move_path",
+        json!({ "from": s(&srv.root.join("game")), "to": s(&srv.root.join("moved")) }),
     );
     assert_eq!(status, 409, "{v}");
     assert!(srv.root.join("game").exists());

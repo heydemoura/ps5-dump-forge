@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ps5_dump_forge_core::{
-    ArchivePassword, ConvertRequest, Event, Format, Inspection, JobId, Jobs, LibraryScan, Lz4Patch,
+    ArchivePassword, ConvertRequest, EditCheck, Event, Format, HostTree, Inspection, JobId, Jobs,
+    LibraryScan, Listing, Lz4Patch, folder_refusal,
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -128,6 +129,26 @@ async fn library_scan(app: AppHandle, root: PathBuf) -> Result<LibraryScan, Stri
     .await
 }
 
+/// The Edit tab's preview of a host file or folder the user adds or drops.
+#[tauri::command]
+async fn host_tree(app: AppHandle, path: PathBuf) -> Result<HostTree, String> {
+    blocking(app, move |_, _| {
+        ps5_dump_forge_core::host_tree(&path, &AtomicBool::new(false)).map_err(err)
+    })
+    .await
+}
+
+/// Which way the Edit tab's `request` can be applied, in place or by a rebuild (core's
+/// `Jobs::edit_check`: it settles a leftover undo journal unless a job uses the image, then
+/// only reads). Read errors come back as findings.
+#[tauri::command]
+async fn edit_check(app: AppHandle, request: ConvertRequest) -> Result<EditCheck, String> {
+    blocking(app, move |app, state| {
+        Ok(state.jobs(app).edit_check(&request))
+    })
+    .await
+}
+
 /// One Library card's cover: a PNG data URL, or `None`.
 #[tauri::command]
 async fn library_cover(app: AppHandle, path: PathBuf) -> Result<Option<String>, String> {
@@ -171,6 +192,7 @@ async fn generated_output(
     .await
 }
 
+// An edit job's `edits` (and mode) come through as they are; core ignores its `output`.
 #[tauri::command]
 async fn start_job(app: AppHandle, request: ConvertRequest) -> Result<JobId, String> {
     blocking(app, move |app, state| {
@@ -228,11 +250,16 @@ async fn patch_folder(app: AppHandle, path: PathBuf, unpatch: bool) -> Result<Lz
 }
 
 /// Deletes a file or folder for good (core's `Jobs::delete_path`; the UI asks first): never a
-/// drive root, the home folder or a folder holding it, nor anything an unfinished job uses.
+/// drive root, the home folder or a folder holding it, nor anything an unfinished job uses,
+/// nor anything in a folder the Library refuses (`folder_refusal`: `~/Library`, the OS's
+/// own folders), which the File explorer could otherwise reach from the home folder.
 /// Under the quit lock, like `lz4_patch`.
 #[tauri::command]
 async fn delete_path(app: AppHandle, path: PathBuf) -> Result<(), String> {
     blocking(app, move |app, state| {
+        if let Some(why) = folder_refusal(&path) {
+            return Err(why);
+        }
         let quitting = state.quitting();
         if *quitting {
             return Err("PS5 Dump Forge is quitting".to_string());
@@ -243,6 +270,51 @@ async fn delete_path(app: AppHandle, path: PathBuf) -> Result<(), String> {
         done.map_err(|e| e.to_string())
     })
     .await
+}
+
+/// Moves or renames a file or folder on its drive (core's `Jobs::move_path`): `to` never
+/// replaced, `from` refused as `delete_path` refuses it (the home folder protected), and
+/// either in a folder the Library refuses (`folder_refusal`). Under the quit lock, like
+/// `delete_path`.
+#[tauri::command]
+async fn move_path(app: AppHandle, from: PathBuf, to: PathBuf) -> Result<(), String> {
+    blocking(app, move |app, state| {
+        if let Some(why) = [from.as_path(), to.as_path()]
+            .into_iter()
+            .find_map(folder_refusal)
+        {
+            return Err(why);
+        }
+        let quitting = state.quitting();
+        if *quitting {
+            return Err("PS5 Dump Forge is quitting".to_string());
+        }
+        let keep: Vec<PathBuf> = std::env::home_dir().into_iter().collect();
+        let done = state.jobs(app).move_path(&from, &to, &keep);
+        drop(quitting);
+        done.map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// The Storage tab's file explorer: one folder's entries (core's `list_dir`). Reads only;
+/// `parent` is the folder's own, the UI stops Up at its chosen root. A folder the Library
+/// refuses (`folder_refusal`: `/`, the OS's own folders) is refused here too.
+#[tauri::command]
+async fn list_dir(app: AppHandle, path: PathBuf) -> Result<Listing, String> {
+    blocking(app, move |_, _| {
+        if let Some(why) = folder_refusal(&path) {
+            return Err(why);
+        }
+        ps5_dump_forge_core::list_dir(&path).map_err(|e| format!("{}: {e}", path.display()))
+    })
+    .await
+}
+
+/// The File explorer's start before a folder is chosen: the user's home folder, if any.
+#[tauri::command]
+fn home_folder() -> Option<PathBuf> {
+    std::env::home_dir().map(|h| dunce::simplified(&h).to_path_buf())
 }
 
 #[tauri::command]
@@ -776,6 +848,8 @@ fn main() {
                 outputs: Arc::default(),
             });
 
+            // The drag and drop handler stays on (Tauri 2's default): the Edit tab hears
+            // drops of host files through `onDragDropEvent` (`core:event:allow-listen`).
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
                 // The web build's page title says the same (vite.config.ts).
                 .title(concat!("PS5 Dump Forge v", env!("CARGO_PKG_VERSION")))
@@ -809,6 +883,8 @@ fn main() {
             inspect,
             library_scan,
             library_cover,
+            host_tree,
+            edit_check,
             default_output,
             generated_output,
             start_job,
@@ -817,6 +893,9 @@ fn main() {
             lz4_patch,
             lz4_unpatch,
             delete_path,
+            move_path,
+            list_dir,
+            home_folder,
             reveal,
             open_repo,
             update_target,

@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 anyhow.workspace = true
+dunce = "1.0.5"
 ps5-dump-forge-core.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
