@@ -1109,7 +1109,7 @@ mod tests {
 
     /// A descriptor of many small sparse extents walks in O(n log n): one boundary looked up
     /// per extent and per record, not a scan of the table each (which took ~1.5 h to open a
-    /// forged descriptor of the most boundaries 32 MiB holds).
+    /// forged descriptor of ~5.6 M boundaries).
     #[test]
     fn many_sparse_boundaries_walk_quickly() {
         const N: u64 = 100_000;
