@@ -215,7 +215,7 @@ jobs:
             echo "It needs no FUSE and no install; keep the PS5 Dump Forge.AppDir folder next to forge.sh."
             echo
             echo "PS5 (jailbroken, with an ELF loader): load ps5-dump-forge-$ver-ps5.elf, e.g. send it to elfldr's port 9021 or list it in the webkit autoloader's autoload.txt, then open http://<ps5-ip>:8095 in a browser."
-            echo "The web UI has no access control: use it on a trusted network. Tested on a PS5 (firmware 13.60): .exfat and folder output from .ffpkg and folder sources on the internal SSD, and the home-screen tile starting Forge after a restart. The other output formats and USB output are not tested on a console yet."
+            echo "The web UI has no access control: use it on a trusted network."
             echo
             echo "Each desktop archive (macOS, Windows, Linux) holds the app (PS5 Dump Forge.app, PS5 Dump Forge.exe or PS5 Dump Forge.AppDir with forge.sh) and the ps5-dump-forge command-line tool. README, LICENSE (GPL-3.0), the UnRAR license and THIRD-PARTY-NOTICES.md are in the source archives below, the complete corresponding source of this release. SHA256SUMS lists every archive's SHA-256."
             case "$GITHUB_REF_NAME" in *-*)
