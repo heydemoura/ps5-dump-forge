@@ -24,6 +24,22 @@ const COMMANDS: &[&str] = &[
     "update_target",
     "open_update",
     "quit_app",
+    "connect_state",
+    "connect_pair",
+    "connect_probe",
+    "connect_pair_cancel",
+    "connect_approve",
+    "connect_forget",
+    "connect_discover_start",
+    "connect_discover_stop",
+    "connect_send",
+    "connect_fetch",
+    "connect_cancel",
+    "connect_remote_list",
+    "connect_nas_save",
+    "connect_nas_forget",
+    "connect_payload_install",
+    "connect_payload_send",
 ];
 
 fn main() {

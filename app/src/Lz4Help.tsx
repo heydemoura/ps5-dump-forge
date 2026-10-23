@@ -22,7 +22,7 @@ function Lz4Help({ close }: { close: () => void }) {
         <h2 id="lz4-help-title">{t.title}</h2>
       </div>
       {/* The body scrolls; the title and Close stay put. tabIndex: keys scroll it too. */}
-      <div className="help-body" tabIndex={0} aria-label={t.title}>
+      <div className="help-body" role="region" tabIndex={0} aria-label={t.title}>
         <p className="note-line warn">
           <Icon name="warn" />
           <span>{t.warning}</span>

@@ -27,7 +27,7 @@ const POLL_TIMEOUT_MS = 15000;
 /** What the client itself says, by code. The page installs the words (`setClientText`, from
  * main-http.tsx, in the UI's language); until then the code is the text, which is what a plain
  * `node` check sees. */
-export type ClientText = "unreachable" | "noPlatform" | "quitUnreachable" | "stillAnswering" | "gone";
+export type ClientText = "unreachable" | "noPlatform" | "quitUnreachable" | "stillAnswering" | "gone" | "uploadIncomplete";
 
 let text: (code: ClientText) => string = (code) => code;
 
@@ -117,6 +117,21 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
   return res.data as T;
 }
 
+/** A Connect command: `GET /api/connect/state`, else `POST /api/connect/<cmd>`. `nas_save`
+ * answers `{id}`; this gives the bare id, as the Tauri command does. */
+export async function connectCall<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  let res;
+  try {
+    res = cmd === "state" ? await request("GET", "/api/connect/state", undefined, 5000) : await request("POST", `/api/connect/${cmd}`, args ?? {});
+  } catch {
+    throw text("unreachable");
+  }
+  if (res.status !== 200) throw errorOf(res.data, res.status);
+  const id = (res.data as { id?: unknown } | null)?.id;
+  const bare = cmd === "nas_save" && typeof id === "string";
+  return (bare ? id : res.data) as T;
+}
+
 /** The upload route for `source` and `gamePath`. Each value is percent-encoded with
  * `encodeURIComponent` (a space is `%20`, `+` is `%2B`): the server decodes `%XX` only and keeps
  * `+` as it is, so `URLSearchParams`'s `+` for a space would name another path. */
@@ -133,10 +148,82 @@ export function upload(
   onProgress?: (sent: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<string> {
+  return postFile(uploadUrl(source, gamePath), file, onProgress, signal).then(pathOf);
+}
+
+function pathOf(data: Record<string, unknown>): string {
+  if (typeof data.path === "string") return data.path;
+  throw errorOf(data, 200);
+}
+
+/** A phone upload's chunk, and how many go at once: 4 in a browser (by user decision; it runs about 6
+ * requests per host, and the page's own polls need room), where FLINK's lanes between devices are 8. */
+const CHUNK = 8 << 20;
+const PARALLEL = 4;
+
+/** Connect's phone upload: `file` into the server's folder `dir` as `name` (`POST
+ * /api/connect/upload?dir=&name=&id=&offset=&size=`, `PARALLEL` chunks in flight; the server puts
+ * them together by offset); resolves with the file's path. A failure or abort cancels the rest
+ * and drops the server's part (`cancel=1`). */
+export async function connectUpload(
+  dir: string,
+  name: string,
+  file: File,
+  onProgress?: (sent: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) throw "aborted";
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
+  const base = `/api/connect/upload?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}&id=${id}`;
+  const offsets: number[] = [];
+  for (let at = 0; at < file.size || offsets.length === 0; at += CHUNK) offsets.push(at);
+  const sent = new Map<number, number>();
+  const report = () => onProgress?.([...sent.values()].reduce((a, b) => a + b, 0), file.size);
+  const stop = new AbortController();
+  const abort = () => stop.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  let path: string | undefined;
+  let next = 0;
+  const lane = async () => {
+    while (next < offsets.length) {
+      const at = offsets[next++];
+      const piece = file.slice(at, Math.min(at + CHUNK, file.size));
+      const url = `${base}&offset=${at}&size=${file.size}`;
+      const data = await postFile(url, piece, (loaded) => (sent.set(at, loaded), report()), stop.signal);
+      sent.set(at, piece.size);
+      report();
+      if (data.done === true) path = pathOf(data);
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, offsets.length) }, lane));
+  } catch (e) {
+    stop.abort();
+    void postFile(`${base}&cancel=1`, new Blob([])).catch(() => {});
+    throw e;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+  if (path === undefined) throw text("uploadIncomplete");
+  return path;
+}
+
+/** Connect's phone download of the server's file `path` (a link the browser saves). */
+export function connectDownloadUrl(path: string): string {
+  return `/api/connect/download?path=${encodeURIComponent(path)}`;
+}
+
+/** `POST url` with `file` as the raw body (XHR, for upload progress); resolves with the reply. */
+function postFile(
+  url: string,
+  file: Blob,
+  onProgress?: (sent: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject("aborted");
     const x = new XMLHttpRequest();
-    x.open("POST", uploadUrl(source, gamePath));
+    x.open("POST", url);
     x.setRequestHeader("Content-Type", "application/octet-stream");
     if (onProgress) x.upload.onprogress = (e) => onProgress(e.loaded, e.lengthComputable ? e.total : file.size);
     const onAbort = () => x.abort();
@@ -151,8 +238,7 @@ export function upload(
       } catch {
         data = { error: `${x.status} ${x.statusText}`.trim() };
       }
-      const path = (data as { path?: unknown } | null)?.path;
-      if (x.status === 200 && typeof path === "string") resolve(path);
+      if (x.status === 200 && data && typeof data === "object") resolve(data as Record<string, unknown>);
       else reject(errorOf(data, x.status));
     };
     x.onerror = () => {
@@ -312,7 +398,6 @@ interface Seen {
   stages: boolean;
   logTotal: number;
   done: boolean;
-  request: boolean;
 }
 
 /** What each job last looked like; null: the next snapshot rebuilds the whole list. */
@@ -329,7 +414,6 @@ function remember(j: SnapshotJob): Seen {
     stages: j.stages?.length > 0,
     logTotal: j.log_total,
     done: j.done !== null,
-    request: j.request !== null,
   };
 }
 
@@ -348,9 +432,8 @@ function diff(snap: JobsSnapshot): void {
   for (const j of snap.jobs) {
     const was = seen.get(j.id);
     seen.set(j.id, remember(j));
-    // New to the page (another browser's Build, or ours before start_job answered), or its
-    // request only just merged in: restored whole.
-    if (!was || (!was.request && j.request)) {
+    // New to the page (another browser's Build, or ours before start_job answered): restored whole.
+    if (!was) {
       fresh.push(j);
       continue;
     }

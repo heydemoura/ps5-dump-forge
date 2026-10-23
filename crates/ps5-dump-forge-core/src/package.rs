@@ -431,10 +431,18 @@ pub(crate) fn run(
     let size = prepared.estimated_size();
     estimate.set(size);
     let need = room(size);
+    // A package on a paired device: written there through the peer's file calls.
+    let remote_out = crate::remote::is_remote(out);
     // U7: so a probe that fails because the drive went away says so.
     #[cfg(target_os = "freebsd")]
-    ctx.watch(dir);
-    let checked = preflight::destination(dir, need, size, ctx.cancel);
+    if !remote_out {
+        ctx.watch(dir);
+    }
+    let checked = if remote_out {
+        crate::remote::destination(dir, need)
+    } else {
+        preflight::destination(dir, need, size, ctx.cancel)
+    };
     for note in checked.notes {
         ctx.log(note);
     }
@@ -442,9 +450,11 @@ pub(crate) fn run(
         bail!("preflight failed:\n  {}", checked.findings.join("\n  "));
     }
     #[cfg(target_os = "freebsd")]
-    let dest = checked
-        .dest
-        .ok_or_else(|| anyhow!("the destination was not probed"))?;
+    let dest = checked.dest;
+    #[cfg(target_os = "freebsd")]
+    if dest.is_none() && !remote_out {
+        bail!("the destination was not probed");
+    }
     ctx.check()?;
     ctx.log(format!(
         "package: content id {}, about {} MiB",
@@ -454,9 +464,17 @@ pub(crate) fn run(
 
     // No shadowing: `file` must drop before `part`, which deletes the `.part` (U6).
     #[cfg_attr(not(target_os = "freebsd"), allow(unused_mut))]
-    let (mut part, mut file) = Part::create_file(&part_path(out, ctx.job))?;
+    let (mut part, mut file) = if remote_out {
+        let (part, pkg) = crate::remote::RemotePkgOut::create(&part_path(out, ctx.job))?;
+        (Out::Peer(part), Handle::Peer(pkg))
+    } else {
+        let (part, file) = Part::create_file(&part_path(out, ctx.job))?;
+        (Out::Local(part), Handle::Local(file))
+    };
     #[cfg(target_os = "freebsd")]
-    part.set_dest(&dest);
+    if let (Out::Local(part), Some(dest)) = (&mut part, &dest) {
+        part.set_dest(dest);
+    }
     // As in `convert`: reads run one range ahead on their own thread, so the builder's producer
     // hashes and lays out one range while the next is read (a `.pkg` source's Kraken blocks
     // decoded); `HashingTree` sees exactly the calls and bytes it would without read-ahead.
@@ -469,7 +487,7 @@ pub(crate) fn run(
     let report = build::write_package(
         &prepared,
         &mut hashing,
-        &mut file,
+        file.pkg(),
         part.path(),
         &mut |line| ctx.log(format!("fpkg: {line}")),
         &mut control,
@@ -478,8 +496,22 @@ pub(crate) fn run(
     // ponytail: the builder's last `sync_all` (vendor `stream.rs:534`) has no U4 retries, so a
     // transient fsync error there fails the job: safe, nothing is lost or published. Upgrade: a
     // numbered vendor patch with a final-sync callback.
+    // A package on a peer is synced there (its `sync_out`), with no syncer beside it here.
     #[cfg(target_os = "freebsd")]
-    let report = {
+    let report = if let Handle::Peer(pkg) = &mut file {
+        build::write_package(
+            &prepared,
+            &mut hashing,
+            pkg,
+            part.path(),
+            &mut |line| ctx.log(format!("fpkg: {line}")),
+            &mut control,
+        )
+        .map_err(fpkg("writing the package"))?
+    } else {
+        let Handle::Local(file) = &mut file else {
+            unreachable!("a peer's package is written above")
+        };
         use anyhow::Context;
         control.cancel = Some(&abort);
         let every = crate::durable::Cadence::new().n();
@@ -495,7 +527,7 @@ pub(crate) fn run(
             build::write_package(
                 &prepared,
                 &mut hashing,
-                &mut file,
+                &mut *file,
                 part.path(),
                 &mut |line| ctx.log(format!("fpkg: {line}")),
                 &mut control,
@@ -539,9 +571,9 @@ pub(crate) fn run(
     ctx.check()?;
 
     // Through the handle the package was written with, whatever its name now names.
-    let len = file.metadata()?.len();
+    let len = file.len()?;
     let label = part.path().display().to_string();
-    let mut back = FpkgSource::from_reader(Box::new(file.try_clone()?), len, label, None)
+    let mut back = FpkgSource::from_reader(file.reader()?, len, label, None)
         .map_err(|e| anyhow::Error::new(e).context("reading the package back"))?;
     checks.push(format!("reader: {}", back.describe()));
     for line in back.conflicts() {
@@ -553,7 +585,7 @@ pub(crate) fn run(
     for line in &checks {
         ctx.log(format!("check: {line}"));
     }
-    drop(file);
+    file.finish()?;
 
     ctx.expect_rest(0);
     ctx.progress("finalize", 0, 1);
@@ -563,6 +595,9 @@ pub(crate) fn run(
         if let Some(why) = crate::edit_job::smp_finding(out) {
             bail!("{why}; the source was not replaced");
         }
+        let Out::Local(part) = part else {
+            bail!("a package on another device is never replaced in place");
+        };
         if let Some(backup) = part.replace(out)? {
             ctx.log(format!(
                 "in place: the original package is still at {}; delete it once the new one works",
@@ -582,6 +617,69 @@ pub(crate) fn run(
         checks,
         verify: verify::summary(&expected.files, mode),
     })
+}
+
+/// The package's `.part`: here, or on a paired device.
+enum Out {
+    Local(Part),
+    Peer(crate::remote::RemotePart),
+}
+
+impl Out {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Local(part) => part.path(),
+            Self::Peer(part) => part.path(),
+        }
+    }
+
+    fn publish(self, output: &Path) -> anyhow::Result<()> {
+        match self {
+            Self::Local(part) => part.publish(output),
+            Self::Peer(part) => part.publish(output),
+        }
+    }
+}
+
+/// What the builder writes the package through: the local `.part`'s file, or the peer's.
+enum Handle {
+    Local(std::fs::File),
+    Peer(crate::remote::RemotePkgOut),
+}
+
+impl Handle {
+    #[cfg_attr(target_os = "freebsd", allow(dead_code))]
+    fn pkg(&mut self) -> &mut dyn ps5upload_fpkg::PkgOut {
+        match self {
+            Self::Local(file) => file,
+            Self::Peer(pkg) => pkg,
+        }
+    }
+
+    fn len(&self) -> anyhow::Result<u64> {
+        use ps5upload_fpkg::PkgOut;
+        Ok(match self {
+            Self::Local(file) => file.metadata()?.len(),
+            Self::Peer(pkg) => pkg.out_len()?,
+        })
+    }
+
+    /// A reader of its own (a local handle shares the cursor; every reader seeks first).
+    fn reader(&self) -> anyhow::Result<Box<dyn ps5upload_fpkg::ReadSeek>> {
+        use ps5upload_fpkg::PkgOut;
+        Ok(match self {
+            Self::Local(file) => Box::new(file.try_clone()?),
+            Self::Peer(pkg) => Box::new(pkg.try_clone_out()?),
+        })
+    }
+
+    /// Done with it: a local file is closed; a peer's part is sent, synced and closed there.
+    fn finish(self) -> anyhow::Result<()> {
+        if let Self::Peer(pkg) = self {
+            anyhow::Context::context(pkg.finish(), "syncing the package")?;
+        }
+        Ok(())
+    }
 }
 
 /// How the package's files relate to the source's, for the report.

@@ -17,8 +17,10 @@ import {
 } from "./api";
 import { gameTitle, msg, num, useLang, useMessages } from "./i18n";
 import { basename, SEPARATORS, trimSep } from "./paths";
+import { nasName, nasPath } from "./peers";
 import { useCoverGlow } from "./glow";
 import { Icon, type IconName } from "./icons";
+import { useConnectState } from "./useConnectState";
 
 // Format names stay as they are in every language; only "Folder" is translated (kindLabel).
 const KIND_LABEL: Record<Format | ArchiveKind, string> = {
@@ -81,6 +83,20 @@ export function Prose({ text }: { text: string }) {
   return <>{parts}</>;
 }
 
+/** A dialog's head: an icon and its title. */
+export function Head({ id, icon, title }: { id: string; icon: IconName; title: string }) {
+  return (
+    <div className="modal-head">
+      <span className="head-icon">
+        <Icon name={icon} />
+      </span>
+      <h2 id={id} dir="auto">
+        {title}
+      </h2>
+    </div>
+  );
+}
+
 /** A card's title row: icon + title, actions on the right. */
 export function CardHead(props: {
   /** Left out where the title stands alone (How to connect). */
@@ -135,11 +151,25 @@ export function TabList<T extends string>(props: {
 }) {
   const ids = props.tabs.map((t) => t.id);
   const framed = props.start !== undefined || props.end !== undefined;
+  // A bar that scrolls inside itself (the header under 900px) keeps the chosen tab whole in
+  // view, whatever chose it (the header's Connect state too). By hand, not scrollIntoView:
+  // older WebKit takes its options as "align to top" and would scroll the page.
+  useEffect(() => {
+    const tab = document.getElementById(tabId(props.prefix, props.value));
+    const bar = tab?.parentElement;
+    if (!tab || !bar || bar.scrollWidth <= bar.clientWidth) return;
+    const t = tab.getBoundingClientRect();
+    const b = bar.getBoundingClientRect();
+    if (t.left < b.left) bar.scrollLeft -= b.left - t.left;
+    else if (t.right > b.right) bar.scrollLeft += t.right - b.right;
+  }, [props.prefix, props.value]);
   const onKey = (e: KeyboardEvent) => {
     const i = ids.indexOf(props.value);
+    // Right-to-left, the next tab is to the left.
+    const rtl = document.documentElement.dir === "rtl";
     const next =
-      e.key === "ArrowRight" ? ids[(i + 1) % ids.length]
-      : e.key === "ArrowLeft" ? ids[(i - 1 + ids.length) % ids.length]
+      e.key === (rtl ? "ArrowLeft" : "ArrowRight") ? ids[(i + 1) % ids.length]
+      : e.key === (rtl ? "ArrowRight" : "ArrowLeft") ? ids[(i - 1 + ids.length) % ids.length]
       : e.key === "Home" ? ids[0]
       : e.key === "End" ? ids[ids.length - 1]
       : undefined;
@@ -194,7 +224,9 @@ export function TabList<T extends string>(props: {
  */
 export function FormatPicker<F extends Format>(props: {
   name: string;
-  label: string;
+  /** The group's name: `label`, or the id of a visible label (`labelledBy`). */
+  label?: string;
+  labelledBy?: string;
   value: F;
   onChange: (f: F) => void;
   disabled?: (f: F) => boolean;
@@ -212,7 +244,8 @@ export function FormatPicker<F extends Format>(props: {
     <div
       className={`seg formats ${props.className ?? ""}`}
       role="radiogroup"
-      aria-label={props.label}
+      aria-label={props.labelledBy ? undefined : props.label}
+      aria-labelledby={props.labelledBy}
     >
       {formats.map((f) => {
         const disabled = props.disabled?.(f) ?? false;
@@ -253,15 +286,20 @@ export const IMAGE_EXTENSIONS = ["exfat", "ffpkg", "ffpfs", "ffpfsc", "pkg"];
  * too, so core can name the part to choose instead). */
 export const ARCHIVE_EXTENSIONS = ["zip", "7z", "rar", "001", "z01"];
 
+/** A Mac (or iPad) keyboard: its key marked delete sends Backspace, so the explorers' tips name fn+Delete. */
+export const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
+
 export { basename, dirname, joinPath, SEPARATORS } from "./paths";
 
 /**
  * A path on one line that never hides its last part: the folder part ellipsizes, the name
  * stays. The full path is the tooltip.
  */
-export function PathLine({ path, prefix }: { path: string; prefix?: string }) {
-  const name = basename(path);
-  const dir = path.slice(0, trimSep(path).length - name.length);
+export function PathLine({ path: raw, prefix }: { path: string; prefix?: string }) {
+  const path = usePeerPath()(raw);
+  // A device's root ("<device>: /") has no name of its own: shown whole.
+  const name = basename(path) || path;
+  const dir = name === path ? "" : path.slice(0, trimSep(path).length - name.length);
   return (
     <p className="pathline" title={path}>
       <span className="dir">
@@ -273,9 +311,48 @@ export function PathLine({ path, prefix }: { path: string; prefix?: string }) {
   );
 }
 
+/** Shows a paired Forge's `flink://<key_id>/<rel>` path, or a saved NAS's `smb://`, `ftp://` or
+ * `nfs://` one, as "<device name>: /<rel>" while that device is known (saved); anything else, or
+ * an unknown device, as it is. */
+export function usePeerPath(): (path: string) => string {
+  const state = useConnectState().state;
+  return (path) => {
+    const p = peerOf(path, state?.devices);
+    return p ? `${p.name}: ${p.rest}` : (nasPath(path, state?.nas ?? []) ?? path);
+  };
+}
+
+/** The device a path is on when it isn't this one: a paired Forge (`flink://`) or a NAS
+ * (`smb://`, `ftp://`, `nfs://`: its saved name, else its address), by name; `null` for this
+ * device's paths. */
+export function useDeviceName(): (path: string) => string | null {
+  const state = useConnectState().state;
+  return (path) => {
+    const peer = peerOf(path, state?.devices);
+    if (peer) return peer.name;
+    if (/^flink:\/\//i.test(path)) return path.split(/[/\\]/)[2];
+    return nasName(path, state?.nas ?? []);
+  };
+}
+
+function peerOf(path: string, devices: { key_id: string; name: string }[] | undefined) {
+  // The key ends at either separator: a Windows join gives `flink://<key>\name`.
+  const m = /^flink:\/\/([^/\\]+)(.*)$/i.exec(path);
+  const d = m && devices?.find((x) => x.key_id === m[1]);
+  return d && m ? { name: d.name, rest: m[2] || "/" } : null;
+}
+
 // ---- Dialogs over the whole app (the LZ4 help, the delete question) ----
 
 const overlays = new Set<() => void>();
+/** Each overlay's host and where focus goes back to when it closes. */
+const returns = new Map<HTMLElement, { to: HTMLElement | null; closed: boolean }>();
+
+/** Another device's pairing request is up (Connect's prompt, above every dialog): a dialog that
+ * opens, loads or closes under it leaves focus in the prompt, so Enter and Escape answer it. */
+export function pairPromptUp(): boolean {
+  return document.querySelector(".pair-layer") !== null;
+}
 
 /** Closes every open dialog (as if cancelled): the quit prompt never stacks behind one. */
 export function closeOverlays(): void {
@@ -287,18 +364,38 @@ export function closeOverlays(): void {
  * screen) is inert. `onClosed` runs once it closes; focus goes back to what had it.
  */
 export function openOverlay(render: (close: () => void) => ReactNode, onClosed?: () => void): void {
-  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  let opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  // Opened from a dialog closing now (Connect's details → File Transfer or Edit): this one gives
+  // focus back to that one's opener, which no longer does it (its button is gone by then).
+  for (const [h, r] of returns)
+    if (r.closed && opener && h.contains(opener)) {
+      opener = r.to;
+      r.to = null;
+    }
   const app = document.getElementById("root");
   app?.setAttribute("inert", "");
   app?.setAttribute("aria-hidden", "true");
+  // The dialogs already open (File Transfer under its picker) are behind this one too.
+  const under = [...returns].filter(([h, r]) => !r.closed && !h.hasAttribute("inert")).map(([h]) => h);
+  for (const h of under) {
+    h.setAttribute("inert", "");
+    h.setAttribute("aria-hidden", "true");
+  }
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
+  const back = { to: opener, closed: false };
+  returns.set(host, back);
   let closed = false;
   const close = () => {
     if (closed) return;
     closed = true;
+    back.closed = true;
     overlays.delete(close);
+    for (const h of under) {
+      h.removeAttribute("inert");
+      h.removeAttribute("aria-hidden");
+    }
     if (overlays.size === 0) {
       app?.removeAttribute("inert");
       app?.removeAttribute("aria-hidden");
@@ -306,7 +403,8 @@ export function openOverlay(render: (close: () => void) => ReactNode, onClosed?:
     setTimeout(() => {
       root.unmount();
       host.remove();
-      opener?.focus();
+      returns.delete(host);
+      if (!pairPromptUp()) back.to?.focus();
     }, 0);
     onClosed?.();
   };
@@ -314,7 +412,10 @@ export function openOverlay(render: (close: () => void) => ReactNode, onClosed?:
   root.render(render(close));
 }
 
-const FOCUSABLE = 'button:not(:disabled), a[href], input:not(:disabled), [tabindex]:not([tabindex="-1"])';
+/** What Tab stops at inside a dialog: not a button taken out of the Tab order (a TabList's or
+ * ViewSwitch's unselected options). Picker's trap uses it too. */
+export const FOCUSABLE =
+  'button:not(:disabled):not([tabindex="-1"]), a[href], input:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 /** An overlay's backdrop and box: Escape and a click outside close it, Tab stays inside (old
  * WebKit has no `inert`). Give the first control `autoFocus`. Without `close` (Stopping, has
@@ -329,6 +430,11 @@ export function Modal(props: {
   children: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
+  // Opened under the pairing prompt: its autoFocus took focus from the prompt; give it back.
+  useEffect(() => {
+    if (pairPromptUp() && !box.current?.closest(".pair-layer"))
+      document.querySelector(".pair-layer")?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+  }, []);
   const onKey = (e: KeyboardEvent) => {
     if (!props.close) return;
     if (e.key === "Escape") {
@@ -410,17 +516,35 @@ export async function pickSource(
   onPick: (path: string, isImage: boolean) => void,
 ): Promise<void> {
   const t = msg().common;
+  // The http build lists the saved NAS devices as roots of both pickers; a saved NAS online is a
+  // tab of both (a game folder or image there, read only: no .pkg or archive, core reads those
+  // from a local path only).
   const p =
     what === "folder"
-      ? await pick({ directory: true, title: t.pickFolder })
+      ? await pick({ directory: true, title: t.pickFolder, nas: true, devices: true })
       : await pick({
           directory: false,
           title: t.pickImage,
           filterName: t.pickImageFilter,
           extensions: [...IMAGE_EXTENSIONS, ...ARCHIVE_EXTENSIONS],
+          nas: true,
+          nasExtensions: NAS_IMAGES,
+          devices: true,
         });
   if (p !== null) onPick(p, what === "image");
 }
+
+/** The images a NAS share can serve as a source (common's IMAGE_EXTENSIONS without .pkg). */
+const NAS_IMAGES = ["exfat", "ffpkg", "ffpfs", "ffpfsc"];
+
+/** A source on a saved NAS (`smb://host/share/...`, an FTP server's `ftp://host/...` or an NFS
+ * server's `nfs://host/<export>/...`): read only, like an archive (a NAS takes outputs, but its
+ * games aren't edited in place). */
+export const isNas = (path: string | null | undefined): boolean => !!path && /^(smb|ftp|nfs):\/\//i.test(path);
+/** A source on a paired Forge (`flink://key/...`): read only here, as core says. */
+export const isPeer = (path: string | null | undefined): boolean => !!path && /^flink:\/\//i.test(path);
+/** A source on another device (a NAS or a paired Forge). */
+export const isNetwork = (path: string | null | undefined): boolean => isNas(path) || isPeer(path);
 
 /** "Folder" / "Image/Archive": a game folder, or an image or archive file. */
 function PickButtons(props: { onPick: (path: string, isImage: boolean) => void; big?: boolean; disabled?: boolean }) {
@@ -510,7 +634,7 @@ export function SourceCard(props: {
           </span>
           <p className="empty-title">{t.emptyTitle}</p>
           <p className="muted">{t.emptyText}</p>
-          <div className="kinds" aria-label={t.accepted}>
+          <div className="kinds" role="group" aria-label={t.accepted}>
             {[...KINDS, ...ARCHIVE_KINDS].map((k) => (
               <FormatPill key={k} kind={k} />
             ))}
@@ -558,6 +682,8 @@ export function Dots() {
 function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; full?: boolean }) {
   const t = useMessages().common;
   const { ins } = props;
+  // A game on another device (a paired Forge or a NAS) names it; this device's games don't.
+  const device = useDeviceName()(props.path);
   const title = ins
     ? (gameTitle(ins.title_names, ins.title_name) ?? ins.title_id ?? t.unknownTitle)
     : props.busy
@@ -576,6 +702,11 @@ function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; 
         <div className="title-row">
           <h3 className={ins ? "title" : "title pending"}>{title}</h3>
           {ins && <FormatPill kind={ins.kind} />}
+          {device && (
+            <span className="tag green" title={device}>
+              {device}
+            </span>
+          )}
           {ins && ins.backport.length > 0 && <span className="tag orange">{t.backport}</span>}
           {ins && ins.emulators.length > 0 && <span className="tag">{t.emulators}</span>}
           {ins && ins.dlcs.length > 0 && <span className="tag violet">DLC</span>}
@@ -674,7 +805,8 @@ export function lz4Traced(f: Lz4Facts | null | undefined): boolean {
 function Lz4Tile({ facts }: { facts: Lz4Facts }) {
   const t = useMessages().common;
   const { state, detail } = lz4State(facts);
-  const notes = [detail];
+  // After the state's detail (core's English when the packs are damaged, isolated for RTL).
+  const notes: string[] = [];
   if (!facts.imports_ampr) notes.push(t.noAmpr);
   const runtime = facts.imports_ampr ? runtimeAction(facts) : null;
   if (runtime) notes.push(runtime);
@@ -691,7 +823,10 @@ function Lz4Tile({ facts }: { facts: Lz4Facts }) {
       <dt>LZ4 (AMPR)</dt>
       <dd>
         <span className="value">{state}</span>
-        <span className="note">{notes.join(" · ")}</span>
+        <span className="note">
+          {facts.manifest_error !== null ? <bdi>{detail}</bdi> : detail}
+          {notes.map((n) => ` · ${n}`).join("")}
+        </span>
       </dd>
     </div>
   );
@@ -757,7 +892,7 @@ export function Findings({ lines }: { lines: string[] }) {
         return (
           <li key={i} className={kind}>
             <Icon name={kind === "info" ? "info" : kind === "block" ? "alert" : "warn"} />
-            <span>{l}</span>
+            <span className="backend">{l}</span>
           </li>
         );
       })}
@@ -915,6 +1050,7 @@ export function ChooseMenu<K extends string>(props: {
   /** An icon-only button: no trailing chevron, this as its aria-label and tip. */
   buttonLabel?: string;
   tabIndex?: number;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [flip, setFlip] = useState("");
@@ -969,6 +1105,9 @@ export function ChooseMenu<K extends string>(props: {
     } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length > 0) {
       e.preventDefault();
       items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+    } else if ((e.key === "Home" || e.key === "End") && items.length > 0) {
+      e.preventDefault();
+      items[e.key === "Home" ? 0 : items.length - 1].focus();
     }
   };
   return (
@@ -983,12 +1122,13 @@ export function ChooseMenu<K extends string>(props: {
         aria-label={props.buttonLabel}
         title={props.buttonLabel}
         tabIndex={props.tabIndex}
+        disabled={props.disabled}
         onClick={() => setOpen((o) => !o)}
       >
         {props.label}
         {props.buttonLabel === undefined && <Icon name="chevron" />}
       </button>
-      {open && (
+      {open && !props.disabled && (
         <span ref={menu} className={`menu${flip}`} role="menu" aria-label={props.menuLabel}>
           {props.items.map((it) => (
             <button key={it.id} type="button" role="menuitem" onClick={() => choose(it.id)}>
@@ -1002,21 +1142,75 @@ export function ChooseMenu<K extends string>(props: {
   );
 }
 
-/** http build: the page's url as a QR code for a phone, drawn by the server (`GET /api/qr`).
- * Nothing in the app (no address) or when it doesn't load. */
-export function AddressQr(props: { size: number }) {
+/** http build: the page's url as a QR code for a phone, drawn by the server (`GET /api/qr`), in a
+ * `className` block with its `caption` under it. Nothing, caption included, in the app (no address)
+ * or when it doesn't load. */
+export function AddressQr(props: { size: number; connect?: boolean; className?: string; caption?: ReactNode }) {
   const t = useMessages().common;
   const [failed, setFailed] = useState(false);
   const address = serverAddress();
   if (!address || failed) return null;
+  // `connect`: the address of the Connect tab (`#connect`), for a phone.
   return (
-    <img
-      className="qr"
-      src="/api/qr"
-      width={props.size}
-      height={props.size}
-      alt={t.qr(`http://${address}`)}
-      onError={() => setFailed(true)}
-    />
+    <div className={props.className}>
+      <img
+        className="qr"
+        src={props.connect ? "/api/qr?connect=1" : "/api/qr"}
+        width={props.size}
+        height={props.size}
+        alt={t.qr(`http://${address}/${props.connect ? "#connect" : ""}`)}
+        onError={() => setFailed(true)}
+      />
+      {props.caption && <p className="note">{props.caption}</p>}
+    </div>
+  );
+}
+
+/** A small pill radiogroup (not tabs: the screen tabs are the header's): the Storage view switch,
+ * Connect's device filter. One tab stop; the arrow keys, Home and End move and choose. Each option
+ * is `.view-<id>`, its selected colour. */
+export function ViewSwitch<T extends string>(props: {
+  label: string;
+  value: T;
+  onChange: (v: T) => void;
+  options: { id: T; icon?: IconName; label: ReactNode }[];
+  /** More classes on the group (File Transfer's device switches: `devices`). */
+  className?: string;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const ids = props.options.map((o) => o.id);
+  const onKey = (e: KeyboardEvent) => {
+    const i = ids.indexOf(props.value);
+    // Right-to-left, the next option is to the left.
+    const rtl = document.documentElement.dir === "rtl";
+    const fwd = e.key === "ArrowDown" || e.key === (rtl ? "ArrowLeft" : "ArrowRight");
+    const back = e.key === "ArrowUp" || e.key === (rtl ? "ArrowRight" : "ArrowLeft");
+    const n = fwd ? (i + 1) % ids.length : back ? (i - 1 + ids.length) % ids.length : e.key === "Home" ? 0 : e.key === "End" ? ids.length - 1 : -1;
+    if (n < 0) return;
+    e.preventDefault();
+    props.onChange(ids[n]);
+    box.current?.querySelectorAll<HTMLElement>("[role=radio]")[n]?.focus();
+  };
+  return (
+    <div className={`seg view-switch${props.className ? ` ${props.className}` : ""}`} role="radiogroup" aria-label={props.label} ref={box} onKeyDown={onKey}>
+      {props.options.map((o, i) => {
+        const on = o.id === props.value;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            // With no option chosen (File Transfer: a side's device offline) the first is the Tab stop.
+            tabIndex={on || (i === 0 && !ids.includes(props.value)) ? 0 : -1}
+            className={`seg-opt view-${o.id}${on ? " on" : ""}`}
+            onClick={() => props.onChange(o.id)}
+          >
+            {o.icon && <Icon name={o.icon} />}
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }

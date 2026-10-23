@@ -1,4 +1,4 @@
-/* Dark only, after the icon: near-black navy cards, blue accent, an orange glow.
+/* Dark only, after the icon (a blue emblem, an orange flame): near-black navy cards, blue accent, an orange glow.
    Text contrast: --fg and --muted are >= 4.5:1 on --card, --inset and the hero glow. */
 :root {
   --page: #0e0e15;
@@ -8,6 +8,7 @@
   --raise-hi: #2e2e3b;
   --line: rgba(255, 255, 255, 0.07);
   --line-hi: rgba(255, 255, 255, 0.12);
+  --line-lo: rgba(255, 255, 255, 0.04);
   --fg: #f2f2f7;
   --fg-2: #d2d2dc;
   --muted: #9a9aae;
@@ -18,8 +19,9 @@
   --bad: #ff6b6b;
   --warn: #ffb547;
   --focus: #9db6ff;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
-  /* LZ4 yellow: the LZ4 tab button, its scenario and action pickers, Choose source…, its job
+  /* LZ4 yellow: the LZ4 tab button, its scenario and action pickers, Choose source, its job
      rows. The tab: a grey ground darker than a selected tab's --raise-hi, yellow straps over it
      (unselected: --lz4-ink 9.2:1 on a strap) and over --raise-hi (selected: --lz4-ink-hi
      6.4:1). Pickers: --lz4-ink on --lz4-tint 10.2:1 over --inset, 9.3:1 over --card (also the
@@ -33,9 +35,40 @@
   --lz4-tint: rgba(255, 210, 40, 0.14);
   --lz4-tint-hi: rgba(255, 210, 40, 0.22);
   --lz4-line: rgba(255, 220, 90, 0.5);
-  /* Library green: the header icon, the selected view button and the view switch's Library
-     option only. */
-  --library-ink: #a8ed8b;
+  /* Done green (.tag.green, In place, the update toast) and danger red (.tag.red, .danger
+     buttons, Rebuild, blocking notes): ink on its tint over --card. */
+  --done-ink: #6fe3a3;
+  --done-tint: rgba(47, 210, 122, 0.14);
+  --danger-ink: #ff9b9b;
+  --danger-tint: rgba(255, 93, 93, 0.15);
+  --danger-tint-hi: rgba(255, 93, 93, 0.24);
+  --danger-line: rgba(255, 93, 93, 0.35);
+  /* A job's error box and a finding that fails every target: a fainter wash and ring; the box's
+     text and title inks (10.3:1 and 13.1:1 on the wash over --inset, a job tile's ground). */
+  --danger-wash: rgba(255, 93, 93, 0.08);
+  --danger-ring: rgba(255, 93, 93, 0.25);
+  --danger-text: #ffb4b4;
+  --danger-title: #ffd6d6;
+  /* Transfer green (the Done green): a transfer job's tag (--transfer-ink
+     on --transfer-tint over --card as .tag.green). */
+  --transfer-ink: var(--done-ink);
+  --transfer-tint: var(--done-tint);
+  /* Edit blue (the .tag.blue ink): an edit or extract job's tag. */
+  --edit-ink: #a3c0ff;
+  --edit-tint: rgba(61, 107, 255, 0.18);
+  /* About's rating chips (Compare formats): ink on its tint, every text >= 8.9:1 on --inset. */
+  --rate-good-ink: #86e8b0;
+  --rate-good-tint: rgba(47, 210, 122, 0.12);
+  --rate-ok-ink: #ffd28f;
+  --rate-ok-tint: rgba(255, 181, 71, 0.12);
+  --rate-bad-ink: #ffaaaa;
+  --rate-bad-tint: rgba(255, 93, 93, 0.13);
+  /* The progress bar: its track, and the fill's dark start and bright head around --accent. */
+  --bar-track: #262633;
+  --bar-lo: #232c8f;
+  --bar-hi: #a8bfff;
+  /* Library green: the chosen All chip, the selected Cards/List button and the view switch's
+     Library option only. */
   --library-ink-hi: #c4f6aa;
   --library-line: rgba(118, 220, 72, 0.50);
   /* The Storage tab's view switch: Library in Library green, File explorer in the explorer's
@@ -62,7 +95,7 @@
   --neon-ink: #d6e875;
   --top: 57px; /* the header's height: sticky things sit under it */
   color-scheme: dark;
-  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font: 14px/1.45 var(--sans);
 }
 
 /* Format hues: text (--h), tint (--h-bg), ring (--h-line). Text on tint is >= 4.5:1.
@@ -80,7 +113,9 @@
 .fmt-archive { --h: #e8c9a6; --h-bg: rgba(205, 160, 110, 0.15); --h-line: rgba(225, 190, 150, 0.5); }
 
 * { box-sizing: border-box; }
-html, body { background: var(--page); }
+html, body { background: var(--page); overflow-x: clip; }
+/* Focus moved under the sticky header scrolls clear of it. */
+html { scroll-padding-top: calc(var(--top) + 8px); }
 body { margin: 0; color: var(--fg); -webkit-font-smoothing: antialiased; }
 [hidden] { display: none !important; }
 h2, h3, p { margin: 0; }
@@ -132,54 +167,56 @@ img { display: block; }
   .topbar-in > .nav { grid-area: nav; justify-self: stretch; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .topbar-in > .nav::-webkit-scrollbar { display: none; }
   .nav .seg-opt { flex: 1 0 auto; padding: 0 12px; }
+  /* The scrolling bar clips what is outside its padding: the focus ring goes inside the tab. */
+  .nav .seg-opt:focus-visible { outline-offset: -2px; }
   .topbar-in > .seg-wrap { grid-area: nav; justify-self: stretch; min-width: 0; }
   .seg-wrap > .nav { flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .seg-wrap > .nav::-webkit-scrollbar { display: none; }
   .top-actions button.small { padding: 0 9px; }
 }
-@media (max-width: 599px) {
+/* A phone held landscape: the two-row header would take a quarter of the height, so it
+   scrolls away with the page. */
+@media (max-width: 899px) and (max-height: 500px) {
+  .topbar { position: static; }
+  html { scroll-padding-top: 8px; }
+}
+/* Stop is icon-only on a phone, and in a 900-1049px window, where its label (and the offline
+   notice) would squeeze the icon and Connect's state away beside the longer languages' tabs. */
+@media (max-width: 599px), (min-width: 900px) and (max-width: 1049px) {
   .stop-label {
     position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap;
   }
 }
-/* Offline in a 900-1049px window: the notice would squeeze the address away, so Stop is icon-only. */
 @media (min-width: 900px) and (max-width: 1049px) {
-  .top-actions .tag ~ button.small .stop-label {
-    position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
-    clip: rect(0 0 0 0); white-space: nowrap;
-  }
-  .top-actions .tag ~ button.small { padding: 0 9px; }
+  .top-actions button.small { padding: 0 9px; }
 }
-/* Tighter still: all five tabs fit at 360px (below that the bar scrolls inside itself). */
+/* Tighter still: with six tabs the bar may still scroll inside itself at 360px. */
 @media (max-width: 420px) {
   .topbar-in { padding: 0 12px; }
   .seg.nav { padding: 2px; gap: 0; }
   .nav .seg-opt { padding: 0 7px; gap: 4px; }
   .nav .tab-sep { margin: 0 1px; }
-  /* With the PS5's L2 / R2 beside the bar the five tabs still fit at 360px. */
+  /* With the PS5's L2 / R2 beside the bar the tabs tighten to 5px padding. */
   .nav.shoulders .seg-opt { padding: 0 5px; }
   .seg-wrap { gap: 4px; }
   button.shoulder { width: 24px; font-size: 10px; }
 }
-/* http build: the server's host:port right of the icon (its session's url), selectable to copy;
-   it ellipsizes before it pushes the tabs. --muted on --page 6.9:1. */
+/* Right of the icon: Connect's state, a grey .tag "Disconnected" or a .tag.green "Connected
+   (N devices)", as a button to the Connect tab; it ellipsizes before it pushes the tabs. */
 .brand-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.address {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 600 15px var(--mono); color: var(--fg-2); user-select: text; -webkit-user-select: text;
+.conn-btn {
+  display: flex; min-width: 0; height: auto; padding: 0; background: none; border: 0; cursor: pointer;
 }
-/* The address as a button that opens How to connect (the big QR code); it ellipsizes first. */
-.address-btn {
-  display: flex; justify-content: flex-start; gap: 8px; min-width: 0; height: auto; padding: 0;
-  background: none; border: 0; color: var(--muted); cursor: pointer;
-}
-.address-btn:hover:not(:disabled) { background: none; color: var(--fg-2); }
-.address-btn:hover .address { color: var(--fg); }
-.address-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 8px; }
+/* A block, not .tag's inline-flex, so the text itself ellipsizes; it shrinks with the button. */
+.conn-btn .tag { display: block; line-height: 22px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.conn-btn:hover:not(:disabled, [aria-disabled="true"]) { background: none; }
+.conn-btn:hover .tag:not(.green) { color: var(--fg); }
+.conn-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 999px; }
 /* The server's QR code: dark on white, crisp at any size. */
 img.qr { display: block; border-radius: 4px; image-rendering: pixelated; background: #fff; }
-.brand img { width: 30px; height: 30px; border-radius: 8px; box-shadow: 0 0 0 1px var(--line-hi), 0 4px 14px -6px rgba(255, 122, 47, 0.45); }
+/* A transparent emblem: no ring, and the glow follows its shape. */
+.brand img { width: 30px; height: 30px; filter: drop-shadow(0 3px 6px rgba(255, 122, 47, 0.45)); }
 
 /* ---------- Segmented controls (tabs, format picker) ---------- */
 .seg {
@@ -201,7 +238,8 @@ img.qr { display: block; border-radius: 4px; image-rendering: pixelated; backgro
 .count {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
-  background: #2f5bff; color: #fff; font-size: 11px; font-weight: 600; /* 5.2:1 */
+  /* One look on every tab and the Library: white with --page text (19:1). */
+  background: #fff; color: var(--page); font-size: 11px; font-weight: 600;
 }
 /* The LZ4 screen tab: a grey pill with four evenly spaced straps from the top-right to the
    bottom-left ("/", 135deg puts the bands across that diagonal). Static. Selected: brighter
@@ -218,7 +256,7 @@ img.qr { display: block; border-radius: 4px; image-rendering: pixelated; backgro
   --strap: var(--strap-hi); color: var(--lz4-ink-hi); background-color: var(--raise-hi); font-weight: 600;
   box-shadow: inset 0 0 0 1px var(--lz4-line), 0 1px 2px rgba(0, 0, 0, 0.4);
 }
-/* [Convert Edit] | LZ4 | Storage | About: dividers drawn between the groups (aria-hidden; the arrow
+/* [Convert Edit] | LZ4 | Storage | Connect | About: dividers drawn between the groups (aria-hidden; the arrow
    keys still move through every tab). */
 .tab-sep { flex: none; align-self: center; width: 1px; height: 16px; margin: 0 5px; background: var(--line-hi); }
 /* PS5 only: L2 / R2 trigger hints on either side of the tab bar, outside its pill. Buttons, but
@@ -230,7 +268,7 @@ button.shoulder {
   border: 1px solid var(--line-hi); border-radius: 8px 8px 5px 5px; background: var(--raise);
   color: var(--muted); font: 600 10.5px var(--mono); letter-spacing: 0.02em; cursor: pointer;
 }
-button.shoulder:hover:not(:disabled) { background: var(--raise-hi); color: var(--fg); }
+button.shoulder:hover:not(:disabled, [aria-disabled="true"]) { background: var(--raise-hi); color: var(--fg); }
 
 /* The format picker: one segment per format, the chosen one filled in its hue. */
 .seg.formats { display: flex; width: 100%; }
@@ -238,14 +276,16 @@ button.shoulder:hover:not(:disabled) { background: var(--raise-hi); color: var(-
 .seg-choice { flex: 1 1 auto; position: relative; min-width: 0; }
 .seg-choice .seg-opt { width: 100%; padding: 0 10px; }
 @media (max-width: 1000px) { .seg-choice .seg-opt { padding: 0 7px; } }
+/* A 320px phone: the longest labels (Japanese フォルダー) still fit their segment. */
+@media (max-width: 359px) { .seg-choice .seg-opt { padding: 0 3px; font-size: 12px; } }
 /* The image inside a .ffpfsc: a smaller picker under the format's one-liner. */
 .field.inner > .label { margin: 0 0 6px; margin-inline-start: 4px; }
 .seg.formats.inner { display: inline-flex; width: auto; max-width: 100%; flex-wrap: wrap; }
 @media (max-width: 599px) { .seg.formats.inner { border-radius: 16px; } }
 .field.inner > .hint { margin: 6px 0 0; margin-inline-start: 4px; }
 .seg-choice .seg-opt .icon { width: 15px; height: 15px; }
-/* The .ffpfsc compression level: a native range input in the accent colour. */
-.field.inner > .range-label { display: flex; justify-content: space-between; margin: 14px 4px 4px; }
+/* The .ffpfsc compression level and the LZ4 trace's room: a native range input in the accent colour. */
+.field.inner > .range-label, .field.lz4 > .range-label { display: flex; justify-content: space-between; margin: 14px 4px 4px; }
 .range-value { color: var(--fg); font-variant-numeric: tabular-nums; font-weight: 600; }
 .range { width: 100%; accent-color: var(--accent); cursor: pointer; }
 .range:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
@@ -264,6 +304,7 @@ button.shoulder:hover:not(:disabled) { background: var(--raise-hi); color: var(-
    listed under the picker). Format pickers keep each format's hue. */
 .lz4-y { --h: var(--lz4-ink); --h-bg: var(--lz4-tint); --h-line: var(--lz4-line); }
 .seg-choice.lz4-y:not(.on) .seg-opt { color: var(--lz4-soft); }
+.seg-choice.lz4-y:not(.on) input:not(:disabled) + .seg-opt:hover { color: var(--lz4-ink); }
 .seg-choice.lz4-y input:disabled + .seg-opt { opacity: 1; color: var(--muted); cursor: not-allowed; }
 
 /* ---------- Layout ---------- */
@@ -272,11 +313,8 @@ button.shoulder:hover:not(:disabled) { background: var(--raise-hi); color: var(-
   display: flex; flex-direction: column; gap: 16px;
 }
 @media (max-width: 599px) { .screen { padding: 12px 12px 24px; } }
-/* Convert, while a job queue shows: the screen is at least the rest of the window tall, so the
-   queue (.card.jobs) grows to the bottom instead of leaving blank space under short cards. If
-   the cards plus the queue's own minimum are taller than that, the screen grows past it and the
-   page scrolls, same as any other screen. */
-.screen.with-jobs { min-height: calc(100vh - var(--top)); }
+/* The one job list under Convert, Edit, LZ4 and Connect: its own screen right under theirs. */
+.screen.jobs-screen { padding-top: 0; }
 .cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 @media (min-width: 880px) {
@@ -321,7 +359,7 @@ button.shoulder:hover:not(:disabled) { background: var(--raise-hi); color: var(-
   background-image:
     radial-gradient(170% 140% at 100% 0%, var(--glow-1), transparent 72%),
     radial-gradient(90% 80% at 96% 0%, var(--glow-2), transparent 72%);
-  opacity: 0; transition: opacity 0.5s ease;
+  opacity: 0; transition: opacity 0.5s ease-out;
 }
 .card.hero.lit::before { opacity: 1; }
 .card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; min-height: 28px; }
@@ -343,14 +381,13 @@ button, a.button {
   background: var(--raise); color: var(--fg); font: inherit; font-weight: 500; white-space: nowrap;
   cursor: pointer;
 }
-button:hover:not(:disabled), a.button:hover { background: var(--raise-hi); }
+button:hover:not(:disabled, [aria-disabled="true"]), a.button:hover { background: var(--raise-hi); }
 a.button { text-decoration: none; }
-button:disabled { opacity: 0.42; cursor: default; }
-button.primary { background: #fff; color: #0e0e15; }
-button.primary:hover:not(:disabled) { background: #e4e4ee; }
-/* "How LZ4 works" wears the danger colours: experimental, read first. */
-button.danger, button.help-btn { background: rgba(255, 93, 93, 0.15); border-color: rgba(255, 93, 93, 0.35); color: #ff9b9b; }
-button.danger:hover:not(:disabled), button.help-btn:hover:not(:disabled) { background: rgba(255, 93, 93, 0.24); }
+button:disabled, button[aria-disabled="true"] { opacity: 0.42; cursor: default; }
+button.primary { background: #fff; color: var(--page); }
+button.primary:hover:not(:disabled, [aria-disabled="true"]) { background: #e4e4ee; }
+button.danger { background: var(--danger-tint); border-color: var(--danger-line); color: var(--danger-ink); }
+button.danger:hover:not(:disabled, [aria-disabled="true"]) { background: var(--danger-tint-hi); }
 button.small { height: 30px; padding: 0 12px; font-size: 12.5px; gap: 6px; }
 button.small .icon { width: 15px; height: 15px; }
 button.small.icon-only { width: 30px; padding: 0; }
@@ -361,7 +398,7 @@ input {
   font: inherit; font-size: 13px;
 }
 input.mono { font-family: var(--mono); font-size: 12px; }
-input::placeholder { color: var(--muted); font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+input::placeholder { color: var(--muted); font-family: var(--sans); }
 input[readonly] { color: var(--fg-2); }
 input[type="search"] { -webkit-appearance: none; appearance: none; }
 /* The About card's language picker, in its header: a muted label, then a native select drawn as a
@@ -374,11 +411,15 @@ select.lang-select {
   background: var(--inset) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239a9aae' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 10px center / 15px;
   -webkit-appearance: none; appearance: none; cursor: pointer;
 }
+select.lang-select:hover { background-color: var(--raise); }
 select.lang-select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 select.lang-select option { background: var(--card); color: var(--fg); }
 .field { margin-top: 12px; }
 .label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .label-row .label { margin: 0 0 0; margin-inline-start: 4px; }
+/* A label with a tag after it (Output's device). */
+.label-group { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.label-group .tag { display: block; line-height: 22px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .out-input { display: block; width: 100%; }
 /* A generated output name, whole (it wraps); its folder is the line below. */
 .out-box {
@@ -386,7 +427,7 @@ select.lang-select option { background: var(--card); color: var(--fg); }
   background: var(--inset); border: 1px solid var(--line-hi);
   font: 12px/16px var(--mono); color: var(--fg); overflow-wrap: break-word; overflow-wrap: anywhere;
 }
-.out-box > .muted { font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+.out-box > .muted { font: 13px var(--sans); }
 .out-dir { margin: 6px 0 0; margin-inline-start: 14px; color: var(--muted); font-size: 11.5px; }
 .label { display: block; font-size: 12.5px; color: var(--muted); }
 
@@ -413,9 +454,6 @@ select.lang-select option { background: var(--card); color: var(--fg); }
   padding: 10px 12px; border-radius: 12px; background: var(--inset); border: 1px solid var(--line);
 }
 .field.backport > .note-line, .field.verify > .note-line { margin-top: 8px; }
-.field.verify + button.link { margin-top: 8px; }
-/* The trace's room (image targets): a range in the box, like the .ffpfsc level. */
-.field.lz4 > .range-label { display: flex; justify-content: space-between; margin: 12px 4px 4px; }
 .field.lz4 > .hint, .field.lz4 .field > .hint { margin: 6px 0 0; margin-inline-start: 4px; }
 .field.lz4 > :first-child { margin-top: 0; }
 /* Get traces: the one download, its label (with the zip's name) wrapping in a narrow card. */
@@ -426,9 +464,9 @@ select.lang-select option { background: var(--card); color: var(--fg); }
 }
 .field.lz4 > .note-line { margin: 8px 0 0; margin-inline-start: 4px; }
 /* The LZ4 tab: why an action is off, under the action picker; the target picker's label. */
-.lz4-why { margin: 6px 0 0; }
-.target-label { margin: 14px 0 6px; margin-inline-start: 4px; }
-/* Trace, web build: the traces this source recorded, above the action picker. */
+p.lz4-why { margin: 6px 0 0; } /* p: over .hint's 2px, which comes later */
+.target-label { margin: 12px 0 6px; margin-inline-start: 4px; }
+/* Trace: the traces this source recorded, above the action picker (both builds; the web build adds the download). */
 .field.lz4.recorded > .label { margin: 0 0 2px; margin-inline-start: 4px; color: var(--fg-2); font-weight: 500; }
 /* Pack: the rules profile, folded under Traces. */
 .field.lz4 > details.fold.rules { margin-top: 10px; }
@@ -445,9 +483,9 @@ button.lock-btn {
   width: 30px; height: 30px; padding: 0; flex: none;
   background: var(--raise-hi); color: var(--fg); border-color: var(--line-hi);
 }
-button.lock-btn:hover:not(:disabled) { background: #3a3a49; }
+button.lock-btn:hover:not(:disabled, [aria-disabled="true"]) { background: #3a3a49; }
 button.lock-btn .icon { width: 15px; height: 15px; }
-/* Desktop's Choose… menu (Zip… / Folder…) under its button. */
+/* Desktop's Choose menu (Zip / Folder) under its button. */
 .menu-wrap { position: relative; display: inline-flex; }
 .menu-wrap > button .icon { width: 13px; height: 13px; margin-inline-end: -3px; }
 .menu {
@@ -459,7 +497,7 @@ button.lock-btn .icon { width: 15px; height: 15px; }
   height: 32px; justify-content: flex-start; padding: 0 10px; border-radius: 8px;
   background: transparent; font-size: 13px;
 }
-.menu > button:hover:not(:disabled) { background: var(--raise-hi); }
+.menu > button:hover:not(:disabled, [aria-disabled="true"]) { background: var(--raise-hi); }
 .menu > button:focus { outline-offset: -2px; }
 .menu > button .icon { width: 15px; height: 15px; color: var(--muted); }
 /* Where the scrolling container would clip it (ChooseMenu measures): above its button, or
@@ -472,21 +510,21 @@ button.lock-btn .icon { width: 15px; height: 15px; }
 
 .build-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
 .build-row .primary { height: 38px; padding: 0 22px; margin-inline-start: auto; }
-/* The LZ4 empty Source's Choose source…: yellow tint, ring and ink. */
+/* The LZ4 empty Source's Choose source: yellow tint, ring and ink. */
 button.lz4-btn { background: var(--lz4-tint); color: var(--lz4-ink); border-color: var(--lz4-line); font-weight: 600; }
-button.lz4-btn:hover:not(:disabled) { background: var(--lz4-tint-hi); }
+button.lz4-btn:hover:not(:disabled, [aria-disabled="true"]) { background: var(--lz4-tint-hi); }
 .menu-wrap > button.lz4-btn > .icon:first-child { width: 18px; height: 18px; margin: 0; }
 .desc { margin-top: 9px; font-size: 13px; }
-/* A note's leading "Recommended" / "Experimental" (Lead in Convert.tsx): text colour only,
+/* A note's leading "Recommended" / "Experimental" (Lead in target.tsx): text colour only,
    >= 9:1 on --card and --inset. */
 .lead-good { color: var(--good); }
 .lead-warn { color: var(--warn); }
-/* A quiet text button (e.g. "Compare formats" under the format's one-liner). */
+/* A quiet text button (e.g. LZ4's "Use the source's traces"). */
 button.link {
   height: auto; padding: 2px 4px; margin: 2px 0 0; margin-inline-start: -4px; gap: 6px; background: none;
   color: var(--accent-ink); font-size: 12.5px; font-weight: 500;
 }
-button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
+button.link:hover:not(:disabled, [aria-disabled="true"]) { background: none; text-decoration: underline; }
 button.link .icon { width: 15px; height: 15px; }
 
 /* ---------- Tags ---------- */
@@ -496,9 +534,9 @@ button.link .icon { width: 15px; height: 15px; }
   font-size: 12px; font-weight: 500; white-space: nowrap; flex: none;
 }
 .tag.fmt { background: var(--h-bg); color: var(--h); font-weight: 600; }
-.tag.blue { background: rgba(61, 107, 255, 0.18); color: #a3c0ff; }
-.tag.green { background: rgba(47, 210, 122, 0.14); color: #6fe3a3; }
-.tag.red { background: rgba(255, 93, 93, 0.15); color: #ff9b9b; }
+.tag.blue { background: var(--edit-tint); color: var(--edit-ink); }
+.tag.green { background: var(--done-tint); color: var(--done-ink); }
+.tag.red { background: var(--danger-tint); color: var(--danger-ink); }
 .tag.orange { background: rgba(255, 122, 47, 0.16); color: #ffad7a; }
 .tag.violet { background: rgba(160, 110, 255, 0.17); color: #c9b1ff; }
 
@@ -535,7 +573,7 @@ button.link .icon { width: 15px; height: 15px; }
   width: 46px; height: 46px; border-radius: 50%; margin-bottom: 4px;
   background: rgba(61, 107, 255, 0.16); color: var(--accent-ink);
 }
-.empty-icon.bad { background: rgba(255, 93, 93, 0.16); color: var(--bad); }
+.empty-icon.bad { background: var(--danger-tint); color: var(--bad); }
 .empty-icon .icon { width: 22px; height: 22px; }
 .empty-title { font-size: 16px; font-weight: 600; }
 .empty .muted { max-width: 380px; font-size: 13px; }
@@ -544,7 +582,6 @@ button.link .icon { width: 15px; height: 15px; }
 .empty.lz4 .empty-icon { background: var(--lz4-tint); color: var(--lz4-ink); }
 .empty.lz4 .row { margin-top: 8px; }
 .kinds { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin: 6px 0 12px; }
-/* Under the pickers: what an archive source may be. */
 /* An archive left locked (its password dialog cancelled): the reason and Enter password…. */
 .row.locked { margin-top: 12px; }
 
@@ -560,12 +597,20 @@ button.link .icon { width: 15px; height: 15px; }
 .title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
 .title { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: break-word; overflow-wrap: anywhere; margin-inline-end: 2px; }
 .title.pending { font-size: 16px; font-weight: 500; color: var(--muted); }
+/* Another device's name (freely chosen): ellipsized within the row, whole in its tip. */
+.title-row .tag.green { display: block; max-width: 100%; line-height: 22px; overflow: hidden; text-overflow: ellipsis; }
 .card > .bad { margin-top: 12px; }
 
 /* A path whose folder part ellipsizes while its last part (the name) always shows. */
 .pathline { display: flex; min-width: 0; font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
 .pathline .dir { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pathline .base { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* Touch shows no tooltip: a name too long for the line goes under its folder part (which
+   still ellipsizes) and wraps whole. */
+@media (pointer: coarse) {
+  .pathline { flex-wrap: wrap; }
+  .pathline .base { min-width: 0; white-space: normal; overflow-wrap: break-word; overflow-wrap: anywhere; }
+}
 .game-text .pathline { margin-top: 6px; }
 
 .summary { display: flex; flex-direction: column; gap: 12px; margin-top: 18px; }
@@ -577,7 +622,7 @@ button.link .icon { width: 15px; height: 15px; }
 }
 .tile {
   min-width: 0; padding: 12px 14px; border-radius: 12px;
-  background: var(--inset); border: 1px solid rgba(255, 255, 255, 0.04);
+  background: var(--inset); border: 1px solid var(--line-lo);
 }
 .tile dt { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
 .tile dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
@@ -585,8 +630,10 @@ button.link .icon { width: 15px; height: 15px; }
 .value.mono { font-size: 15px; font-weight: 500; }
 @media (max-width: 439px) { .tiles .value { font-size: 15px; } }
 .tile.wide { grid-column: 1 / -1; }
+/* A tag in a narrow tile ("in a .7z archive · 12.3 GB") wraps rather than run past it. */
+.tile dd .tag { white-space: normal; height: auto; min-height: 22px; max-width: 100%; padding: 2px 9px; }
 .tile.wide .value.mono { font-size: 14px; }
-.note { flex-basis: 100%; font-size: 11.5px; line-height: 1.35; color: var(--muted); }
+.note { flex-basis: 100%; margin: 0; font-size: 11.5px; line-height: 1.35; color: var(--muted); }
 /* A traced source (Forge's trace runtime, or a journal): the LZ4 (AMPR) tile in muted neon
    straps (lime, magenta, cyan; "/" like the LZ4 tab's), a lime ring and glow, the state in
    --neon-ink. Static; contrast in :root. */
@@ -615,7 +662,7 @@ button.link .icon { width: 15px; height: 15px; }
 .folds { display: flex; flex-direction: column; gap: 8px; }
 details.fold > summary {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 10px;
-  background: var(--inset); border: 1px solid rgba(255, 255, 255, 0.04);
+  background: var(--inset); border: 1px solid var(--line-lo);
   font-size: 13px; font-weight: 500; cursor: pointer; list-style: none;
 }
 details.fold > summary::-webkit-details-marker { display: none; }
@@ -636,9 +683,6 @@ ul.rows .row-title .path { color: var(--muted); }
 ul.rows > li > .muted { display: block; margin-top: 2px; font-size: 12px; }
 ul.scroll { max-height: 240px; overflow: auto; }
 
-.status-line { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; overflow-wrap: break-word; overflow-wrap: anywhere; }
-.status-line .icon { margin-top: 0; }
-.status-line .path { color: var(--fg-2); }
 ul.findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 ul.findings li {
   display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; border-radius: 10px;
@@ -647,7 +691,7 @@ ul.findings li {
 }
 ul.findings .icon { color: var(--warn); width: 17px; height: 17px; margin-top: 1px; }
 /* Fails every target. */
-ul.findings li.block { background: rgba(255, 93, 93, 0.08); border-color: rgba(255, 93, 93, 0.25); }
+ul.findings li.block { background: var(--danger-wash); border-color: var(--danger-ring); }
 ul.findings li.block .icon { color: var(--bad); }
 /* Only news (e.g. an image already in the fast-path layout). */
 ul.findings li.info { background: rgba(61, 107, 255, 0.07); border-color: rgba(120, 155, 255, 0.2); }
@@ -657,31 +701,40 @@ ul.findings li.info .icon { color: var(--accent-ink); }
 .build-notes { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .note-line { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .note-line .icon { width: 15px; height: 15px; margin-top: 1px; }
-.note-line.block { color: #ff9b9b; }
+.note-line.block { color: var(--danger-ink); }
 .note-line.warn { color: #ffcf8a; }
+.note-line.good { color: var(--done-ink); }
 .field-error { margin: 6px 0 0; margin-inline-start: 14px; font-size: 12px; }
 
 /* ---------- Jobs ---------- */
-/* Jobs: one card below the other cards, full width, a row per job (newest first). It fills the
-   rest of the window when short (see .screen.with-jobs) and grows with its rows: the page
-   scrolls, never a box inside it (a nested scroll traps the wheel and the PS5's cursor). */
+/* Jobs: one card below the other cards, full width, a row per job (newest first). It grows
+   with its rows: the page scrolls, never a box inside it (a nested scroll traps the wheel and the PS5's cursor). */
 .card.jobs {
   display: flex; flex-direction: column; flex: 1 1 auto; min-height: 240px;
-  padding: 12px 20px 4px;
+  padding: 20px 22px;
 }
 .card.jobs .card-head { margin-bottom: 2px; flex: none; }
 /* Positioned, so the rows' absolutely positioned bits (.visually-hidden) stay inside it. */
-.job-list { flex: 1; position: relative; }
+.job-list { flex: 1; position: relative; display: flex; flex-direction: column; gap: 10px; }
 .head-note { font-size: 12.5px; }
 /* A new job scrolls the page to itself: clear of the sticky header. */
-.job { padding: 8px 0 14px; scroll-margin: calc(var(--top) + 12px) 0 12px; }
-.job + .job { border-top: 1px solid var(--line); }
-/* An LZ4 tab job (pack, unpack, trace, unpatch): a yellow edge and its LZ4 tag. */
-.job.lz4 { padding-inline-start: 12px; box-shadow: inset 3px 0 0 var(--lz4-line); }
+.job {
+  padding: 12px 14px 14px; border-radius: 12px; background: var(--inset);
+  scroll-margin: calc(var(--top) + 12px) 0 12px;
+}
+/* The tile is the app's black (--inset, no edge ring; one ground for every job type): --muted on
+   it 6.9:1, --fg-2 12.6:1. What sits on --inset elsewhere (fold summaries, the checks list, the
+   path box) is on --card inside it, as a fold inside a dark well is; the log has no box. */
+.job details.fold > summary, .job ul.checks, .job .out-box.path-shown { background: var(--card); }
+/* Each type's tag in its own hue (the tile is the same for all): an LZ4 tab job (pack, unpack,
+   trace, unpatch), an edit or extract, a transfer. */
 .tag.lz4 { background: var(--lz4-tint); color: var(--lz4-ink); font-weight: 600; }
+.tag.edit { background: var(--edit-tint); color: var(--edit-ink); font-weight: 600; }
+.tag.transfer { background: var(--transfer-tint); color: var(--transfer-ink); font-weight: 600; }
 .job-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 10px; }
-.job-head > .tag { margin-top: 1px; }
-.job-name { flex: 1 1 160px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+/* Flex-start (the name wraps): the 22px tags and the name's first line centred on the 30px buttons. */
+.job-head > .tag { margin-top: 4px; }
+.job-name { flex: 1 1 160px; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 6px; }
 .job-name strong { font-size: 13.5px; font-weight: 600; line-height: 1.35; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .job-name .pathline { font-size: 11.5px; }
 /* The bar's wrapper. While the job runs, a soft light band sweeps its filled
@@ -720,14 +773,14 @@ ol.steps .sep { color: var(--muted); font-weight: 400; }
 ol.steps .icon { width: 13px; height: 13px; color: var(--good); margin-inline-end: -2px; }
 progress {
   display: block; width: 100%; height: 8px; border: 0; border-radius: 999px;
-  -webkit-appearance: none; appearance: none; background: #262633; overflow: hidden;
+  -webkit-appearance: none; appearance: none; background: var(--bar-track); overflow: hidden;
 }
-progress::-webkit-progress-bar { background: #262633; border-radius: 999px; }
+progress::-webkit-progress-bar { background: var(--bar-track); border-radius: 999px; }
 progress::-webkit-progress-value {
   border-radius: 999px;
-  background: linear-gradient(90deg, #232c8f, #3d6bff 70%, #a8bfff);
+  background: linear-gradient(90deg, var(--bar-lo), var(--accent) 70%, var(--bar-hi));
 }
-progress::-moz-progress-bar { border-radius: 999px; background: linear-gradient(90deg, #232c8f, #3d6bff 70%, #a8bfff); }
+progress::-moz-progress-bar { border-radius: 999px; background: linear-gradient(90deg, var(--bar-lo), var(--accent) 70%, var(--bar-hi)); }
 .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
 .meta strong { color: var(--fg); font-weight: 600; }
 .fold.verified > summary .icon { width: 15px; height: 15px; color: var(--good); }
@@ -737,33 +790,35 @@ ul.checks li > span { min-width: 0; }
 ul.checks .icon { width: 15px; height: 15px; color: var(--good); margin-top: 2px; }
 .error-box {
   margin-top: 14px; padding: 12px 14px; border-radius: 12px;
-  background: rgba(255, 93, 93, 0.08); border: 1px solid rgba(255, 93, 93, 0.25);
-  color: #ffb4b4; font-size: 13px; white-space: pre-wrap; overflow-wrap: break-word; overflow-wrap: anywhere;
+  background: var(--danger-wash); border: 1px solid var(--danger-ring);
+  color: var(--danger-text); font-size: 13px; white-space: pre-wrap; overflow-wrap: break-word; overflow-wrap: anywhere;
 }
-.error-title { display: block; margin-bottom: 2px; color: #ffd6d6; font-weight: 600; white-space: normal; }
+.job > .note-line { margin: 12px 0 0; white-space: pre-wrap; }
+.error-title { display: block; margin-bottom: 2px; color: var(--danger-title); font-weight: 600; white-space: normal; }
 .job details.fold { margin-top: 10px; }
 .job details.fold > summary { padding: 5px 10px; font-size: 12.5px; }
 pre.log, pre.code {
   margin: 0; font: 12px/1.5 var(--mono); color: var(--fg-2);
   white-space: pre-wrap; overflow-wrap: break-word; overflow-wrap: anywhere;
 }
-pre.log {
-  max-height: 240px; overflow: auto; padding: 12px 14px; border-radius: 10px;
-  background: #0a0a10; border: 1px solid var(--line);
-}
+/* A job's log: its lines straight on the tile, no box of their own (the fold's summary heads it). */
+pre.log { max-height: 240px; overflow: auto; overscroll-behavior: contain; padding: 4px 10px; border-radius: 10px; }
 
 /* ---------- Edit ---------- */
 /* The explorer card: beside the game card from 880px it fits the window (48px: the screen's
    16px top and 32px bottom padding, so the page itself doesn't scroll) and its well scrolls
    inside it; narrower, the well is capped at 60vh. */
 .explorer { display: flex; flex-direction: column; padding: 16px 18px; }
+/* Positioned, so the rows' .visually-hidden text scrolls with them. */
 .explorer-well {
-  flex: 1; min-height: 0; max-height: 60vh; overflow: auto;
-  border-radius: 12px; background: var(--inset); border: 1px solid rgba(255, 255, 255, 0.04);
+  flex: 1; min-height: 0; max-height: 60vh; overflow: auto; overscroll-behavior: contain; position: relative;
+  border-radius: 12px; background: var(--inset); border: 1px solid var(--line-lo);
 }
+/* The list keeps room for a few rows: a tall pending bar scrolls instead (from 880px). */
 @media (min-width: 880px) {
   .explorer { position: sticky; top: calc(var(--top) + 16px); height: calc(100vh - var(--top) - 48px); min-height: 360px; }
-  .explorer-well { max-height: none; }
+  .explorer-well { max-height: none; min-height: 160px; }
+  .explorer > .pending-bar { max-height: 45%; overflow: auto; flex: none; }
 }
 .explorer-note { margin: 0 0 10px; color: var(--fg-2); }
 .explorer-nav { align-items: flex-start; margin-bottom: 10px; }
@@ -771,7 +826,8 @@ pre.log {
 .explorer-nav .crumbs { margin: 5px 0 0; max-height: 64px; }
 .crumb { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .filter { margin-bottom: 10px; }
-.count-text { font-size: 12.5px; white-space: nowrap; padding-inline-end: 4px; }
+/* A long "Drop to add to <path>" is cut short (the row's highlight shows the target), so the filter keeps its room. */
+.count-text { font-size: 12.5px; white-space: nowrap; padding-inline-end: 4px; min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
 /* One row per entry: name (wraps anywhere), size, the actions' column (Rename, Delete, open). */
 .xrow {
   display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(30px, auto); align-items: center; gap: 10px;
@@ -781,37 +837,45 @@ pre.log {
 .xrow:last-child { border-bottom: 0; }
 .xrow.head {
   position: sticky; top: 0; z-index: 1; min-height: 32px; background: var(--inset);
-  color: var(--muted); font-size: 12px; font-weight: 500;
+  color: var(--muted); font-size: 12.5px; font-weight: 500;
 }
 .xrow[data-path]:hover { background: rgba(255, 255, 255, 0.03); }
 /* The focused row, also for a mouse click (which shows no focus ring). */
 .xrow[data-path]:focus { background: rgba(255, 255, 255, 0.05); }
 /* An empty folder: the grid itself holds focus (Backspace still goes up). */
 .xgrid:focus { outline: none; }
+/* A double tap opens a folder row (dblclick) instead of zooming the page. */
+.xgrid { touch-action: manipulation; }
 .xgrid:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 12px; }
 .xrow[data-path]:focus { outline: none; }
 .xrow[data-path]:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 6px; }
-.xrow.dir { cursor: pointer; }
 .xname { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .xname .icon { flex: none; width: 16px; height: 16px; color: var(--muted); }
 .xrow.dir .xname .icon { color: var(--accent-ink); }
 .xlabel { min-width: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .xsize { text-align: end; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
-.xrow.head .xsize { text-align: end; }
 button.xopen { background: transparent; color: var(--muted); }
-button.xopen:hover:not(:disabled) { background: var(--raise); color: var(--fg); }
+button.xopen:hover:not(:disabled, [aria-disabled="true"]) { background: var(--raise); color: var(--fg); }
 button.xopen .icon { transform: rotate(-90deg); }
 .xact { display: flex; justify-content: flex-end; gap: 2px; }
 /* Every row's action column fits its buttons, so sizes line up: Extract and open (an archive),
    or Rename, Extract, Delete and open. */
 .xgrid.extractable .xrow { grid-template-columns: minmax(0, 1fr) auto 62px; }
 .xgrid.editable .xrow { grid-template-columns: minmax(0, 1fr) auto 126px; }
+/* Finger sized buttons (40px): Extract and open still fit; Edit's four take their own line under
+   the name, as they do under 600px (the File explorer's rule below). */
+@media (pointer: coarse) { .xgrid.extractable .xrow { grid-template-columns: minmax(0, 1fr) auto 82px; } }
+@media (max-width: 599px), (pointer: coarse) {
+  .xgrid.editable .xrow { grid-template-columns: minmax(0, 1fr) auto; }
+  .xgrid.editable .xact { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; }
+  .xgrid.editable .xrow.head .xact { display: none; }
+}
 button.xbtn, button.xbtn.danger { background: transparent; border-color: transparent; color: var(--muted); }
-button.xbtn:hover:not(:disabled) { background: var(--raise); color: var(--fg); }
-button.xbtn.danger:hover:not(:disabled) { background: rgba(255, 93, 93, 0.15); color: #ff9b9b; }
+button.xbtn:hover:not(:disabled, [aria-disabled="true"]) { background: var(--raise); color: var(--fg); }
+button.xbtn.danger:hover:not(:disabled, [aria-disabled="true"]) { background: var(--danger-tint); color: var(--danger-ink); }
 /* A change's badge after the name; 20px so a row keeps its height. */
 .tag.xmark { height: 20px; padding: 0 8px; font-size: 11.5px; }
-/* Rename / New folder: the name typed in place, its reason under it. */
+/* Rename: the name typed in place, its reason under it. */
 .xedit { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .xinput { height: 30px; padding: 0 12px; font-family: var(--mono); font-size: 12px; width: 100%; }
 .xedit .field-error { margin-inline-start: 12px; }
@@ -828,14 +892,14 @@ button.xbtn.danger:hover:not(:disabled) { background: rgba(255, 93, 93, 0.15); c
   background: rgba(61, 107, 255, 0.10); border: 1px solid rgba(61, 107, 255, 0.35);
 }
 .pending-head { gap: 8px; align-items: center; flex-wrap: wrap; }
-.pending-head > .icon { width: 16px; height: 16px; color: #a3c0ff; flex: none; }
+.pending-head > .icon { width: 16px; height: 16px; color: var(--edit-ink); flex: none; }
 .pending-head b { font-size: 13px; font-weight: 600; min-width: min(14em, 60%); }
 .pending-bar > .note-line { margin: 8px 0 0; }
 .pending-bar details.fold { margin-top: 6px; }
 ol.changes { margin: 6px 0 0; padding: 6px 10px; padding-inline-start: 30px; max-height: 200px; font-size: 12.5px; }
 ol.changes > li { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
 ol.changes .path { font-size: 12px; }
-.change-from { font-size: 12px; }
+.change-from { font-size: 12.5px; }
 /* How the changes go in (core's check): a tag and a line, the choice when both ways work, core's
    findings; then the uploads' bar and Apply's error. */
 .edit-mode { margin-top: 10px; font-size: 13px; }
@@ -843,14 +907,18 @@ ol.changes .path { font-size: 12px; }
 .edit-mode > * + * { margin-top: 6px; }
 .edit-mode-line .tag { margin-inline-end: 4px; }
 .edit-mode-text { font-size: 12.5px; }
-.edit-checking { font-size: 12px; }
-.edit-why { margin: 4px 0 0; padding: 6px 10px; border-radius: 8px; background: var(--inset); font-size: 12px; max-height: 160px; overflow: auto; }
-.mode-hue { --h: var(--accent-ink); --h-bg: rgba(61, 107, 255, 0.2); --h-line: rgba(157, 182, 255, 0.5); }
+/* Its line is kept while the answer stands (hidden text then), so the bar doesn't jump on a change. */
+.edit-checking { position: relative; font-size: 12.5px; min-height: 1.2em; }
+.edit-why { margin: 4px 0 0; padding: 6px 10px; border-radius: 8px; background: var(--inset); font-size: 12.5px; max-height: 160px; overflow: auto; }
 /* Both modes offered: In place in the Done green, Rebuild in the Failed red (.tag.green / .tag.red). */
-.mode-hue.mode-green { --h: #6fe3a3; --h-bg: rgba(47, 210, 122, 0.14); --h-line: rgba(111, 227, 163, 0.5); }
-.mode-hue.mode-red { --h: #ff9b9b; --h-bg: rgba(255, 93, 93, 0.15); --h-line: rgba(255, 155, 155, 0.5); }
+.mode-hue.mode-green { --h: var(--done-ink); --h-bg: var(--done-tint); --h-line: rgba(111, 227, 163, 0.5); }
+.mode-hue.mode-red { --h: var(--danger-ink); --h-bg: var(--danger-tint); --h-line: rgba(255, 155, 155, 0.5); }
 /* Unchosen too: each option's text keeps its hue (the user's In place green / Rebuild red). */
 .mode-hue.mode-green .seg-opt, .mode-hue.mode-red .seg-opt { color: var(--h); }
+/* Unchosen, the hue hides .seg-opt:hover's brighter text: the tint shows the hover; disabled keeps
+   its hue and doesn't react. */
+.mode-hue:not(.on) input:not(:disabled) + .seg-opt:hover { background: var(--h-bg); }
+.mode-hue input:disabled + .seg-opt:hover { color: var(--h); }
 .upload-line { margin-top: 10px; font-size: 12.5px; }
 .upload-line progress { width: 100%; display: block; margin-bottom: 6px; }
 .upload-line .row { gap: 8px; align-items: center; }
@@ -860,12 +928,13 @@ ol.changes .path { font-size: 12px; }
 /* The conflict question: the colliding names in a scrolling box. */
 .modal p.conflict-in { margin: 12px 0 6px; }
 .conflict-names { max-height: 160px; margin: 0; }
+[dir="rtl"] .conflict-names > li { text-align: right; }
 /* The card's folds: long contents scroll in their own box. */
 .game-folds { margin-top: 12px; }
-.fold-box { max-height: 320px; overflow: auto; border-radius: 10px; background: var(--inset); border: 1px solid var(--line); }
+.fold-box { max-height: 320px; overflow: auto; overscroll-behavior: contain; border-radius: 10px; background: var(--inset); border: 1px solid var(--line); }
 details.fold > .summary { margin-top: 10px; }
 /* How this works: the empty state's right side. */
-.how p { margin: 0 0 10px; color: var(--fg-2); font-size: 13px; line-height: 1.55; max-width: 620px; }
+.how p { margin: 0 0 10px; color: var(--fg-2); font-size: 13px; line-height: 1.55; }
 .how p:last-child { margin-bottom: 0; color: var(--muted); }
 pre.code { padding: 14px 16px; }
 
@@ -874,23 +943,25 @@ pre.code { padding: 14px 16px; }
    backdrop scrolls, and the dialog's auto margins centre it only while it fits. */
 .modal-backdrop {
   position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 10; padding: 16px;
-  display: flex; overflow-y: auto;
+  display: flex; overflow-y: auto; overscroll-behavior: contain;
   background: rgba(5, 5, 10, 0.62);
   -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
 }
+/* The pairing prompt: over dialogs opened after it too (Connect.tsx `PairPrompt`). */
+.pair-layer { position: relative; z-index: 11; }
 .modal { width: 440px; max-width: 100%; margin: auto; padding: 22px 24px; }
 .modal-head { display: flex; align-items: center; gap: 10px; min-height: 28px; }
-.modal-head h2 { font-size: 16px; font-weight: 600; }
+.modal-head h2 { min-width: 0; font-size: 16px; font-weight: 600; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .modal p { margin: 10px 0 20px; font-size: 13.5px; }
 /* The delete question's path, whole (it wraps). */
 .modal p.out-box { margin: 14px 0 0; font-size: 12px; }
-.deleted-note { margin: 0 4px; font-size: 12.5px; }
+.source-note { margin: 0 4px; font-size: 12.5px; }
 /* The password question: the delete question's frame; its text (red once a password failed)
    over a full-width input. */
 .modal.password p#pw-text { margin: 12px 0 10px; }
 .pw-input { display: block; width: 100%; margin-bottom: 20px; }
 /* LZ4's "How LZ4 works": the quit modal's frame, wider; the body scrolls, title and Close stay. */
-.modal.help { width: 560px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
+.modal.help { width: 560px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); }
 .head-icon.lz4 { color: var(--lz4-ink); }
 .help-body { overflow-y: auto; min-height: 0; margin: 12px -24px 16px; padding: 0 24px; }
 .help-body:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 8px; }
@@ -899,6 +970,9 @@ pre.code { padding: 14px 16px; }
 .help-body ol { margin: 12px 0 0; padding-inline-start: 20px; font-size: 13px; color: var(--fg-2); }
 .help-body li + li { margin-top: 6px; }
 .help-body b { color: var(--fg); font-weight: 600; }
+/* How to connect: short paragraphs only, evenly apart. */
+.modal .connect-help > p { margin: 0 0 12px; }
+.modal .connect-help > p:last-child { margin-bottom: 0; }
 .quit-jobs { list-style: none; margin: 14px 0 0; padding: 4px 14px; border-radius: 12px; background: var(--inset); }
 .quit-jobs li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; padding: 8px 0; font-size: 13px; }
 .quit-jobs li + li { border-top: 1px solid var(--line); }
@@ -928,12 +1002,12 @@ pre.code { padding: 14px 16px; }
   position: fixed; right: 24px; bottom: 24px; z-index: 8; width: 360px; max-width: calc(100% - 48px);
   padding: 16px 18px;
   /* Green: the semantic "Done" green (.tag.green), a tint over the card and a ring. */
-  background: linear-gradient(rgba(47, 210, 122, 0.14), rgba(47, 210, 122, 0.14)), var(--card);
+  background: linear-gradient(var(--done-tint), var(--done-tint)), var(--card);
   box-shadow: inset 0 0 0 1px rgba(47, 210, 122, 0.45), 0 18px 44px -16px rgba(0, 0, 0, 0.9);
 }
-.update-toast .head-icon:not(.warn), .update-title { color: #6fe3a3; }
-.update-toast button.primary { background: #6fe3a3; color: #0e0e15; }
-.update-toast button.primary:hover:not(:disabled) { background: #8debb8; }
+.update-toast .head-icon:not(.warn), .update-title { color: var(--done-ink); }
+.update-toast button.primary { background: var(--done-ink); color: var(--page); }
+.update-toast button.primary:hover:not(:disabled, [aria-disabled="true"]) { background: #8debb8; }
 [dir="rtl"] .update-toast { right: auto; left: 24px; }
 .update-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
 .update-title { font-size: 14px; font-weight: 600; overflow-wrap: break-word; overflow-wrap: anywhere; min-width: 0; }
@@ -941,6 +1015,8 @@ pre.code { padding: 14px 16px; }
 .update-toast .row { margin-top: 14px; }
 @media (max-width: 599px) {
   .update-toast, [dir="rtl"] .update-toast { right: 12px; left: 12px; bottom: 12px; width: auto; max-width: none; }
+  /* Room under the screens while it shows, so their last controls scroll out from under it. */
+  .app:has(> .update-toast) > main { padding-bottom: 160px; }
 }
 
 /* Edit odds and ends. */
@@ -952,57 +1028,78 @@ pre.code { padding: 14px 16px; }
 .card-head h2[tabindex]:focus { outline-color: rgba(157, 182, 255, 0.4); outline-offset: 4px; border-radius: 6px; }
 
 /* ---------- About ---------- */
-.table-wrap { overflow-x: auto; border-radius: 12px; background: var(--inset); border: 1px solid rgba(255, 255, 255, 0.04); }
-table.compare { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-table.compare th, table.compare td { padding: 10px 10px; text-align: start; vertical-align: top; border-bottom: 1px solid var(--line); }
-table.compare tbody tr:last-child > * { border-bottom: 0; }
-table.compare thead th { color: var(--muted); font-weight: 500; white-space: nowrap; }
-table.compare tbody th { font-weight: 500; min-width: 150px; }
-table.compare .tagline { display: block; margin-top: 6px; color: var(--fg-2); font-size: 12px; }
+/* The language label wraps under a narrow head rather than pushing the select off the card. */
+.card-head .head-lang { flex-wrap: wrap; }
+/* The features: nine inset tiles in three sets of three, told apart by order and a wider gap only.
+   Wide: a set per column (column flow), three equal rows across the card; mid: a set per row,
+   three tiles a row; a phone: one tile a row, a wider gap before each set. */
+.feat-tiles { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
+.feat-tile {
+  display: flex; align-items: flex-start; gap: 12px; min-width: 0; padding: 12px 14px; border-radius: 12px;
+  background: var(--inset); border: 1px solid var(--line);
+}
+.feat-tile > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.feat-tile b { font-size: 13.5px; font-weight: 600; color: var(--fg); overflow-wrap: break-word; overflow-wrap: anywhere; }
+.feat-tile > div > span { font-size: 12.5px; line-height: 1.45; color: var(--fg-2); overflow-wrap: break-word; overflow-wrap: anywhere; }
+.feat-tile > div > span b { font-size: inherit; }
+.feat-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; border-radius: 50%; background: var(--edit-tint); color: var(--accent-ink);
+}
+.feat-icon .icon { width: 16px; height: 16px; }
+@media (max-width: 599px) {
+  .feat-tile:nth-child(3n + 4) { margin-top: 6px; }
+}
+@media (min-width: 600px) and (max-width: 999px) {
+  .feat-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 16px 8px; }
+}
+@media (min-width: 1000px) {
+  .feat-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(3, 1fr);
+    grid-auto-flow: column; gap: 8px 16px;
+  }
+}
+
+/* Compare formats: one row per format (what it is | console speed | size on disk), edged in the
+   format's hue (.fmt-*). From 760px a heading row names the columns; under it the rows stack and
+   each rating shows its own label (.fmt-q) while the heading row is only read. Positioned, so
+   the hidden heading row stays inside it. */
+.fmt-table { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.fmt-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px 16px; }
+.fmt-row:not(.fmt-head) {
+  align-items: start; padding: 12px 14px; border-radius: 12px; background: var(--inset);
+  box-shadow: inset 0 0 0 1px var(--line); border-inline-start: 3px solid var(--h-line);
+}
+.fmt-head {
+  position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+.fmt-what { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.fmt-what .tagline { font-size: 12.5px; color: var(--fg-2); }
+.fmt-rate { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; font-size: 12.5px; }
+.fmt-q { font-size: 11.5px; color: var(--muted); }
+@media (min-width: 760px) {
+  .fmt-row { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); }
+  .fmt-head {
+    position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; white-space: normal;
+    padding: 0 14px; padding-inline-start: 17px; font-size: 12.5px; color: var(--muted);
+  }
+  .fmt-q { display: none; }
+}
 /* A rated cell: tint + icon (✓ good, – trade-off, ✕ drawback) + text; every text >= 8.9:1 on the inset. */
 .chip {
   display: inline-flex; align-items: flex-start; gap: 6px; padding: 4px 8px; border-radius: 8px;
-  line-height: 1.35; background: rgba(255, 255, 255, 0.06); color: #c4c4d2;
+  line-height: 1.35;
 }
 .chip .icon { width: 13px; height: 13px; margin-top: 2px; }
-.chip.good { background: rgba(47, 210, 122, 0.12); color: #86e8b0; }
-.chip.ok { background: rgba(255, 181, 71, 0.12); color: #ffd28f; }
-.chip.bad { background: rgba(255, 93, 93, 0.13); color: #ffaaaa; }
-/* Under the table: what the LZ4 row's numbers are, and the LZ4 credits (URLs as text to copy:
-   neither the app nor the console page navigates away). */
-.about-text { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--fg-2); }
-.about-text b { color: var(--fg); font-weight: 600; }
-ul.about-text.features { margin: 10px 0 0; padding-inline-start: 20px; }
-ul.features li + li { margin-top: 4px; }
-/* The address to type: bold and a step above the text around it (About, How to connect). */
-.path.url { font-size: 1.15em; font-weight: 700; color: var(--fg); }
-/* About (http build): the About card and How to connect as two cards on one row, the same
-   height; stacked when narrow. How to connect centres its QR code and line. */
-.about-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-@media (min-width: 880px) { .about-row { grid-template-columns: minmax(0, 1fr) 300px; } }
-.about-connect { display: flex; flex-direction: column; align-items: center; text-align: center; }
-.about-connect .card-head { align-self: stretch; text-align: center; }
-/* A longer title (Russian) wraps in the 300px column instead of running off the card. */
-.about-connect .card-head h2 { flex: 1 1 0; min-width: 0; }
-.about-connect img.qr { padding: 10px; border-radius: 12px; margin: auto 0 12px; }
-.about-connect p.about-text { margin-bottom: auto; }
-/* How to connect (the header's dialog): the QR code over one line of text. The white border is
-   the code's quiet zone against the dark card. */
-.connect { display: flex; flex-direction: column; align-items: center; gap: 20px; margin: 16px 0; }
-.connect img.qr { padding: 10px; border-radius: 12px; }
-.modal p.connect-text { margin: 0; font-size: 16px; line-height: 1.55; color: var(--fg-2); text-align: center; }
-.connect-text b { color: var(--fg); font-weight: 600; }
-.credits { margin-top: 14px; font-size: 12px; }
-.credits .path { color: var(--fg-2); user-select: text; }
-/* Narrow windows (900 px minimum): all three columns fit, no hidden sideways scroll. */
-@media (max-width: 1000px) {
-  table.compare { font-size: 12px; }
-  table.compare th, table.compare td { padding: 8px 5px; }
-  table.compare thead th { white-space: normal; }
-  table.compare tbody th { min-width: 96px; }
-  .chip { padding: 3px 6px; gap: 4px; }
-  .chip .icon { width: 12px; height: 12px; }
-}
+.chip.good { background: var(--rate-good-tint); color: var(--rate-good-ink); }
+.chip.ok { background: var(--rate-ok-tint); color: var(--rate-ok-ink); }
+.chip.bad { background: var(--rate-bad-tint); color: var(--rate-bad-ink); }
+
+/* Credits: what the LZ4 row's numbers are and the bundled projects (URLs as text to copy). */
+.credit-list { margin: 0; padding-inline-start: 18px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.credit-list li + li { margin-top: 6px; }
+.credit-list .path { color: var(--fg-2); user-select: text; }
 
 /* ---------- http build (PS5 web UI) ---------- */
 /* The header's right column: an offline notice and "Stop Dump Forge". */
@@ -1014,20 +1111,22 @@ ul.features li + li { margin-top: 4px; }
   width: 32px; height: 32px; padding: 0; border-radius: 999px; border: 0;
   background: none; color: var(--muted);
 }
-.gh-link:hover, button.gh-link:hover:not(:disabled) { background: var(--raise); color: var(--fg); }
+.gh-link:hover, button.gh-link:hover:not(:disabled, [aria-disabled="true"]) { background: var(--raise); color: var(--fg); }
 .gh-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .gh-link .icon { width: 20px; height: 20px; }
 /* A finished job's output path, shown selected to copy (no clipboard over plain HTTP). */
 .out-box.path-shown { margin-top: 10px; color: var(--fg-2); }
 /* The folder browser: the quit modal's frame, wider, its list in an inset well. */
-.modal.picker { width: 560px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
+.modal.picker { width: 560px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); }
 /* A deep path's crumbs scroll inside themselves: the list and Choose this folder stay on screen. */
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin: 12px 0 10px; font: 12px var(--mono); flex: 0 1 auto; min-height: 20px; overflow-y: auto; }
 .crumbs button.link { margin: 0; padding: 2px; font: inherit; white-space: normal; overflow-wrap: break-word; overflow-wrap: anywhere; text-align: start; }
 .crumbs .here { color: var(--fg); overflow-wrap: break-word; overflow-wrap: anywhere; }
+/* A phone: the crumbs keep to about a line, so the list keeps the dialog's room. */
+@media (max-width: 599px) { .modal.picker .crumbs { max-height: 48px; } }
 ul.rows.pick-list {
-  flex: 0 1 auto; min-height: 120px; max-height: 420px; overflow: auto;
-  border-radius: 12px; background: var(--inset); border: 1px solid rgba(255, 255, 255, 0.04);
+  flex: 0 1 auto; min-height: 120px; max-height: 420px; overflow: auto; overscroll-behavior: contain;
+  border-radius: 12px; background: var(--inset); border: 1px solid var(--line-lo);
 }
 ul.rows.pick-list > li { padding: 0; }
 ul.rows.pick-list > li.muted { padding: 12px; }
@@ -1036,43 +1135,69 @@ button.pick-row {
   justify-content: flex-start; text-align: start; white-space: normal;
   background: transparent; font-size: 13px; font-weight: 400;
 }
-button.pick-row:hover:not(:disabled) { background: var(--raise); }
+button.pick-row:hover:not(:disabled, [aria-disabled="true"]) { background: var(--raise); }
 button.pick-row:focus { outline-offset: -2px; }
 button.pick-row .icon { color: var(--muted); }
 /* A file selected for "Choose N files": tinted, ringed, and a check in place of its icon. */
-button.pick-row.chosen { background: rgba(61, 107, 255, 0.16); box-shadow: inset 0 0 0 1px rgba(61, 107, 255, 0.45); }
-button.pick-row.chosen .icon { color: #a3c0ff; }
+button.pick-row.chosen { background: var(--view-files-tint); box-shadow: inset 0 0 0 1px var(--view-files-line); }
+button.pick-row.chosen .icon { color: var(--view-files-ink); }
 .pick-name { flex: 1; min-width: 0; overflow-wrap: break-word; overflow-wrap: anywhere; }
 .pick-name.mono { font-size: 12px; }
 button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; }
 .modal p.pick-error { margin: 10px 0 0; font-size: 12.5px; }
 .pick-foot { margin-top: 16px; }
+/* The picker's device tabs (This device, each online peer or NAS): the Storage view switch's size. */
+.seg.pick-tabs { display: flex; flex-wrap: wrap; align-self: flex-start; max-width: 100%; padding: 2px; margin-top: 12px; border-radius: 16px; }
+.pick-tabs .seg-opt { display: block; line-height: 26px; height: 26px; padding: 0 12px; font-size: 12.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.pick-tabs .seg-opt:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.pick-foot .pick-native { margin-inline-end: auto; }
+/* Crumbs, list and error: the selected tab's panel, laid out as the dialog's own column. */
+.pick-panel { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; }
 
 /* ---------- Library ---------- */
-.library { display: flex; flex-direction: column; min-width: 0; }
-.library-head {
-  padding-bottom: 12px;
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
-}
-.library-head h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; font-weight: 600; }
-.library-head h2 .icon { width: 20px; height: 20px; color: var(--library-ink); }
-.library-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-inline-start: auto; }
+.library { min-width: 0; }
 .library-empty { margin: 8px 0; }
+/* Core's messages and deleted paths: a long path has no space to break at. */
+.library-msg, .library-empty p, .library-busy span:not(.spinner) { overflow-wrap: break-word; overflow-wrap: anywhere; min-width: 0; }
+/* Under the head: the count (and, on a computer, the folder), the PS5's free space. */
+.library-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+.library-count { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; min-width: 0; max-width: 100%; }
+.library-count b { color: var(--fg-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.library-count .pathline { flex: 0 1 auto; max-width: 100%; margin: 0; }
+/* Kind chips: pills with a count, quiet until chosen; the chosen one takes its kind's hue
+   (.fmt-* for formats, LZ4 yellow, Additional content plain raised), All the Library green. */
+.kind-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+button.kind-chip {
+  height: 28px; padding: 0 10px; gap: 6px; font-size: 12.5px; color: var(--fg-2);
+  background: transparent; border: 1px solid var(--line-hi);
+}
+button.kind-chip:not([aria-pressed="true"]):hover:not(:disabled, [aria-disabled="true"]) { background: var(--raise); color: var(--fg); }
+.kind-chip .n { color: var(--muted); font-variant-numeric: tabular-nums; font-weight: 500; }
+button.kind-chip[aria-pressed="true"] { font-weight: 600; border-color: transparent; background: var(--h-bg); color: var(--h); box-shadow: inset 0 0 0 1px var(--h-line); }
+button.kind-chip[aria-pressed="true"] .n { color: inherit; }
+button.kind-chip.all { --h: var(--library-ink-hi); --h-bg: var(--view-lib-tint); --h-line: var(--library-line); }
+button.kind-chip.lz4 { --h: var(--lz4-ink); --h-bg: var(--lz4-tint); --h-line: var(--lz4-line); }
+button.kind-chip.addon { --h: var(--fg); --h-bg: var(--raise-hi); --h-line: var(--line-hi); }
+/* The File explorer's chosen folder in its head. */
 .library-folder { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 320px; }
 .library-views { display: inline-flex; gap: 4px; }
+.storage-actions .library-views { padding-inline-start: 6px; border-inline-start: 1px solid var(--line-hi); }
 .library-views button[aria-pressed="true"] {
   color: var(--library-ink-hi); background: var(--raise-hi); box-shadow: inset 0 0 0 1px var(--library-line);
 }
+/* Under the head, the count line and the chips: the well keeps to the window, but is never
+   shorter than one card row and the top of the next (--fit, measured by Library.tsx; 28px:
+   its padding), so a short window scrolls the page instead. */
 .library-well {
-  margin-top: 4px; padding: 14px; border-radius: 12px; background: var(--inset);
-  max-height: calc(100vh - var(--top) - 150px); min-height: 160px; overflow: auto;
+  margin-top: 0; padding: 14px; border-radius: 12px; background: var(--inset);
+  max-height: calc(100vh - var(--top) - 250px); min-height: max(160px, calc(var(--fit, 0px) + 28px)); overflow: auto;
 }
 @media (max-width: 899px) { .library-well { max-height: none; overflow: visible; } }
 .library-well:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .library-busy { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 48px 0; }
-.library-msg { margin: 0 0 10px; }
+.library-msg { margin: 0 0 10px; font-size: 12.5px; }
 .library-msg .tag { white-space: normal; height: auto; min-height: 22px; padding: 2px 9px; }
-.library-note { margin: 12px 0 0; font-size: 12px; }
+.library-note { margin: 12px 0 0; font-size: 12.5px; }
 .library-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
 .library-card { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 14px; background: var(--card); min-width: 0; }
 /* Square without aspect-ratio (Safari 14, older PS5 WebKit): a padding-top box holds the cover. */
@@ -1083,18 +1208,35 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
 .library-card .pathline { margin: 4px 0 0; }
 .head-actions > .danger.icon-only { margin-inline-start: 8px; }
 .library-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; }
-.library-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
+/* At the 240px card minimum a long tag wraps the actions to their own line, at the end. */
+.library-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 8px; margin-top: auto; }
+.library-foot .library-actions { margin-inline-start: auto; }
 .library-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .library-actions { display: inline-flex; gap: 6px; }
 .library-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.library-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 12px; border-radius: 12px; background: var(--card); min-width: 0; }
-.library-row .library-cover { width: 48px; height: 48px; border-radius: 8px; }
+/* Compact rows: cover | name + ID, version, tags | format pill | path | actions. Under 720px the
+   pill and the actions go under the name and the path takes the last line whole. */
+.library-row {
+  display: grid; align-items: center; gap: 4px 14px; padding: 8px 12px; border-radius: 12px; background: var(--card); min-width: 0;
+  grid-template-columns: 48px minmax(0, 1.3fr) 104px minmax(0, 1fr) auto;
+  grid-template-areas: "cover text kind path acts";
+}
+.library-row .library-cover { grid-area: cover; width: 48px; height: 48px; border-radius: 8px; }
 .library-row .library-cover.none .icon { width: 22px; height: 22px; }
-.library-row .library-text { flex: 1 1 200px; min-width: 0; }
-.library-row .library-path { flex: 2 1 220px; min-width: 0; }
+.library-row .library-text { grid-area: text; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.library-row .library-kind { grid-area: kind; display: flex; }
+.library-row .library-path { grid-area: path; min-width: 0; }
 .library-row .library-path .pathline { margin: 0; }
-@media (max-width: 899px) { .library-head { gap: 8px 12px; } }
-/* PS5 only: the internal storage's free space, first in the head's controls. --muted 6.5:1 and
+.library-row .library-actions { grid-area: acts; }
+.library-row .library-sub .tag { height: 20px; padding: 0 8px; font-size: 11.5px; }
+@media (max-width: 719px) {
+  .library-row {
+    grid-template-columns: 48px minmax(0, 1fr) auto; gap: 6px 12px; padding: 10px;
+    grid-template-areas: "cover text text" "cover kind acts" "path path path";
+  }
+  .library-row .library-cover { align-self: start; }
+}
+/* PS5 only: the internal storage's free space, beside the count under the head. --muted 6.5:1 and
    the free amount in --fg-2 11.9:1 on --card. */
 .library-storage { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
 .library-storage .icon { width: 16px; height: 16px; flex: none; }
@@ -1130,12 +1272,14 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
 [dir="rtl"] .menu { right: auto; left: 0; }
 [dir="rtl"] .menu.start { left: auto; right: 0; }
 [dir="rtl"] .library-cover-box > .lz4-badge { right: auto; left: 8px; }
-[dir="rtl"] .job.lz4 { box-shadow: inset -3px 0 0 var(--lz4-line); }
 [dir="rtl"] select.lang-select { padding: 0 12px 0 32px; background-position: left 10px center; }
 [dir="rtl"] .path:not(.out-dir), [dir="rtl"] .pathline, [dir="rtl"] input.mono, [dir="rtl"] .path-shown,
-[dir="rtl"] .pick-name, [dir="rtl"] .crumbs, [dir="rtl"] .out-name, [dir="rtl"] .job-name strong { direction: ltr; unicode-bidi: isolate; }
+[dir="rtl"] .pick-name, [dir="rtl"] .crumbs, [dir="rtl"] .out-name, [dir="rtl"] .job-name strong, [dir="rtl"] .quit-name { direction: ltr; unicode-bidi: isolate; }
 /* Names in the picker stay beside their icon (on the right). */
 [dir="rtl"] .pick-name { text-align: right; }
+/* A job's name and from path, at the row's start beside its tags. */
+[dir="rtl"] .job-name strong, [dir="rtl"] .quit-name { text-align: right; }
+[dir="rtl"] .job-name .pathline { justify-content: flex-end; }
 /* Errors and core's checks (`.backend`) take their direction from their own text: the backend's
    English reads left to right, the client's own (translated) messages stay right to left. Job
    logs and number + unit values ("9.00+", "1.4 MiB") read left to right; values keep the
@@ -1144,6 +1288,8 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
 [dir="rtl"] pre.log, [dir="rtl"] pre.code { direction: ltr; unicode-bidi: isolate; text-align: left; }
 /* The explorer: names and paths, and sizes, read left to right at the row's start / end. */
 [dir="rtl"] .xlabel { direction: ltr; unicode-bidi: isolate; text-align: right; }
+/* The folder tree's names too, as the rows' (a mixed-script name keeps its order). */
+[dir="rtl"] .files-tree button span { direction: ltr; text-align: right; }
 [dir="rtl"] .xinput { direction: ltr; text-align: right; }
 [dir="rtl"] .xrow[data-path]:not(.dir) .xsize { direction: ltr; unicode-bidi: isolate; text-align: left; }
 .error-box > .backend { display: block; }
@@ -1152,13 +1298,26 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
 /* The "›" is isolated left to right first, so the bidi mirroring an engine may or may not apply
    is off everywhere; the flip is then the one mirroring. */
 [dir="rtl"] ol.steps .sep { display: inline-block; direction: ltr; unicode-bidi: isolate; transform: scaleX(-1); }
-[dir="rtl"] progress::-webkit-progress-value { background: linear-gradient(270deg, #232c8f, #3d6bff 70%, #a8bfff); }
-[dir="rtl"] progress::-moz-progress-bar { background: linear-gradient(270deg, #232c8f, #3d6bff 70%, #a8bfff); }
+[dir="rtl"] progress::-webkit-progress-value { background: linear-gradient(270deg, var(--bar-lo), var(--accent) 70%, var(--bar-hi)); }
+[dir="rtl"] progress::-moz-progress-bar { background: linear-gradient(270deg, var(--bar-lo), var(--accent) 70%, var(--bar-hi)); }
 
 /* ---------- Storage ---------- */
-/* The view switch: its own row over the view, at the end (right; left in RTL), smaller than the
-   screen tabs so it never reads as a second navbar. 26px pills, 12.5px labels, 15px icons. */
-.storage-bar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; }
+/* One card per view; its head holds the view switch first (the start), then the view's actions
+   at the end. The switch is smaller than the screen tabs so it never reads as a second navbar:
+   26px pills, 12.5px labels, 15px icons. Connect's device filter (All / Forge / NAS) is the same
+   switch, chosen in the explorer's blue. */
+.storage-card { display: flex; flex-direction: column; gap: 12px; }
+@media (max-width: 599px) { .storage-card { padding: 14px 14px 16px; } }
+.storage-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; min-height: 30px; }
+.storage-head .seg.view-switch { flex: none; }
+@media (max-width: 399px) {
+  .storage-head .view-switch .seg-opt { position: relative; }
+  .storage-head .view-label {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+}
+.storage-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-inline-start: auto; }
 .seg.view-switch { padding: 2px; }
 .view-switch .seg-opt { height: 26px; padding: 0 12px; gap: 6px; font-size: 12.5px; }
 .view-switch .seg-opt .icon { width: 15px; height: 15px; }
@@ -1167,14 +1326,11 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
   background: var(--view-lib-tint); color: var(--library-ink-hi); font-weight: 600;
   box-shadow: inset 0 0 0 1px var(--library-line);
 }
-.view-switch .view-files.on {
+.view-switch .view-files.on, .view-switch .view-all.on, .view-switch .view-forge.on, .view-switch .view-nas.on {
   background: var(--view-files-tint); color: var(--view-files-ink); font-weight: 600;
   box-shadow: inset 0 0 0 1px var(--view-files-line);
 }
-/* Under the switch's row (26 + 4 + 2 px, then the 16px gap): the Library's well and the
-   explorer card keep to the window as they do on their own. */
-.storage .library-well { max-height: calc(100vh - var(--top) - 198px); }
-@media (max-width: 899px) { .storage .library-well { max-height: none; } }
+@media (max-width: 599px) { .library-well { padding: 8px; } }
 @media (min-width: 880px) {
   .storage .explorer { position: static; height: calc(100vh - var(--top) - 96px); }
   /* No listing (choose a folder, the platform unknown): the card hugs its content. */
@@ -1184,22 +1340,60 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
    the folder holds one entry and the actions wrap (under 600px): it opens inside the well, which
    clips what overflows it. */
 .files .explorer-well { min-height: 180px; }
-.files .head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .files .library-empty { margin: 0; }
 .files-notice { margin: 0 0 10px; font-size: 12.5px; overflow-wrap: anywhere; }
+.files-notice:empty { display: none; }
 .files .empty-note.note-line { margin: 0; }
+.files-main > .note-line.block { margin: 0 0 10px; }
+/* The card pads as the Library's does, so the head stays put when the view switches; its children
+   are spaced by the card's gap. */
+.explorer.files.storage-card { padding: 20px 22px; }
+@media (max-width: 599px) { .explorer.files.storage-card { padding: 14px 14px 16px; } }
+.files.storage-card > .note-line.block { margin: 0; }
+/* The list, and from 880px (`.tree`, set with the same query) the folder tree beside it: both
+   scroll inside the card's height; the tree shows the way down, so the crumbs go (Up stays). */
+.files-panes { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.files-main { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.files-panes.tree { display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 14px; }
+.files-panes.tree .crumbs { display: none; }
+.files-tree {
+  min-height: 0; overflow: auto; padding: 8px; border-radius: 12px;
+  background: var(--inset); border: 1px solid var(--line-lo);
+}
+.files-tree-label { margin: 2px 8px 6px; font-size: 12.5px; color: var(--muted); }
+.files-tree ul { list-style: none; margin: 0; padding: 0; }
+/* 10px a level keeps a deep folder's name readable in the 220px pane. */
+.files-tree ul ul { padding-inline-start: 10px; }
+.files-tree button {
+  width: 100%; height: 30px; justify-content: flex-start; padding: 0 8px; gap: 8px; border-radius: 8px;
+  background: transparent; color: var(--fg-2); font: 12px var(--mono);
+}
+.files-tree button .icon { flex: none; width: 15px; height: 15px; color: var(--accent-ink); }
+.files-tree button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
+.files-tree button:not([aria-current="true"]):hover:not(:disabled, [aria-disabled="true"]) { background: var(--raise); color: var(--fg); }
+.files-tree button[aria-current="true"] {
+  background: var(--view-files-tint); color: var(--view-files-ink); font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--view-files-line);
+}
+.files-tree button[aria-current="true"] .icon { color: var(--view-files-ink); }
+/* The arrows move focus to tabindex="-1" folders, which the global reset leaves ringless. */
+.files-tree button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 /* Rename, Move, Delete, ⋯ (Edit, Convert) and open: 5 × 30px + 4 × 2px. Under 600px (and with
    finger sized buttons) the actions take their own line under the name. */
 .xgrid.files.editable .xrow { grid-template-columns: minmax(0, 1fr) auto 158px; }
 .xgrid.files:not(.editable) .xrow { grid-template-columns: minmax(0, 1fr) auto 30px; }
-/* Rename, Move and Delete line up on every row; a folder's chevron keeps to the end. */
+/* Rename, Move and Delete line up on every row; a folder's chevron keeps to the end. A ⋯ with
+   nothing before it (a Mounted image) keeps its 4th place: 3 × 30px + 3 × 2px. */
 .xgrid.files .xact { justify-content: flex-start; }
 .xgrid.files button.xopen { margin-inline-start: auto; }
+.xgrid.files .xact > .menu-wrap:first-child { margin-inline-start: 96px; }
+/* Beats the 158px above; the actions' own line comes from the shared .xgrid.editable rules. */
 @media (max-width: 599px), (pointer: coarse) {
   .xgrid.files.editable .xrow { grid-template-columns: minmax(0, 1fr) auto; }
-  .xgrid.files.editable .xact { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; }
-  .xgrid.files.editable .xrow.head .xact { display: none; }
+  .xgrid.files .xact > .menu-wrap:first-child { margin-inline-start: 0; }
 }
+/* The PS5's roots (open only) with a finger sized chevron. */
+@media (pointer: coarse) { .xgrid.files:not(.editable) .xrow { grid-template-columns: minmax(0, 1fr) auto 40px; } }
 
 /* Korean breaks lines between words, not inside them. */
 :lang(ko) body { word-break: keep-all; }
@@ -1207,12 +1401,150 @@ button.pick-row > .muted { font-size: 12px; font-variant-numeric: tabular-nums; 
 [dir="rtl"] details.fold:not([open]) > summary::before { transform: rotate(135deg); }
 [dir="rtl"] button.xopen .icon { transform: rotate(90deg); }
 
-/* Touch (a phone or tablet through the QR code): small controls grow to a finger's size and
-   the Library's delete moves further from its neighbours. */
+/* Touch (a phone or tablet through the QR code): controls grow to a finger's size (40px) and
+   the Library's delete moves further from its neighbours. Fields take 16px text: iOS zooms
+   the page into a smaller one on focus. */
 @media (pointer: coarse) {
-  button.small, .seg-opt { height: 38px; }
-  button.small.icon-only, .gh-link { width: 38px; height: 38px; }
+  button, a.button, input, .menu > button, .build-row .primary, select.lang-select { height: 40px; }
+  button.small, .seg-opt, button.kind-chip { height: 40px; }
+  .downloads a.button { min-height: 40px; }
+  .pick-tabs .seg-opt, .view-switch .seg-opt { height: 40px; }
+  .pick-tabs .seg-opt, .seg.view-switch.devices .seg-opt { line-height: 40px; }
+  button.small.icon-only, .gh-link, button.lock-btn { width: 40px; height: 40px; }
+  button.link, button.pick-row, .xrow, details.fold > summary, .job details.fold > summary, .switch { min-height: 40px; }
+  .xinput { height: 40px; }
+  input, input.mono, .xinput, select, select.lang-select, textarea { font-size: 16px; }
   .library-actions { gap: 10px; }
-  .address-btn { padding: 8px 0; }
+  .conn-btn { padding: 9px 0; }
+  .files-tree button { height: 40px; }
+  .top-actions button.small { min-width: 40px; }
+  .job-head > .tag { margin-top: 9px; }
+  .job-name { padding-top: 11px; }
 }
 
+
+/* ---- Connect (Connect.tsx) ---- */
+/* Two columns from 980px: this device and Add a device (340px), the devices; one column below. */
+.connect-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (min-width: 980px) { .connect-cols { grid-template-columns: minmax(0, 340px) minmax(0, 1fr); } }
+.connect-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.connect-me { display: flex; flex-direction: column; gap: 12px; }
+.connect-me > .card-head { margin: 0; flex-wrap: nowrap; }
+/* How to connect stays at the head's end, beside the title, at any width and language. */
+.connect-me > .card-head h2 { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.connect-me > .card-head > .head-actions { flex: none; margin-inline-start: auto; }
+.connect-me .tiles { grid-template-columns: minmax(0, 1fr); }
+.connect-name { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; overflow-wrap: break-word; overflow-wrap: anywhere; }
+/* Web build: the page's QR code, large and centred, its hint under it; a phone already has the page. */
+.connect-qr { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.connect-qr img.qr { width: 220px; height: 220px; max-width: 100%; padding: 10px; border-radius: 12px; }
+@media (max-width: 599px) { .connect-qr { display: none; } }
+.connect-code { font: 600 34px/1.2 var(--mono); letter-spacing: 0.18em; user-select: all; unicode-bidi: isolate; }
+/* Pairing's check number: the label above the six digits. */
+.pair-check { display: flex; flex-direction: column; gap: 4px; }
+.connect-ip { font-size: 15px; overflow-wrap: break-word; overflow-wrap: anywhere; user-select: all; unicode-bidi: isolate; }
+/* Add a device: the address and Connect on one line, then its hint, status or error. */
+.add-form { display: flex; gap: 8px; }
+.add-form input { flex: 1 1 auto; }
+.add-form button { flex: none; }
+/* A phone: the address takes the whole line (its placeholder fits), Connect goes under it. */
+@media (max-width: 419px) { .add-form { flex-wrap: wrap; } .add-form input { flex-basis: 100%; } }
+.add-hint { margin: 6px 0 0; margin-inline-start: 14px; }
+.add-status { margin: 8px 0 0; margin-inline-start: 4px; color: var(--fg-2); }
+.note-line .spinner { width: 14px; height: 14px; margin-top: 1px; }
+.connect-side .card > .note-line.block { margin-top: 8px; }
+.add-manual { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+/* How to connect's first box, in accent blue (--fg on it 14.5:1, its icon --accent-ink 8.2:1). */
+.install-lead {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; padding: 10px 12px; border-radius: 10px;
+  background: rgba(61, 107, 255, 0.1); border: 1px solid rgba(120, 155, 255, 0.22); font-size: 13px;
+}
+.install-lead .icon { width: 16px; height: 16px; margin-top: 1px; color: var(--accent-ink); }
+.install-lead.help-install { margin: 0 0 14px; }
+.install-lead.help-install strong { display: block; margin-bottom: 4px; font-weight: 600; }
+.install-lead.help-install p { margin: 0; }
+/* The devices: the All / Forge / NAS filter and the online count over the list. */
+.connect-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.connect-online { font-size: 12.5px; }
+.view-switch .seg-opt .n { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+/* A device row (saved or Nearby): status dot, name and kind, its facts, actions; no border (an offline one says so in its facts). */
+.dev-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.dev-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 4px 12px;
+  padding: 12px 14px; border-radius: 12px; background: var(--inset);
+}
+.dev-text { min-width: 0; }
+.dev-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: break-word; overflow-wrap: anywhere; }
+.dev-sub { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 3px 0 0; font-size: 12.5px; color: var(--muted); overflow-wrap: break-word; overflow-wrap: anywhere; }
+.dev-sub .mono { font-size: 12px; color: var(--fg-2); }
+.dev-actions { display: flex; gap: 6px; }
+@media (max-width: 479px) {
+  .dev-row { grid-template-columns: auto minmax(0, 1fr); }
+  .dev-actions { grid-column: 2; }
+}
+.online-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); opacity: 0.6; }
+.online-dot.on { background: var(--good); opacity: 1; }
+/* Nearby: Autodiscovery's finds under the list; while it searches, a spinner, the text and Stop. */
+.nearby { margin-top: 16px; }
+.section-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13.5px; font-weight: 600; }
+.section-title .grow { flex: 1; }
+/* The heading is the title alone (its icon and "Nearby"); the search's status and Stop sit beside it. */
+.section-title h3 { display: flex; align-items: center; gap: 8px; min-width: 0; font: inherit; }
+.searching { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 400; color: var(--fg-2); }
+.searching .spinner { width: 14px; height: 14px; }
+.nearby > .note-line { margin-bottom: 8px; }
+.nearby > .note { font-size: 12.5px; color: var(--muted); }
+/* The dialogs: device details, pair, a NAS. */
+.device-facts { margin: 16px 0 0; }
+.device-facts dd { overflow-wrap: break-word; overflow-wrap: anywhere; font-size: 13px; }
+.nas-form { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; }
+.field-label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.field-label input { width: 100%; color: var(--fg); font-size: 13px; }
+/* After the rule above (same specificity): 16px on touch, or iOS zooms on focus. */
+@media (pointer: coarse) { .field-label input { font-size: 16px; } }
+/* Connect: File Transfer (Transfer.tsx). What to send → Send to side by side from 860px (the arrow
+   between, mirrored in RTL), stacked below with the arrow pointing down; the body scrolls, title
+   and footer stay. Footer: this browser's Upload / Download (web build), then Close and Start. */
+.modal.transfer-modal { width: 820px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); }
+.modal.transfer-modal > p { margin: 10px 0 0; }
+.transfer-body { overflow-y: auto; min-height: 0; margin: 14px -24px 0; padding: 0 24px 2px; }
+.transfer-body:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 8px; }
+/* A phone or a short window: the footer alone would leave the body a few lines, so the whole
+   dialog grows and the backdrop scrolls it, as for any plain .modal. */
+@media (max-width: 599px), (max-height: 600px) {
+  .modal.transfer-modal { max-height: none; }
+  .transfer-body { overflow: visible; margin-inline: 0; padding-inline: 0; }
+}
+.transfer-ends { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+@media (min-width: 860px) { .transfer-ends { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; } }
+.transfer-end {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  padding: 12px 14px; border-radius: 12px; background: var(--inset); border: 1px solid var(--line);
+}
+.transfer-end h3 { margin: 0; font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.transfer-end .row { gap: 8px; }
+.transfer-arrow { display: flex; align-items: center; justify-content: center; color: var(--muted); }
+[dir="rtl"] .transfer-arrow .icon { transform: scaleX(-1); }
+@media (max-width: 859px) { .transfer-arrow .icon, [dir="rtl"] .transfer-arrow .icon { transform: rotate(90deg); } }
+/* A side's devices: the view switch, wrapping, each name cut short; the chosen one in the explorer's blue. */
+.seg.view-switch.devices { flex-wrap: wrap; align-self: flex-start; max-width: 100%; border-radius: 16px; }
+.view-switch.devices .seg-opt { display: block; max-width: 100%; line-height: 26px; overflow: hidden; text-overflow: ellipsis; }
+.view-switch.devices .seg-opt.on {
+  background: var(--view-files-tint); color: var(--view-files-ink); font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--view-files-line);
+}
+/* The paths chosen, on the card ground inside the inset side; they scroll past 120px. */
+.out-box.transfer-paths { list-style: none; margin: 0; background: var(--card); max-height: 120px; overflow-y: auto; }
+.out-box.transfer-paths:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.out-box.transfer-paths.empty { color: var(--muted); font-family: inherit; font-size: 13px; }
+.transfer-path { font-size: 12px; color: var(--fg); overflow-wrap: break-word; overflow-wrap: anywhere; }
+/* Out from under `.modal p`'s margins (`.modal p.out-box` too, so the box doesn't jump once a path is chosen). */
+.transfer-end > p, .transfer-browser > p, .modal .transfer-end > .out-box.transfer-paths { margin: 0; }
+.transfer-body > .note-line { margin: 10px 0 0; }
+.transfer-foot { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 16px; margin-top: 16px; }
+.transfer-browser { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.transfer-browser .row { gap: 8px; }
+.transfer-browser .upload-line { margin-top: 0; }
+/* The upload status stays mounted (so it is announced); empty, it takes no room. */
+.transfer-browser > .note[role="status"]:empty { margin-top: -6px; }
+.transfer-actions { flex: none; margin-inline-start: auto; }

@@ -10,8 +10,12 @@ members = [
   "crates/ps5-dump-forge-archive",
   "crates/ps5-dump-forge-cli",
   "crates/ps5-dump-forge-fpkg",
+  "crates/ps5-dump-forge-flink",
   "crates/ps5-dump-forge-lz4",
   "crates/ps5-dump-forge-server",
+  "crates/ps5-dump-forge-smb",
+  "crates/ps5-dump-forge-ftp",
+  "crates/ps5-dump-forge-nfs",
   "crates/ps5-dump-forge-ps5",
   "app/src-tauri",
 ]
@@ -44,8 +48,12 @@ ps5-dump-forge-core = { path = "crates/ps5-dump-forge-core" }
 ps5-dump-forge-ps5 = { path = "crates/ps5-dump-forge-ps5" }
 ps5-dump-forge-archive = { path = "crates/ps5-dump-forge-archive" }
 ps5-dump-forge-fpkg = { path = "crates/ps5-dump-forge-fpkg" }
+ps5-dump-forge-flink = { path = "crates/ps5-dump-forge-flink" }
 ps5-dump-forge-lz4 = { path = "crates/ps5-dump-forge-lz4" }
 ps5-dump-forge-server = { path = "crates/ps5-dump-forge-server" }
+ps5-dump-forge-smb = { path = "crates/ps5-dump-forge-smb" }
+ps5-dump-forge-ftp = { path = "crates/ps5-dump-forge-ftp" }
+ps5-dump-forge-nfs = { path = "crates/ps5-dump-forge-nfs" }
 
 [profile.release]
 lto = true

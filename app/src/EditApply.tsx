@@ -12,6 +12,7 @@ import { checkable, toEdits, type CoreEdit } from "./explorer";
 import { useMessages } from "./i18n";
 import { Icon } from "./icons";
 import { joinPath } from "./paths";
+import { readable } from "./peers";
 
 export type Mode = "in_place" | "rebuild";
 
@@ -42,8 +43,9 @@ export function editRequest(source: string, kind: string, edits: CoreEdit[], reb
 
 /** Core's answer for one list of changes (`for`, and the `nonce` it was asked under). `check`
  * null with no error: nothing could be checked before Apply (only uploads, or `deferred`: other
- * changes depend on them); `left`: the uploaded files the check left out. `full`: Apply's own
- * check with the uploads in, kept until the changes change. */
+ * changes depend on them), or `nothing`: the changes leave the source as it is (an empty folder
+ * dropped onto one that is there); `left`: the uploaded files the check left out. `full`:
+ * Apply's own check with the uploads in, kept until the changes change. */
 export interface CheckState {
   for: readonly Pending[];
   nonce: number;
@@ -51,6 +53,7 @@ export interface CheckState {
   error: string | null;
   left: number;
   deferred?: boolean;
+  nothing?: boolean;
   full?: boolean;
 }
 
@@ -84,7 +87,7 @@ export function useEditCheck(
           hostPath(src as { path: string }, rel),
         );
         const check = edits.length > 0 ? await api.editCheck(editRequest(source, ins.kind, edits, false)) : null;
-        if (mine === seq.current) setState({ for: changes, nonce, check, error: null, left });
+        if (mine === seq.current) setState({ for: changes, nonce, check, error: null, left, nothing: edits.length === 0 && left === 0 });
       } catch (e) {
         if (mine === seq.current) setState({ for: changes, nonce, check: null, error: errorText(e), left });
       }
@@ -112,16 +115,17 @@ export function modes(state: CheckState, kind: string): { inPlace: boolean; rebu
 /** The mode Apply uses: `want` when both work, else the one that does; null when neither does
  * (or there is no answer for these changes yet). */
 export function chosenMode(state: CheckState | null, current: boolean, kind: string, want: Mode): Mode | null {
-  if (!state || !current || state.error !== null) return null;
+  if (!state || !current || state.error !== null || state.nothing) return null;
   const m = modes(state, kind);
   if (m.inPlace && m.rebuild) return want;
   return m.inPlace ? "in_place" : m.rebuild ? "rebuild" : null;
 }
 
-const Lines = ({ lines }: { lines: string[] }) => (
-  <ul className="rows backend edit-why">
+/** Core's findings, each once; a scrolling box, so it takes focus (`label` names it). */
+export const Lines = ({ lines, label }: { lines: string[]; label: string }) => (
+  <ul className="rows backend edit-why" tabIndex={0} aria-label={label}>
     {[...new Set(lines)].map((l) => (
-      <li key={l}>{l}</li>
+      <li key={l}>{readable(l)}</li>
     ))}
   </ul>
 );
@@ -143,12 +147,14 @@ export function ModeBox(props: {
 }) {
   const t = useMessages().edit;
   const { state, kind } = props;
-  const checking = !props.current && (
+  // Always there (its line kept, so nothing below jumps), so a screen reader hears "Checking"
+  // and then the answer (`done`, the tag the box shows; hidden, as the tag says it).
+  const checking = (done: string) => (
     <p className="muted edit-checking" role="status">
-      {t.checking}
+      {props.current ? <span className="visually-hidden">{done}</span> : t.checking}
     </p>
   );
-  if (!state) return <div className="edit-mode">{checking}</div>;
+  if (!state) return <div className="edit-mode">{checking("")}</div>;
   if (state.error !== null)
     return (
       <div className="edit-mode">
@@ -161,7 +167,14 @@ export function ModeBox(props: {
         <button className="small" onClick={props.onRetry} disabled={props.disabled}>
           {t.checkAgain}
         </button>
-        {checking}
+        {checking("")}
+      </div>
+    );
+  if (state.nothing)
+    return (
+      <div className="edit-mode">
+        <p className="muted edit-mode-text">{t.nothingToChange}</p>
+        {checking(t.nothingToChange)}
       </div>
     );
   const c = state.check;
@@ -183,25 +196,29 @@ export function ModeBox(props: {
   );
 
   let body;
+  let done;
   if (kind === "folder" && m.inPlace) {
+    done = t.changedDirectly;
     body = (
       <p className="edit-mode-line">
         <span className="tag blue">{t.changedDirectly}</span> {t.folderText}
       </p>
     );
   } else if (!m.inPlace && !m.rebuild) {
+    done = t.cantApply;
     body = (
       <>
         <p className="edit-mode-line">
           <span className="tag red">{t.cantApply}</span>
         </p>
-        <Lines lines={[...(c?.in_place ?? []), ...(kind === "folder" ? [] : (c?.rebuild ?? []))]} />
+        <Lines lines={[...(c?.in_place ?? []), ...(kind === "folder" ? [] : (c?.rebuild ?? []))]} label={t.cantApply} />
       </>
     );
   } else if (m.inPlace && m.rebuild) {
+    done = chosen === "in_place" ? t.inPlace : t.rebuild;
     body = (
       <>
-        <div className="seg formats inner edit-pick" role="radiogroup" aria-label={t.modeLabel}>
+        <div className="seg formats inner" role="radiogroup" aria-label={t.modeLabel}>
           {(["in_place", "rebuild"] as const).map((v) => (
             <label key={v} className={`seg-choice mode-hue ${v === "in_place" ? "mode-green" : "mode-red"}${chosen === v ? " on" : ""}`}>
               <input
@@ -221,6 +238,7 @@ export function ModeBox(props: {
       </>
     );
   } else if (m.inPlace) {
+    done = t.inPlace;
     body = (
       <p className="edit-mode-line">
         <span className="tag green">{t.inPlace}</span> {inPlaceText}
@@ -228,22 +246,25 @@ export function ModeBox(props: {
     );
   } else {
     const noRoom = need && free && c && c.needed_inside! > c.free_inside!;
+    // Every reason but the room one, which the line says.
+    const why = c ? (noRoom ? c.in_place.filter((l) => !l.includes("the changes need ")) : c.in_place) : [];
+    done = t.rebuildNeeded;
     body = (
       <>
         <p className="edit-mode-line">
           <span className="tag red">{t.rebuildNeeded}</span>{" "}
           {kind === "ffpfsc" || kind === "pkg" ? <Prose text={t.alwaysRebuilt} /> : noRoom ? t.noRoom(need, free) : null}
         </p>
-        {kind !== "ffpfsc" && kind !== "pkg" && !noRoom && c && <Lines lines={c.in_place} />}
+        {kind !== "ffpfsc" && kind !== "pkg" && why.length > 0 && <Lines lines={why} label={t.rebuildNeeded} />}
         <p className="muted edit-mode-text">{rebuildText}</p>
       </>
     );
   }
   return (
-    <div className="edit-mode" role="group" aria-label={t.modeLabel}>
+    <div className="edit-mode">
       {body}
       {later}
-      {checking}
+      {checking(done)}
     </div>
   );
 }
@@ -311,8 +332,12 @@ export function UploadLine(props: { i: number; n: number; sent: number; total: n
   return (
     <div className="upload-line">
       <progress value={props.sent} max={Math.max(props.total, 1)} aria-label={t.uploadLabel} />
+      {/* Announced once per file; the bytes change on every progress event. */}
+      <span className="visually-hidden" role="status">
+        {t.uploadingFile(props.i, props.n)}
+      </span>
       <div className="row nowrap">
-        <span className="muted grow" role="status">
+        <span className="muted grow">
           {t.uploading(props.i, props.n, prettyBytes(props.sent), prettyBytes(props.total))}
         </span>
         <button className="small" onClick={props.onCancel}>

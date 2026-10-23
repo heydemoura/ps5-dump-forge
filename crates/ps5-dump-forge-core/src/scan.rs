@@ -40,6 +40,10 @@ pub(crate) struct Stamp {
 }
 
 impl Stamp {
+    pub(crate) fn new(size: u64, mtime: Option<SystemTime>) -> Self {
+        Self { size, mtime }
+    }
+
     pub(crate) fn of(meta: &Metadata) -> Self {
         Self {
             size: meta.len(),

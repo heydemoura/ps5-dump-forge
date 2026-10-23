@@ -33,7 +33,15 @@ export function UpdateToast() {
       live = false;
     };
   }, []);
-  if (!version) return null;
+  // An always-mounted status region holds the title, so screen readers announce the offer and
+  // each change of it (a region that mounts already filled is often not read).
+  const announce = (text: string) => (
+    <span className="visually-hidden" role="status">
+      {text}
+    </span>
+  );
+  // The same shape as below (the region, then the toast), so the region is kept, not remounted.
+  if (!version) return <>{announce("")}{null}</>;
 
   const close = () => setVersion(null);
   const update = async () => {
@@ -49,51 +57,53 @@ export function UpdateToast() {
   // The app's command answers at once: its buttons just wait, no spinner.
   const spinning = state.step === "updating" && web;
   const busy = state.step === "updating";
+  const title = spinning ? t.updating : state.step === "failed" ? t.failed(version) : t.available(version);
 
   return (
-    <div className="update-toast card" role="status">
-      <div className="update-head">
-        {spinning ? (
-          <span className="spinner" aria-hidden="true" />
-        ) : (
-          <span className={state.step === "failed" ? "head-icon warn" : "head-icon"}>
-            <Icon name={state.step === "failed" ? "alert" : "download"} />
-          </span>
-        )}
-        <span className="update-title">
-          {spinning ? t.updating : state.step === "failed" ? t.failed(version) : t.available(version)}
-        </span>
-      </div>
-      {spinning && <p className="muted">{t.updatingNote}</p>}
-      {state.step === "opened" && <p className="muted">{t.downloading}</p>}
-      {state.step === "failed" && <p className="muted backend">{state.reason}</p>}
-      {!spinning && (
-        <div className="row end">
-          {state.step === "offer" || state.step === "updating" ? (
-            <>
-              <button className="small" disabled={busy} onClick={close}>
-                {t.later}
-              </button>
-              <button className="small primary" disabled={busy} onClick={() => void update()}>
-                {t.update}
-              </button>
-            </>
-          ) : state.step === "opened" ? (
-            <button className="small" onClick={close}>
-              {t.close}
-            </button>
+    <>
+      {announce(title)}
+      <div className="update-toast card">
+        <div className="update-head">
+          {spinning ? (
+            <span className="spinner" aria-hidden="true" />
           ) : (
-            <>
+            <span className={state.step === "failed" ? "head-icon warn" : "head-icon"}>
+              <Icon name={state.step === "failed" ? "alert" : "download"} />
+            </span>
+          )}
+          <span className="update-title">{title}</span>
+        </div>
+        {spinning && <p className="muted">{t.updatingNote}</p>}
+        {state.step === "opened" && <p className="muted">{t.downloading}</p>}
+        {state.step === "failed" && <p className="muted backend">{state.reason}</p>}
+        {!spinning && (
+          <div className="row end">
+            {state.step === "offer" || state.step === "updating" ? (
+              <>
+                <button className="small" disabled={busy} onClick={close}>
+                  {t.later}
+                </button>
+                <button className="small primary" disabled={busy} onClick={() => void update()}>
+                  {t.update}
+                </button>
+              </>
+            ) : state.step === "opened" ? (
               <button className="small" onClick={close}>
                 {t.close}
               </button>
-              <button className="small primary" onClick={() => void update()}>
-                {t.retry}
-              </button>
-            </>
-          )}
-        </div>
-      )}
-    </div>
+            ) : (
+              <>
+                <button className="small" onClick={close}>
+                  {t.close}
+                </button>
+                <button className="small primary" onClick={() => void update()}>
+                  {t.retry}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

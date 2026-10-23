@@ -147,6 +147,13 @@ struct Changes {
     /// Per folder, the room left in the growth block(s) the plan lacked (already counted in
     /// `short`), so later entries in that folder count no more until it is used up.
     pending: BTreeMap<u64, Pending>,
+    /// Per folder, where [`Volume::find_slot`] starts looking (so adding n entries to one
+    /// folder reads it about once, not n times).
+    // ponytail: not charged to the budget; at most one per folder listed, which is.
+    hints: BTreeMap<u64, Hint>,
+    /// Every scan from the first chunk (tests compare the plans).
+    #[cfg(test)]
+    no_hints: bool,
     /// Folders listed so far (tests count them).
     #[cfg(test)]
     listed: std::cell::Cell<u64>,
@@ -1393,6 +1400,7 @@ impl Volume {
             b[0..4].fill(0);
         }
         self.plan_meta(at, b)?;
+        self.room_at(node.parent, chunk);
         if let Some(list) = self.changes.listings.get_mut(&node.parent) {
             list.retain(|n| n.offset != node.offset);
             if let Some((off, merged)) = prev
@@ -1406,8 +1414,9 @@ impl Volume {
 
     /// The first entry of directory `dir` with `need` bytes of room past its own record (an
     /// unused first entry of a chunk: its whole `d_reclen`), as the plan has left it. One
-    /// block is read at a time, charged beside the directory's block map.
-    fn find_slot(&self, image: &mut File, dir: u64, need: usize) -> io::Result<Option<Slot>> {
+    /// block is read at a time, charged beside the directory's block map. The scan starts at
+    /// the folder's [`Hint`] when no chunk before it has the room, and leaves a new one.
+    fn find_slot(&mut self, image: &mut File, dir: u64, need: usize) -> io::Result<Option<Slot>> {
         let inode = self.inode(image, dir)?;
         let map = self.block_map(image, &inode)?;
         let held =
@@ -1415,15 +1424,32 @@ impl Volume {
         if held > self.budget_left() {
             return Err(too_big_io(self.held() + self.changes.bytes + held));
         }
+        let mut hint = match self.changes.hints.get(&dir) {
+            Some(&h) if h.below < need => h,
+            _ => Hint::default(),
+        };
+        #[cfg(test)]
+        if self.changes.no_hints {
+            hint = Hint::default();
+        }
+        let start = hint.chunk;
         let mut block = vec![0u8; BSIZE as usize];
         for r in &map.data {
             for k in 0..r.len {
                 let base = (r.lbn + k) * BSIZE;
                 let len = (inode.size - base).min(BSIZE) as usize;
+                if base + len as u64 <= start {
+                    continue;
+                }
                 let buf = &mut block[..len];
                 self.read_planned(image, (r.block + k) * BSIZE, buf)?;
                 for (i, chunk) in buf.chunks(DIRBLKSIZ).enumerate() {
+                    let at = base + (i * DIRBLKSIZ) as u64;
+                    if at < start {
+                        continue;
+                    }
                     let mut off = 0usize;
+                    let mut most = 0usize;
                     while off < chunk.len() {
                         let ino = le32(chunk, off).unwrap_or(0);
                         let reclen = chunk
@@ -1435,23 +1461,38 @@ impl Volume {
                             None => usize::MAX,
                         };
                         if reclen == 0 || used > reclen || off + reclen > chunk.len() {
-                            let at = base + (i * DIRBLKSIZ + off) as u64;
+                            let at = at + off as u64;
                             return Err(bad_inode(dir, format!("directory entry at byte {at}")));
                         }
                         if reclen - used >= need {
+                            hint.chunk = at;
+                            self.changes.hints.insert(dir, hint);
                             return Ok(Some(Slot {
                                 at: (r.block + k) * BSIZE + (i * DIRBLKSIZ) as u64,
-                                chunk: base + (i * DIRBLKSIZ) as u64,
+                                chunk: at,
                                 off,
                                 used,
                             }));
                         }
+                        most = most.max(reclen - used);
                         off += reclen;
                     }
+                    hint.below = hint.below.max(most);
                 }
             }
         }
+        // A chunk the folder grows by starts here.
+        hint.chunk = hint.chunk.max(inode.size);
+        self.changes.hints.insert(dir, hint);
         Ok(None)
+    }
+
+    /// Directory `dir`'s chunk at `chunk` may have more room now: [`Self::find_slot`] looks
+    /// there again.
+    fn room_at(&mut self, dir: u64, chunk: u64) {
+        if let Some(h) = self.changes.hints.get_mut(&dir) {
+            h.chunk = h.chunk.min(chunk);
+        }
     }
 
     /// The room `node`'s removal leaves in the entry before it in its chunk (that entry's
@@ -1559,6 +1600,8 @@ impl Volume {
             .ok_or_else(|| io::Error::other("internal error: entry out of range"))?;
         dirent(entry, node.ino, node.kind, name)?;
         self.plan_meta(at, b)?;
+        // A shorter name leaves more room after it.
+        self.room_at(node.parent, chunk);
         self.charge(name.len() as u64)?;
         if let Some(list) = self.changes.listings.get_mut(&node.parent)
             && let Some(n) = list.iter_mut().find(|n| n.offset == node.offset)
@@ -1631,6 +1674,7 @@ impl Volume {
             self.free_block(inode.ino, p)?;
         }
         self.changes.bytes = self.changes.bytes.saturating_sub(held);
+        self.changes.hints.remove(&inode.ino);
         self.free_inode_bit(inode.ino, inode.kind == Kind::Dir)?;
         self.plan_meta(self.inode_offset(inode.ino), vec![0; DINODE as usize])
     }
@@ -2223,6 +2267,15 @@ impl Pending {
     }
 }
 
+/// Where [`Volume::find_slot`] starts in a folder: the entries in its chunks before byte
+/// `chunk` have at most `below` bytes of room each (rooms there only shrink until
+/// [`Volume::room_at`] moves `chunk` back), so a larger entry is looked for from `chunk` on.
+#[derive(Debug, Clone, Copy, Default)]
+struct Hint {
+    chunk: u64,
+    below: usize,
+}
+
 /// Where a new directory entry goes: a slot, none for want of a free block (counted), or
 /// none because the folder can't grow.
 enum Room {
@@ -2809,6 +2862,69 @@ mod tests {
         assert_eq!(
             plan_volume(v, &mut image, &ops, &mut None).unwrap_err(),
             ["the image has no free inodes left for 1 new files"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where a folder's free slots are looked for first changes nothing: adds, deletes and
+    /// renames in and into one folder plan the same writes as scans from its first chunk.
+    #[test]
+    fn slot_hints_plan_the_same_writes() {
+        let dir = std::env::temp_dir().join(format!("forge-ufs2-hints-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/sce_sys")).unwrap();
+        std::fs::create_dir_all(dir.join("src/d")).unwrap();
+        std::fs::write(dir.join("src/eboot.bin"), b"x").unwrap();
+        std::fs::write(dir.join("src/sce_sys/param.json"), b"{}").unwrap();
+        for i in 0..300 {
+            let name = format!("old{i}{}", "o".repeat(i % 37));
+            std::fs::write(dir.join("src/d").join(name), b"y").unwrap();
+        }
+        let mut tree = FolderSource::open(&dir.join("src")).unwrap();
+        let cancel = AtomicBool::new(false);
+        let layout = crate::plan(&tree, &crate::Options::default(), &cancel).unwrap();
+        let path = dir.join("x.ffpkg");
+        let mut out = File::create_new(&path).unwrap();
+        crate::write(&mut tree, &layout, &mut out, &cancel, &mut |_, _| {}).unwrap();
+        drop(out);
+        let mut image = File::open(&path).unwrap();
+        let put = |p: String| Op::Put {
+            path: p,
+            len: 3,
+            data: Data::Zero(3),
+        };
+        let mut ops = Vec::new();
+        for i in 0..400 {
+            ops.push(put(format!("d/new{i}{}", "n".repeat(i % 53))));
+            if i % 5 == 0 {
+                let old = format!("d/old{}{}", i / 2, "o".repeat((i / 2) % 37));
+                ops.push(Op::Delete { path: old });
+            }
+            if i % 7 == 0 {
+                let from = format!("d/new{i}{}", "n".repeat(i % 53));
+                ops.push(Op::Rename {
+                    from,
+                    to: format!("d/r{i}"),
+                });
+            }
+            if i % 11 == 0 {
+                ops.push(Op::Mkdir {
+                    path: format!("d/m{i}"),
+                });
+                ops.push(put(format!("t{i}")));
+                ops.push(Op::Rename {
+                    from: format!("t{i}"),
+                    to: format!("d/t{i}{}", "t".repeat(i % 29)),
+                });
+            }
+        }
+        let v = Volume::open(&mut image).unwrap().unwrap();
+        let mut slow = v.clone();
+        slow.changes.no_hints = true;
+        let fast = plan_volume(v, &mut image, &ops, &mut None).unwrap();
+        assert_eq!(
+            fast,
+            plan_volume(slow, &mut image, &ops, &mut None).unwrap()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

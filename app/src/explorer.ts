@@ -143,23 +143,6 @@ export function focusIndex(entries: Entry[], want: string): number | null {
   return Math.max(i, 0);
 }
 
-/** Files and bytes in a folder and everything under it. */
-export function totals(dir: DirNode): { files: number; bytes: number } {
-  let files = 0;
-  let bytes = 0;
-  const walk = (d: DirNode) => {
-    for (const n of d.children.values()) {
-      if (n.kind === "dir") walk(n);
-      else {
-        files++;
-        bytes += n.size;
-      }
-    }
-  };
-  walk(dir);
-  return { files, bytes };
-}
-
 /** The path's parent ("" for a top-level entry or the root). */
 export function parentOf(path: string): string {
   const i = path.lastIndexOf("/");
@@ -205,7 +188,7 @@ export function validPath(path: string): boolean {
   return !/[\\\0]/.test(path) && path.split("/").every((c) => c !== "" && c !== "." && c !== "..");
 }
 
-/** One entry's name (Rename, New folder): a game path of one component. */
+/** One entry's name (Rename): a game path of one component. */
 export function validName(name: string): boolean {
   return !name.includes("/") && validPath(name);
 }

@@ -18,7 +18,7 @@ pub enum DeleteError {
     Refused(String),
     /// Nothing at the path.
     Missing(String),
-    /// An unfinished job reads or writes it, or something inside or around it.
+    /// An unfinished job reads or writes it, or a peer is writing it (inside or around it too).
     Busy(String),
     /// The removal or the folder sync failed; a folder may be partly deleted.
     Failed(String),
@@ -156,6 +156,7 @@ pub(crate) fn delete<'a>(
     protected: &[PathBuf],
     guarded: impl IntoIterator<Item = &'a PathBuf>,
 ) -> Result<(), DeleteError> {
+    net_refusal(path)?;
     let Checked {
         path,
         real,
@@ -228,6 +229,23 @@ pub(crate) fn delete<'a>(
     Ok(())
 }
 
+/// A NAS share or a peer is read only here: nothing on it is deleted or moved.
+fn net_refusal(path: &Path) -> Result<(), DeleteError> {
+    if crate::remote::is_nas(path) {
+        return Err(DeleteError::Refused(format!(
+            "{}: a NAS share is read only here; delete or move it on the NAS itself",
+            path.display()
+        )));
+    }
+    if crate::remote::is_remote(path) {
+        return Err(DeleteError::Refused(format!(
+            "{}: a file on another device is deleted or moved on that device itself",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Moves or renames `from` to `to` (a new name in an existing folder, never replacing
 /// anything), refused as [`delete`] refuses `from`, and for a `to` inside `from`, on another
 /// volume or at, in or above a path of `guarded`. An image with an interrupted edit's undo
@@ -238,6 +256,8 @@ pub(crate) fn move_<'a>(
     protected: &[PathBuf],
     guarded: impl IntoIterator<Item = &'a PathBuf>,
 ) -> Result<(), DeleteError> {
+    net_refusal(from)?;
+    net_refusal(to)?;
     let guarded: Vec<&PathBuf> = guarded.into_iter().collect();
     let Checked {
         path,
@@ -581,16 +601,56 @@ fn resolved(path: &Path) -> PathBuf {
 }
 
 /// Whether `path` is at, in or above one of `guarded`, compared as [`delete`] compares them
-/// (by identity, links on the typed path included). A path that doesn't exist matches only
-/// a guarded path spelled the same.
+/// (by identity, links on the typed path included); a path that doesn't exist yet as
+/// [`new_in_use`] judges it. A path on a peer or a NAS is compared with the guarded paths on
+/// that device as [`FlinkPath::within`] compares them (the device judges identity there),
+/// never with local ones.
 pub(crate) fn in_use<'a>(path: &Path, guarded: impl IntoIterator<Item = &'a PathBuf>) -> bool {
+    use crate::remote::FlinkPath;
+    if crate::remote::is_remote(path) {
+        let Ok(at) = FlinkPath::parse(path) else {
+            return false;
+        };
+        // Scheme and device checked, an SMB share's paths case-folded.
+        return guarded
+            .into_iter()
+            .any(|g| FlinkPath::parse(g).is_ok_and(|g| at.within(&g) || g.within(&at)));
+    }
     let path = &path.components().collect::<PathBuf>();
-    let mut guarded = guarded.into_iter();
+    let guarded = guarded.into_iter();
     let Ok((id, _)) = path_id(path) else {
-        return guarded.any(|g| g.components().eq(path.components()));
+        return new_in_use(path, guarded);
     };
+    // A peer's or a NAS's path is never this computer's.
+    let mut guarded = guarded.filter(|g| !crate::net::is_network(g));
     let chain = (path.canonicalize().and_then(|real| ids_up(&real))).unwrap_or_default();
     guarded.any(|used| followed_id(used).is_ok_and(|g| chain.contains(&g)) || holds(id, used))
+}
+
+/// [`in_use`] for a path that doesn't exist yet (a file or folder about to be made): at, in or
+/// above a guarded path as spelled or with existing folders resolved (a link to a queued job's
+/// output folder), or inside one by the identity of its nearest existing folder (a new file
+/// in a job's source folder or `.part`).
+fn new_in_use<'a>(path: &Path, mut guarded: impl Iterator<Item = &'a PathBuf>) -> bool {
+    let real = resolved(path);
+    let chain = (path.ancestors().skip(1))
+        .filter(|p| !p.as_os_str().is_empty())
+        .find_map(|p| p.canonicalize().ok())
+        .and_then(|real| ids_up(&real).ok())
+        .unwrap_or_default();
+    guarded.any(|g| {
+        let g: PathBuf = g.components().collect();
+        if path.starts_with(&g) || g.starts_with(path) {
+            return true;
+        }
+        if crate::net::is_network(&g) {
+            return false;
+        }
+        let at = resolved(&g);
+        real.starts_with(&at)
+            || at.starts_with(&real)
+            || followed_id(&g).is_ok_and(|g| chain.contains(&g))
+    })
 }
 
 /// The image whose undo journal ([`ps5_dump_forge_patch::journal_path`]) `path` would be.
@@ -1009,6 +1069,23 @@ mod tests {
         }
         assert_eq!(smp_folder(&games, &games), None);
         assert_eq!(smp_folder(Path::new("/mnt/shadowmnt2"), &games), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A path not made yet is in use inside a used folder, and at a used path that doesn't
+    /// exist yet reached through a link.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_path_is_judged_by_its_folders() {
+        let dir = crate::test_dir("in-use-new");
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::create_dir_all(dir.join("game")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+        let guarded = [dir.join("alias/new.exfat"), dir.join("game")];
+        assert!(in_use(&dir.join("real/new.exfat"), &guarded));
+        assert!(in_use(&dir.join("game/new/file"), &guarded));
+        assert!(!in_use(&dir.join("real/other.exfat"), &guarded));
+        assert!(!in_use(&dir.join("gamer"), &guarded));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

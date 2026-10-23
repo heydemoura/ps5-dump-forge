@@ -114,6 +114,7 @@ pub(crate) fn open(source: &Path) -> anyhow::Result<Result<Lz4Traces, String>> {
             ),
         }))
     };
+    crate::net::refuse(source, "downloading traces")?;
     let kind = Kind::of(source)?;
     if let Kind::Archive(_) = kind {
         anyhow::bail!(

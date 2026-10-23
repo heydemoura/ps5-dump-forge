@@ -61,7 +61,11 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
     let mut pfs_findings = Vec::new();
     let mut cnt_id = None;
     let mut forge_version = None;
-    let mut tree = if kind == Kind::Pkg {
+    // A NAS share or a peer: the tree only (the format facts below read a local file).
+    let net = crate::net::is_network(path);
+    let mut tree = if net {
+        open_source(path, kind, &AtomicBool::new(false))?
+    } else if kind == Kind::Pkg {
         let pkg =
             FpkgSource::open(path, None).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
         (details, cnt_id) = pkg_header(path)?;
@@ -153,7 +157,7 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
             .as_deref()
             .and_then(preflight::title_from_content_id);
     }
-    if kind == Kind::Exfat {
+    if kind == Kind::Exfat && !net {
         let g = ExFat::open(path)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?
             .geometry();
@@ -185,13 +189,17 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
         }
     }
     if matches!(kind, Kind::Exfat | Kind::Ffpkg | Kind::Ffpfs | Kind::Ffpfsc) {
-        let len = std::fs::metadata(path)?.len();
+        let len = if net {
+            crate::net::seen(path)?.0
+        } else {
+            std::fs::metadata(path)?.len()
+        };
         details.push(format!("image file: {len} bytes"));
         if len % (64 * 1024) != 0 {
             findings.push("the image size is not a multiple of 64 KiB".to_string());
         }
     }
-    if matches!(kind, Kind::Exfat | Kind::Ffpkg) {
+    if matches!(kind, Kind::Exfat | Kind::Ffpkg) && !net {
         forge_version = std::fs::File::open(path)
             .ok()
             .and_then(|mut f| maker_version(&mut f, kind == Kind::Exfat));
@@ -276,6 +284,7 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
         lz4,
         archive,
         interrupted_edit: kind != Kind::Folder
+            && !net
             && ps5_dump_forge_patch::journal_path(path)
                 .symlink_metadata()
                 .is_ok(),
@@ -855,7 +864,7 @@ pub(crate) fn generated_output(
             stem.clone()
         };
         let path = with_extension(dir, &format!("{stem}{suffix}"), format);
-        if !taken.contains(&path) && std::fs::symlink_metadata(&path).is_err() {
+        if !taken.contains(&path) && !crate::net::exists(&path) {
             return Ok(path);
         }
     }
@@ -938,6 +947,9 @@ fn output_dir(source: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     if !dir.as_os_str().is_empty() {
         return Ok(dir.to_path_buf());
     }
+    if let Some(why) = crate::net::output_refusal(source) {
+        bail!("{why}");
+    }
     let mut source =
         std::path::absolute(source).with_context(|| format!("{}", source.display()))?;
     // `absolute` keeps a trailing `..` (`convert ..`), whose lexical parent is the wrong folder.
@@ -986,7 +998,9 @@ fn default_stem(source: &Path, title_id: Option<String>) -> anyhow::Result<Strin
     Ok(match title_id {
         Some(id) => id,
         None => {
-            let stem = if source.is_dir() {
+            let stem = if source.is_dir()
+                || crate::net::is_network(source) && Kind::of(source)? == Kind::Folder
+            {
                 source.file_name()
             } else {
                 source.file_stem()
@@ -1005,6 +1019,12 @@ fn game_info(source: &Path, password: Option<&str>) -> anyhow::Result<GameInfo> 
     let kind = Kind::of(source)?;
     let info = match kind {
         Kind::Archive(_) => archive_info(source, password)?,
+        Kind::Folder if crate::net::is_network(source) => {
+            match crate::net::read_small(source, "sce_sys/param.json", preflight::MAX_PARAM_JSON)? {
+                Some(bytes) => preflight::parse_param(&bytes),
+                None => GameInfo::default(),
+            }
+        }
         // Straight from disk: naming an output needs no full scan of the folder.
         Kind::Folder => {
             let param = source.join("sce_sys").join("param.json");

@@ -1,10 +1,9 @@
 <p align="center"><img src="app/src-tauri/icons/128x128@2x.png" width="128" alt="PS5 Dump Forge"></p>
 
-Runs on everything (including your PS5), converts and edits everything: game `folders`, `exfat`, `ffpkg`, `ffpfs`,
-`ffpfsc` and debug `FPKG` packages, straight from `zip`, `7z` and `rar` too, with experimental `LZ4` asset packs for AMPR games.
+Runs on PS5, Windows, macOS and Linux, and can convert and edit any format: game `folders`, `exfat`, `ffpkg`, `ffpfs`,
+`ffpfsc` and `FPKG (pkg)` packages, straight from `zip`, `7z` and `rar` too, with experimental `LZ4` asset packs for AMPR games.
 
-
-The interface is in **11 languages**.
+Also supports **transfers and on-the-fly conversion** on all platforms, with the interface translated into **11 languages**.
 
 | Platform | Runs on | You get |
 |---|---|---|
@@ -16,28 +15,30 @@ The interface is in **11 languages**.
 ## Features
 
 - **Any source to any target**, streamed straight through: no temporary copy, not even the image inside a `.ffpfsc` or a game in an archive.
+- **Every format ShadowMountPlus mounts**, created and read back, plus the debug FPKG; the app's About tab compares their console speed and size on disk.
 - **Archives as sources**: a `.zip`, `.7z` or `.rar` holding one game is browsed, converted or packed like a folder.
 - **LZ4 compression**, new experimental way to pack ampr_emu enabled games.
 - **Storage**: a **Library** of your games to convert and edit, and a **File explorer** to rename, move and delete files and folders.
-- **Never touches your dump** unless you ask (Edit's Apply, LZ4 Patch/Unpatch, Delete, the File explorer's Delete, Rename and Move): junk (`.DS_Store`, `._*`, ...) is skipped, not deleted; bad file names are reported up front, never renamed.
-- **Edit** a dump or image: browse its files, rename, delete, add or replace files and folders, then apply the changes in place or by rebuilding the image; extract files and folders from any source. The game card shows the cover, title, required firmware, backport firmware (`fakelib/`), embedded DLC, `param.json` and leftover `.part` files.
-- **Runs on the PS5 itself**: converts on the console's own storage, driven from its browser or any browser on the network.
-- **Writes onto USB sticks and SD cards** formatted exFAT or FAT32.
+- **Edit** a dump or image: browse its files, rename, delete, add or replace files and folders, then apply the changes in place or by rebuilding the image; extract files and folders from any source. The game card shows the cover, title, required firmware, backport firmware (`fakelib/`), embedded DLC and `param.json`; leftover `.part` files from interrupted jobs are listed under it when there are any.
+- **Connect, transfers and on-the-fly conversion**: another Forge or a NAS (SMB, FTP, NFS), found by **Autodiscovery**, is a source and an output: convert straight between devices or copy files, nothing staged here.
+- **One-click install on the PS5** from the desktop app: the console downloads the matching Dump Forge release from GitHub and starts it. Any other ELF payload can be sent the same way.
+- **Additional content**: a DLC or an update (no `eboot.bin`, a valid `param.json`) is labelled everywhere, editable, and packs into a debug FPKG.
 - **Fast**: (and furious).
 
-## Formats
+## Transfers and on-the-fly conversion
 
-Images are mounted by [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus); the debug FPKG is
-installed. Every format can be created and read back (an image or a debug FPKG `.pkg` can be extracted to a folder).
+A paired Forge (a computer or a PS5) and a saved NAS (SMB, FTP or NFS) are sources and outputs like a local
+folder. While a device is online it is a tab in every file picker.
 
-| Format | Console speed | Size on disk | Notes |
-|---|---|---|---|
-| `.fpkg` (debug FPKG, saved as `.pkg`) | Native, full speed | 30–60% less, depending on the game | Installs on firmware 11.60 or lower. Reads packages from this builder and compatible debug builders. |
-| `.ffpkg` (UFS2) | Full image speed | Equal to the game size | ShadowMountPlus's recommendation. |
-| `.exfat` (512 B sectors, 64 KiB clusters) | Full image speed | Equal to the game size | For games that only run like external-drive content. |
-| `.ffpfs` (PFS, uncompressed) | Full image speed | Equal to the game size | Experimental in ShadowMountPlus. ASCII file names only. |
-| `.ffpfsc` (compressed PFS container) | may stutter | Depends on the compression level, usually 30–60% less | Experimental, always mounted read-only. UFS2 (default), exFAT or PFS inside. zlib level 0–9 (`--level`), default 6. |
-| Folder | Full drive speed | Equal to the game size | Run as it is by ShadowMountPlus. |
+- **On-the-fly conversion**: Convert reads a game folder or image on one device and writes the new image or
+  folder onto another, streamed over the network: nothing is copied to this device first, a debug FPKG
+  included. An image is written as a `.part`, read back over the network to verify it, then renamed into
+  place; a folder is written file by file. A `.pkg` or an archive source has to be on this device.
+- **File Transfer** (Connect tab) copies files and folders from any device to a folder on any other, a peer
+  to peer copy relayed through this one. It runs beside a conversion, and every file is checked by its size
+  when it lands. Nothing there is ever replaced.
+- **Phones and browsers**: in the web UI, File Transfer uploads files from the browser's device or downloads one
+  to it.
 
 ## Editing a game
 
@@ -57,18 +58,36 @@ Before you press Apply the tab says how the changes will go in:
   changes, verified, then put in its place. It needs free space beside the original for the new image (the tab says how much: for `.ffpfsc` and `.pkg`
   it can be more than the original's size). It is
   the only way for `.ffpfsc` and `.pkg`, and the way when the changes don't fit in place.
+- **Changed directly**: a game folder is changed file by file, with no undo file.
 
 **Extract** copies a file or folder (a row's Extract button, or **Extract folder** for the folder shown, the
-whole game at the top) out of any source, images, `.pkg` and archives included, into a folder you choose.
+whole game at the top) out of any source, images, `.pkg` and archives included, into a folder you choose (on this
+device, a paired Forge or a NAS).
 Nothing there is ever replaced: a name that already exists stops it before anything is copied.
 
 ## Storage
 
 The **Storage** tab holds the **Library** (the games found in a folder you choose, or on the PS5's drives)
-and a **File explorer**. Both open a game in Edit or Convert. The File explorer renames, moves and deletes at
-once, after you confirm: a delete is permanent (no Trash), a move stays on the same drive and never replaces
-anything, and anything an unfinished job uses is refused. On the PS5, images ShadowMountPlus has mounted are
-tagged **Mounted** in the File explorer and can't be edited, moved or deleted.
+and a **File explorer**. Both open a game in Edit or Convert, and the Library deletes one after you confirm. The
+File explorer renames, moves and deletes at once (a delete after you confirm): a delete is permanent (no Trash), a
+move stays on the same drive and never replaces anything, and anything an unfinished job uses is refused. On the
+PS5, images ShadowMountPlus has mounted are tagged **Mounted** in the File explorer and can't be edited, renamed,
+moved or deleted, and both views show the console's free space.
+
+## Connect
+
+The **Connect** tab pairs this Forge with another one on the local network (**Autodiscovery**, which also runs
+at every start, or an address under **Add a device**), and you allow it on the other device when both screens
+show the same check number. A NAS (SMB, FTP, NFS) is saved the same way; one saved by IP that comes back on a new
+address under the same name moves there by itself. While online, paired and saved devices are tabs in the file pickers:
+their games are converted and their folders take outputs, but in Edit they are only browsed and extracted from.
+**File Transfer** copies files and folders between any of them. In a browser, the tab's QR code opens the page
+on a phone, and File Transfer can upload to or download from the device serving the page.
+
+In the desktop app, **Dump Forge on PS5** installs Dump Forge on a console in one click: type its address and press
+**Install on PS5**, and the console's ELF loader downloads the release matching the app (or the latest) from GitHub
+and starts it. **Send a payload** sends any other ELF file from the computer the same way. It needs an ELF loader
+that listens on the network (port 9021).
 
 ## LZ4 asset packs
 
@@ -97,13 +116,15 @@ front what it will do.
 ## Download and run
 
 Every release archive on the Releases page holds the app and the `ps5-dump-forge` command-line tool. Nothing to install; the app writes nothing beyond its own
-WebView data, so keep it in any folder you can write to.
+WebView data, so keep it in any folder you can write to. At every start the app and the console's page check GitHub
+for a newer release and offer it (on the PS5, **Update** loads it through the ELF loader).
 
 ### PS5 (jailbroken, with an ELF loader)
 
 - **Load it** with any ELF loader: send `ps5-dump-forge-<version>-ps5.elf` to elfldr's port 9021
   (`nc -w 3 <ps5-ip> 9021 < ps5-dump-forge-<version>-ps5.elf`), or list it in an autoloader's
-  `autoload.txt`. A notification says Dump Forge is launched; open it from its icon.
+  `autoload.txt`, or use **Install on PS5** in the desktop app's Connect tab. A notification says Dump Forge is
+  launched; open it from its icon.
 - **Open the UI** from the Dump Forge icon, or in any browser on the same network:
   `http://<ps5-ip>:8095`. In the console's browser, **L2** / **R2** switch tabs.
 

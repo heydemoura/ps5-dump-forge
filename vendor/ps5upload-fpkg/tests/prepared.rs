@@ -742,3 +742,155 @@ fn a_sampled_self_check_runs_through_write_package() {
     );
     assert!(text.contains("batches sampled"), "{text}");
 }
+
+/// An output that is not a file (Forge writes onto another device): clones share one buffer,
+/// each with a position of its own. The package is the one a file gets, byte for byte, and its
+/// self-check (and the in-place Kraken spool) reads it back through clones. A plaintext Kraken
+/// build digests its blocks as it compresses them, so it reads none of its own output before
+/// the self-check; an encrypted one still reads its image back to transform it.
+#[test]
+fn a_package_is_written_into_any_pkg_out() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    struct Mem {
+        data: Arc<Mutex<Vec<u8>>>,
+        pos: u64,
+        /// Set once the self-check starts; bytes read before that are counted in `early`.
+        verifying: Arc<AtomicBool>,
+        early: Arc<AtomicU64>,
+    }
+    impl Read for Mem {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let data = self.data.lock().unwrap();
+            let at = (self.pos as usize).min(data.len());
+            let n = buf.len().min(data.len() - at);
+            buf[..n].copy_from_slice(&data[at..at + n]);
+            self.pos += n as u64;
+            if !self.verifying.load(Ordering::Relaxed) {
+                self.early.fetch_add(n as u64, Ordering::Relaxed);
+            }
+            Ok(n)
+        }
+    }
+    impl Write for Mem {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut data = self.data.lock().unwrap();
+            let end = self.pos as usize + buf.len();
+            if data.len() < end {
+                data.resize(end, 0);
+            }
+            data[self.pos as usize..end].copy_from_slice(buf);
+            self.pos = end as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Seek for Mem {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            let len = self.data.lock().unwrap().len() as i64;
+            self.pos = match to {
+                SeekFrom::Start(p) => p as i64,
+                SeekFrom::End(d) => len + d,
+                SeekFrom::Current(d) => self.pos as i64 + d,
+            } as u64;
+            Ok(self.pos)
+        }
+    }
+    impl ps5upload_fpkg::PkgOut for Mem {
+        fn try_clone_out(&self) -> std::io::Result<Box<dyn ps5upload_fpkg::PkgOut>> {
+            Ok(Box::new(Mem {
+                data: self.data.clone(),
+                pos: 0,
+                verifying: self.verifying.clone(),
+                early: self.early.clone(),
+            }))
+        }
+        fn out_len(&self) -> std::io::Result<u64> {
+            Ok(self.data.lock().unwrap().len() as u64)
+        }
+        fn sync_out(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let src = TempDir::new("pkgout-src");
+    write_tree(src.path());
+    for (mode, name) in [
+        (ps5upload_fpkg::ImageMode::PlaintextNoAuth, "plain"),
+        (ps5upload_fpkg::ImageMode::Native, "native"),
+    ] {
+        let out = TempDir::new(&format!("pkgout-out-{name}"));
+        let mut tree = FolderSource::open(src.path()).unwrap();
+        let prepared = build::prepare(
+            &mut tree,
+            &BuildRequest {
+                image_mode: mode,
+                kraken: true,
+                env_overrides: false,
+                ..request(src.path())
+            },
+            &mut BuildControl::default(),
+        )
+        .unwrap();
+        let path = out.path().join("file.part");
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let on_file = build::write_package(
+            &prepared,
+            &mut tree,
+            &mut file,
+            &path,
+            &mut |_| {},
+            &mut BuildControl::default(),
+        )
+        .unwrap();
+        let mut mem = Mem {
+            data: Arc::new(Mutex::new(Vec::new())),
+            pos: 0,
+            verifying: Arc::new(AtomicBool::new(false)),
+            early: Arc::new(AtomicU64::new(0)),
+        };
+        let verifying = mem.verifying.clone();
+        let mut on_stage = |s: build::Stage| {
+            if s == build::Stage::Verify {
+                verifying.store(true, Ordering::Relaxed);
+            }
+        };
+        let in_mem = build::write_package(
+            &prepared,
+            &mut tree,
+            &mut mem,
+            Path::new("mem.part"),
+            &mut |_| {},
+            &mut BuildControl {
+                stage: Some(&mut on_stage),
+                ..BuildControl::default()
+            },
+        )
+        .unwrap();
+        assert!(in_mem.verify.ok(), "{name}: {}", in_mem.verify);
+        assert!(mem.verifying.load(Ordering::Relaxed), "{name}");
+        assert_eq!(in_mem.size, on_file.size, "{name}");
+        assert!(
+            *mem.data.lock().unwrap() == std::fs::read(&path).unwrap(),
+            "{name}: the packages differ"
+        );
+        let early = mem.early.load(Ordering::Relaxed);
+        match mode {
+            ps5upload_fpkg::ImageMode::PlaintextNoAuth => {
+                assert_eq!(early, 0, "a plaintext build read its own output back")
+            }
+            ps5upload_fpkg::ImageMode::Native => {
+                assert!(early > 0, "an encrypted build reads its image back")
+            }
+        }
+    }
+}

@@ -86,6 +86,10 @@ function PasswordDialog(props: {
   const unlock = async () => {
     if (!value || checking) return;
     const password = value;
+    // The prompt again while checking, so a second "not correct" is announced anew; focus to
+    // the input, since the disabled Unlock would drop it to the page (Escape, Tab trap lost).
+    setWrong(false);
+    input.current?.focus();
     setChecking(true);
     try {
       props.onOpened({ ins: await api.inspect(props.path, password), password });

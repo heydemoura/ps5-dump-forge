@@ -490,7 +490,8 @@ pub(super) fn walk(
                 loop {
                     check(cancel)?;
                     let n = reader.read(&mut buf).map_err(|error| {
-                        if encrypted {
+                        // A wrong key decodes garbage; an OS error (a drive gone) is still I/O.
+                        if encrypted && error.raw_os_error().is_none() {
                             ArchiveError::PasswordWrong
                         } else {
                             ArchiveError::Io(error)

@@ -108,7 +108,14 @@ pub(crate) fn probe(dir: &Path, cancel: &AtomicBool) -> anyhow::Result<Dest> {
         .dev();
     let mut notes = Vec::new();
 
-    let pid = std::process::id();
+    // Per call, not only per process: a job's preflight and an `edit_check` may probe one folder
+    // at once, and the names are created exclusively.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let pid = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let mut probes = Probes {
         folder: &folder,
         cancel,
@@ -402,6 +409,12 @@ pub(crate) fn mount_state(mount: &Path) -> io::Result<(u64, u64)> {
 #[cfg(all(test, target_os = "freebsd"))]
 pub(crate) fn fstype_of(path: &Path) -> io::Result<String> {
     Ok(Statfs::at(path)?.fstype)
+}
+
+/// The bytes an unprivileged user may still write on `path`'s filesystem.
+#[cfg(target_os = "freebsd")]
+pub(crate) fn free_at(path: &Path) -> io::Result<u64> {
+    Ok(Statfs::at(path)?.free)
 }
 
 /// What `fstatfs` says about the folder's filesystem.

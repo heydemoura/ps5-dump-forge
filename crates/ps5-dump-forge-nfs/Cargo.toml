@@ -1,0 +1,11 @@
+[package]
+name = "ps5-dump-forge-nfs"
+description = "A small blocking NFS client (NFSv4.1 and NFSv3 over ONC RPC on TCP), std only"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+# The privileged source port (bind before connect), which std can't do.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

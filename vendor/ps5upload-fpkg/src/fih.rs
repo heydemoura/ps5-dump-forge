@@ -3,7 +3,7 @@
 use crate::{format_err, le16, le64, Result};
 
 pub const HEADER_LEN: usize = 0x100;
-const MAGIC: u32 = 0x7F46_4948;
+pub(crate) const MAGIC: u32 = 0x7F46_4948;
 
 pub struct Fih {
     pub signed_byte: u8,

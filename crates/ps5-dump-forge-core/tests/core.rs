@@ -60,6 +60,7 @@ fn request(source: &Path, format: Format, output: &Path) -> ConvertRequest {
         lz4_in_place: false,
         edits: Vec::new(),
         extract: Vec::new(),
+        transfer: Vec::new(),
         edit_rebuild: false,
         archive_password: None,
     }

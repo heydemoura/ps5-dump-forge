@@ -51,10 +51,19 @@ pub(crate) enum Kind {
 
 impl Kind {
     pub(crate) fn of(path: &Path) -> anyhow::Result<Self> {
-        if path.is_dir() {
+        let net = crate::net::is_network(path);
+        if net && crate::net::is_dir(path)? || !net && path.is_dir() {
             return Ok(Self::Folder);
         }
         if let Some(format) = ps5_dump_forge_archive::detect(path) {
+            // ponytail: the archive readers take a local path, so one on a NAS or a peer isn't read.
+            if net {
+                bail!(
+                    "{}: an archive on another device can't be read yet: copy it to this device \
+                     first",
+                    path.display()
+                );
+            }
             return Ok(Self::Archive(format));
         }
         let ext = path
@@ -94,6 +103,7 @@ impl Kind {
 /// that only reads the image (or replaces it, LZ4 in place) must not take it as it is.
 pub(crate) fn refuse_interrupted_edit(path: &Path, kind: Kind) -> anyhow::Result<()> {
     if !matches!(kind, Kind::Folder | Kind::Archive(_))
+        && !crate::net::is_network(path)
         && std::fs::symlink_metadata(ps5_dump_forge_patch::journal_path(path)).is_ok()
     {
         bail!(
@@ -112,6 +122,10 @@ pub(crate) fn open_source(
     cancel: &AtomicBool,
 ) -> anyhow::Result<Box<dyn SourceTree>> {
     let with_path = |e: ps5upload_fpkg::Error| anyhow::anyhow!("{}: {e}", path.display());
+    if crate::net::is_network(path) {
+        let tree = crate::net::open(path, kind, cancel)?;
+        return Ok(Box::new(JunkFiltered::new(tree)));
+    }
     let image: Box<dyn SourceTree> = match kind {
         Kind::Folder => return Ok(Box::new(ScannedFolder::scan(path, cancel)?)),
         Kind::Exfat => Box::new(ExFatSource::open(path).map_err(with_path)?),
@@ -156,6 +170,7 @@ fn reopen(e: ps5upload_fpkg::Error) -> anyhow::Error {
 // ponytail: on FAT (FreeBSD's msdosfs) a file's id comes from its directory slot and mtimes
 // have 2-second steps, so a same-size file renamed over the source within 2 s goes unnoticed.
 // Upgrade: also hash a sample of the contents.
+#[derive(Clone)]
 pub(crate) struct SourceStamp {
     path: PathBuf,
     seen: Option<Seen>,
@@ -211,6 +226,11 @@ impl SourceStamp {
         &self.path
     }
 
+    /// Whether `other` (a later stamp) names the same file, unchanged.
+    pub(crate) fn same(&self, other: &SourceStamp) -> bool {
+        self.path == other.path && self.seen == other.seen && self.parts == other.parts
+    }
+
     /// The file still has the length, modification time and identity it had when stamped
     /// (always true for a folder's stamp, which holds none).
     pub(crate) fn unchanged(&self) -> bool {
@@ -228,6 +248,11 @@ impl SourceStamp {
     }
 
     fn seen(path: &Path) -> anyhow::Result<Seen> {
+        if crate::net::is_network(path) {
+            // ponytail: a share or a peer gives no file identity; length and mtime catch a change.
+            let (len, mtime) = crate::net::seen(path)?;
+            return Ok((len, mtime, Default::default()));
+        }
         let shown = || format!("{}", path.display());
         #[cfg(unix)]
         let (meta, id) = {
@@ -449,7 +474,7 @@ fn synced<T>(
     file: &mut File,
     cadence: &mut crate::durable::Cadence,
     ctx: &Ctx,
-    write: impl FnOnce(&mut crate::durable::SyncEvery<'_, &mut File>) -> ps5upload_fpkg::Result<T>,
+    write: impl FnOnce(&mut crate::durable::SyncEvery<'_, &mut File>) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     let mut out = crate::durable::SyncEvery::new(file, cadence, ctx.cancel);
     let value = write(&mut out)?;
@@ -476,6 +501,9 @@ pub(crate) fn log_cadence(cadence: &mut crate::durable::Cadence, ctx: &Ctx) {
 /// full verification. `.pkg`'s middle ones are the builder's `Stage` ids (`verify` is both
 /// the builder's read-back and ours).
 pub(crate) fn stages(req: &ConvertRequest) -> Vec<&'static str> {
+    if !req.transfer.is_empty() {
+        return crate::transfer::STAGES.to_vec();
+    }
     if !req.extract.is_empty() {
         return crate::extract_paths::STAGES.to_vec();
     }
@@ -505,6 +533,10 @@ fn conversion_stages(format: Format, packing: bool) -> Vec<&'static str> {
 }
 
 pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> {
+    // Files and folders copied from anywhere into a folder, nothing converted.
+    if !req.transfer.is_empty() {
+        return crate::transfer::run(req, ctx);
+    }
     // Files and folders copied out of the source, nothing converted.
     if !req.extract.is_empty() {
         return crate::extract_paths::run(req, ctx);
@@ -562,7 +594,39 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
     ctx.progress("preflight", 0, 1);
     // In place the output is the source itself; its `.part` goes beside it.
     let in_place = req.lz4_in_place || rebuild;
-    let out = preflight::output_path(if in_place { &req.source } else { &req.output })?;
+    // The output may go to a paired device: an image through a `RemoteFile`, a folder file by
+    // file through a `RemoteDir`.
+    let remote_out = !in_place && crate::remote::is_remote(&req.output);
+    // An fpkg (its in-place spool) and LZ4 packs in a folder (each volume's header rewritten last)
+    // go back over what they wrote, which an FTP server must take (`REST` + `STOR` cutting
+    // nothing): probed in the output's folder.
+    let packs_folder = matches!(req.format, Format::Lz4)
+        || (req.format == Format::Folder && req.lz4 == Some(Lz4Mode::Pack));
+    if remote_out
+        && crate::remote::is_ftp(&req.output)
+        && (req.format == Format::Pkg || packs_folder)
+    {
+        let at = crate::remote::FlinkPath::parse(&req.output)?;
+        let dir = at.parent().unwrap_or_else(|| at.clone());
+        if !crate::ftp::can_rewrite(&dir)
+            .with_context(|| format!("checking the FTP server at {}", dir.shown()))?
+        {
+            bail!(
+                "{}: this FTP server can't rewrite part of a file, which {} needs: choose another output",
+                req.output.display(),
+                if req.format == Format::Pkg {
+                    "an fpkg"
+                } else {
+                    "LZ4 packs in a folder"
+                }
+            );
+        }
+    }
+    let out = if remote_out {
+        crate::remote::output_path(&req.output)?
+    } else {
+        preflight::output_path(if in_place { &req.source } else { &req.output })?
+    };
     // A rebuild writes the edited tree; the checks below run on it.
     let (mut source, edit_findings) = if rebuild {
         let folded = crate::edit_job::fold(
@@ -686,7 +750,8 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
                 findings.extend(crate::extract::extraction_findings(
                     &paths,
                     source.empty_dirs(),
-                    crate::extract::CASE_INSENSITIVE,
+                    // Another device's folding is unknown: as if it folds (an SMB share does).
+                    crate::extract::CASE_INSENSITIVE || crate::remote::is_remote(&req.output),
                 ));
             }
             largest = source.files().iter().map(|f| f.size).max().unwrap_or(0);
@@ -774,8 +839,14 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
     let dir = out.parent().expect("output_path gives a parent");
     // U7: so a probe that fails because the drive went away says so.
     #[cfg(target_os = "freebsd")]
-    ctx.watch(dir);
-    let checked = preflight::destination(dir, need, largest, ctx.cancel);
+    if !remote_out {
+        ctx.watch(dir);
+    }
+    let checked = if remote_out {
+        crate::remote::destination(dir, need)
+    } else {
+        preflight::destination(dir, need, largest, ctx.cancel)
+    };
     findings.extend(checked.findings);
     for note in checked.notes {
         ctx.log(note);
@@ -798,8 +869,13 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
     let Some(plan) = plan.filter(|_| findings.is_empty()) else {
         bail!("preflight failed:\n  {}", findings.join("\n  "));
     };
+    // An output on a peer is not probed here (its own side writes it).
     #[cfg(target_os = "freebsd")]
-    let dest = checked.dest.context("the destination was not probed")?;
+    let dest = if remote_out {
+        None
+    } else {
+        Some(checked.dest.context("the destination was not probed")?)
+    };
     // After a measure pass the stage stays `measure`: preflight is not reported again.
     if measured.is_none() {
         ctx.progress("preflight", 1, 1);
@@ -859,20 +935,47 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
     let mut physical: Option<verify::Expected> = None;
     // The image `.part` stays open from creation to verification, so what is verified is
     // the file this job wrote, whatever happens to its name meanwhile.
+    // A folder on a peer is written in place (a peer renames no folder), so what was written
+    // before a failure stays there.
+    let kept = |e: anyhow::Error| {
+        if remote_out && matches!(plan, Plan::Folder | Plan::Lz4(_)) && crate::remote::exists(&out)
+        {
+            anyhow::anyhow!(
+                "{e:#}; {} on the other device keeps what was written before it",
+                out.display()
+            )
+        } else {
+            e
+        }
+    };
     let (part, image, bytes, wrapped) = match &plan {
+        Plan::Folder if remote_out => {
+            let mut dir = crate::remote::RemoteDir::create(&out)?;
+            let bytes = crate::extract::write_remote(&mut hashing, &mut dir, ctx).map_err(kept)?;
+            (Written::Folder(dir), None, bytes, None)
+        }
         Plan::Folder => {
             #[cfg_attr(not(target_os = "freebsd"), allow(unused_mut))]
             let mut part = Part::create_dir(&part_path)?;
             #[cfg(target_os = "freebsd")]
-            part.set_dest(&dest);
+            if let Some(dest) = &dest {
+                part.set_dest(dest);
+            }
             let bytes = crate::extract::write(&mut hashing, &part, ctx)?;
-            (part, None, bytes, None)
+            (Written::Local(part), None, bytes, None)
         }
         Plan::Lz4(pack) => {
-            #[cfg_attr(not(target_os = "freebsd"), allow(unused_mut))]
-            let mut part = Part::create_dir(&part_path)?;
-            #[cfg(target_os = "freebsd")]
-            part.set_dest(&dest);
+            let mut part = if remote_out {
+                Written::Folder(crate::remote::RemoteDir::create(&out)?)
+            } else {
+                #[cfg_attr(not(target_os = "freebsd"), allow(unused_mut))]
+                let mut part = Part::create_dir(&part_path)?;
+                #[cfg(target_os = "freebsd")]
+                if let Some(dest) = &dest {
+                    part.set_dest(dest);
+                }
+                Written::Local(part)
+            };
             // The loose files through a view of the one hashing tree, then the packed ones:
             // each file is read once, front to back, and keeps its digest.
             let packed: std::collections::HashSet<&str> = pack
@@ -882,7 +985,12 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
                 .map(|f| f.path.as_str())
                 .collect();
             let mut loose = crate::lz4::Only::new(&mut hashing, |p| !packed.contains(p));
-            let loose = crate::extract::write(&mut loose, &part, ctx)?;
+            let loose = match &mut part {
+                Written::Folder(dir) => crate::extract::write_remote(&mut loose, dir, ctx),
+                Written::Local(local) => crate::extract::write(&mut loose, local, ctx),
+                Written::Remote(_) => unreachable!("a folder is written"),
+            }
+            .map_err(kept)?;
             let stored = write_packs(
                 &mut hashing,
                 pack,
@@ -892,7 +1000,8 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
                 ctx,
                 #[cfg(target_os = "freebsd")]
                 &mut cadence,
-            )?;
+            )
+            .map_err(kept)?;
             (part, None, loose.saturating_add(stored), None)
         }
         Plan::Image(_) | Plan::Ffpfsc(..) => {
@@ -916,7 +1025,7 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
                         req,
                         ctx,
                         #[cfg(target_os = "freebsd")]
-                        &dest,
+                        dest.as_ref(),
                         #[cfg(target_os = "freebsd")]
                         &mut cadence,
                     )?;
@@ -933,7 +1042,7 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
                     req,
                     ctx,
                     #[cfg(target_os = "freebsd")]
-                    &dest,
+                    dest.as_ref(),
                     #[cfg(target_os = "freebsd")]
                     &mut cadence,
                 )?,
@@ -941,49 +1050,38 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
             (part, Some(file), size, wrapped)
         }
     };
-    // On FreeBSD `synced` has synced it.
+    // On FreeBSD `synced` has synced it, and a peer's at its finish.
     #[cfg(not(target_os = "freebsd"))]
-    if let Some(file) = &image {
+    if let Some(Back::Local(file)) = &image {
         file.sync_all().context("syncing the image")?;
     }
-    ctx.check()?;
+    ctx.check().map_err(kept)?;
 
     ctx.progress("verify", 0, 1);
     // Packed, the image's read-back as written comes first.
     ctx.reserve(physical_check);
-    let expected = hashing.expected(ctx, mode)?;
+    let expected = hashing.expected(ctx, mode).map_err(kept)?;
     // The source is read no more: its handles close before the output may replace it
     // (Windows refuses to rename over an open file).
     drop(ahead);
     // Nor are the packs regenerated: their metadata goes before the reader builds its own.
     drop(measured);
-    ctx.check()?;
+    ctx.check().map_err(kept)?;
     let runtime = pack.as_ref().and_then(|p| p.runtime);
     let label = part.path().display().to_string();
     let mut checks = match (&plan, image) {
         (Plan::Lz4(pack), _) => {
-            let tree = ScannedFolder::scan(part.path(), ctx.cancel)?;
-            // As for a folder, below.
-            if tree.root() != part.path() {
-                bail!("{} was replaced while verifying", part.path().display());
-            }
-            pack_checks(&expected, Box::new(tree), pack.runtime, ctx, mode)?
+            let tree = written_folder(&part, ctx).map_err(kept)?;
+            pack_checks(&expected, tree, pack.runtime, ctx, mode).map_err(kept)?
         }
         (Plan::Folder, _) => {
-            let mut tree = ScannedFolder::scan(part.path(), ctx.cancel)?;
-            // `scan` resolves its root; a `.part` swapped for a link resolves elsewhere.
-            // ponytail: verification reads by path below that root. Someone who can rename
-            // entries in the output folder could swap it mid-read, but could as well swap
-            // the published output a moment later; that writer is outside the threat model.
-            if tree.root() != part.path() {
-                bail!("{} was replaced while verifying", part.path().display());
-            }
-            verify::compare(&expected, &mut tree, ctx, mode)?
+            let mut tree = written_folder(&part, ctx).map_err(kept)?;
+            verify::compare(&expected, tree.as_mut(), ctx, mode).map_err(kept)?
         }
-        (Plan::Image(Image::Exfat(_)), Some(file)) => {
-            let mut checks = image_checks(&file, bytes)?;
-            let len = file.metadata()?.len();
-            let volume = ExFat::from_file(PkgFile::from_reader(Box::new(file), len), &label)
+        (Plan::Image(Image::Exfat(_)), Some(back)) => {
+            let mut checks = image_checks(&back, bytes)?;
+            let len = back.len()?;
+            let volume = ExFat::from_file(PkgFile::from_reader(back.reader()?, len), &label)
                 .map_err(reopen)?;
             checks.push(exfat_geometry(&volume)?);
             ctx.check()?;
@@ -999,10 +1097,10 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
             )?);
             checks
         }
-        (Plan::Image(Image::Ffpkg(layout)), Some(file)) => {
-            let mut checks = image_checks(&file, bytes)?;
-            checks.extend(ufs2_geometry(&mut &file, layout)?);
-            let tree = Ufs2Source::from_reader(Box::new(file), format!("ffpkg {label}"))
+        (Plan::Image(Image::Ffpkg(layout)), Some(back)) => {
+            let mut checks = image_checks(&back, bytes)?;
+            checks.extend(ufs2_geometry(&mut back.reader()?, layout)?);
+            let tree = Ufs2Source::from_reader(back.reader()?, format!("ffpkg {label}"))
                 .map_err(reopen)?;
             checks.push(format!("reader: {}", tree.describe()));
             checks.extend(content(
@@ -1015,10 +1113,10 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
             )?);
             checks
         }
-        (Plan::Image(Image::Ffpfs(_)), Some(file)) => {
-            let mut checks = image_checks(&file, bytes)?;
+        (Plan::Image(Image::Ffpfs(_)), Some(back)) => {
+            let mut checks = image_checks(&back, bytes)?;
             let tree =
-                PfsSource::from_reader(Box::new(file), format!("ffpfs {label}")).map_err(reopen)?;
+                PfsSource::from_reader(back.reader()?, format!("ffpfs {label}")).map_err(reopen)?;
             checks.push(pfs_geometry(tree.header())?);
             checks.extend(content(
                 &expected,
@@ -1030,18 +1128,17 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
             )?);
             checks
         }
-        (Plan::Ffpfsc(inner, name), Some(file)) => {
+        (Plan::Ffpfsc(inner, name), Some(back)) => {
             let report = wrapped
                 .as_ref()
                 .expect("a .ffpfsc job keeps its wrap report");
-            let mut checks = image_checks(&file, bytes)?;
-            let copy = file.try_clone().context("reading the output back")?;
+            let mut checks = image_checks(&back, bytes)?;
             let (tree, info) =
-                ps5_dump_forge_pfs::open_ffpfsc(Box::new(copy), &label).map_err(reopen)?;
+                ps5_dump_forge_pfs::open_ffpfsc(back.reader()?, &label).map_err(reopen)?;
             checks.push(pfs_geometry(&info.outer)?);
             checks.push(container_check(&info, name, inner.size(), report)?);
             // The inner image's own layout, read through the container like SMP reads it.
-            let outer = PfsSource::from_reader(Box::new(file), label.clone()).map_err(reopen)?;
+            let outer = PfsSource::from_reader(back.reader()?, label.clone()).map_err(reopen)?;
             let nested = Nested::new(outer, name)?;
             let geometry = image_geometry(inner, Box::new(nested), &format!("{label} ({name})"))?;
             checks.extend(geometry.into_iter().map(|c| format!("inner image {c}")));
@@ -1065,12 +1162,15 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
     ctx.expect_rest(0);
     ctx.progress("finalize", 0, 1);
     // Checked after the progress event, so a cancel sent in reaction to it still lands.
-    ctx.check()?;
-    stamp.check()?;
+    ctx.check().map_err(kept)?;
+    stamp.check().map_err(kept)?;
     if in_place && let Some(why) = crate::edit_job::smp_finding(&out) {
         bail!("{why}; the source was not replaced");
     }
     if in_place {
+        let Written::Local(part) = part else {
+            unreachable!("in place, the output is the local source")
+        };
         if let Some(backup) = part.replace(&out)? {
             ctx.log(format!(
                 "in place: the original image is still at {}; delete it once the new one works",
@@ -1194,8 +1294,74 @@ fn plan_image(
     Image::plan(format, &tree, info, free_bytes, cancel)
 }
 
-/// Writes `plan`'s image (alone or in a `.ffpfsc`) from `tree` into a new `.part`; returns the
-/// `.part`, its open file, the image's size and, for a `.ffpfsc`, the container report.
+/// The output being written: a `.part` here, an image's `.part` on a paired device, or a
+/// folder there (written at the output itself).
+enum Written {
+    Local(Part),
+    Remote(crate::remote::RemotePart),
+    Folder(crate::remote::RemoteDir),
+}
+
+impl Written {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Local(part) => part.path(),
+            Self::Remote(part) => part.path(),
+            Self::Folder(dir) => dir.path(),
+        }
+    }
+
+    fn publish(self, output: &Path) -> anyhow::Result<()> {
+        match self {
+            Self::Local(part) => part.publish(output),
+            Self::Remote(part) => part.publish(output),
+            Self::Folder(_) => Ok(()),
+        }
+    }
+}
+
+/// The folder as written, read back: the job's `.part` scanned here, or listed on the peer.
+fn written_folder(part: &Written, ctx: &Ctx) -> anyhow::Result<Box<dyn SourceTree>> {
+    if let Written::Folder(dir) = part {
+        return Ok(Box::new(dir.tree(ctx.cancel)?));
+    }
+    let tree = ScannedFolder::scan(part.path(), ctx.cancel)?;
+    // `scan` resolves its root; a `.part` swapped for a link resolves elsewhere.
+    // ponytail: verification reads by path below that root. Someone who can rename entries in
+    // the output folder could swap it mid-read, but could as well swap the published output a
+    // moment later; that writer is outside the threat model.
+    if tree.root() != part.path() {
+        bail!("{} was replaced while verifying", part.path().display());
+    }
+    Ok(Box::new(tree))
+}
+
+/// The image as written, read back: through the job's own `.part` handle, or from the peer.
+enum Back {
+    Local(File),
+    Remote(crate::remote::RemoteReader),
+}
+
+impl Back {
+    fn len(&self) -> anyhow::Result<u64> {
+        Ok(match self {
+            Self::Local(file) => file.metadata()?.len(),
+            Self::Remote(reader) => reader.len(),
+        })
+    }
+
+    /// A reader of its own (a local handle shares the cursor; every reader seeks first).
+    fn reader(&self) -> anyhow::Result<Box<dyn ReadSeek>> {
+        Ok(match self {
+            Self::Local(file) => Box::new(file.try_clone().context("reading the output back")?),
+            Self::Remote(reader) => Box::new(reader.reopen()?),
+        })
+    }
+}
+
+/// Writes `plan`'s image (alone or in a `.ffpfsc`) from `tree` into a new `.part`, here or on
+/// a peer; returns the `.part`, its image to read back, the image's size and, for a
+/// `.ffpfsc`, the container report.
 #[allow(clippy::too_many_arguments)]
 fn write_image(
     plan: &Plan,
@@ -1203,22 +1369,43 @@ fn write_image(
     part_path: &Path,
     req: &ConvertRequest,
     ctx: &Ctx,
-    #[cfg(target_os = "freebsd")] dest: &crate::dest::Dest,
+    #[cfg(target_os = "freebsd")] dest: Option<&crate::dest::Dest>,
     #[cfg(target_os = "freebsd")] cadence: &mut crate::durable::Cadence,
-) -> anyhow::Result<(Part, File, u64, Option<WrapReport>)> {
+) -> anyhow::Result<(Written, Back, u64, Option<WrapReport>)> {
+    if crate::remote::is_remote(part_path) {
+        let (part, mut file) = crate::remote::RemotePart::create_file(part_path)?;
+        let (size, wrapped) = write_plan(plan, tree, &mut file, req, ctx)?;
+        file.finish().context("syncing the image")?;
+        let back = Back::Remote(part.reader()?);
+        return Ok((Written::Remote(part), back, size, wrapped));
+    }
     // No shadowing: `file` must drop before `part`, which deletes the `.part` (U6).
     #[cfg_attr(not(target_os = "freebsd"), allow(unused_mut))]
     let (mut part, mut file) = Part::create_file(part_path)?;
     #[cfg(target_os = "freebsd")]
-    part.set_dest(dest);
+    part.set_dest(dest.context("the destination was not probed")?);
+    #[cfg(not(target_os = "freebsd"))]
+    let (size, wrapped) = write_plan(plan, tree, &mut file, req, ctx)?;
+    #[cfg(target_os = "freebsd")]
+    let (size, wrapped) = synced(&mut file, cadence, ctx, |out| {
+        write_plan(plan, tree, out, req, ctx)
+    })?;
+    Ok((Written::Local(part), Back::Local(file), size, wrapped))
+}
+
+/// [`write_image`]'s writing into `out`: the image's size and a `.ffpfsc`'s report.
+fn write_plan<W: Write + Seek>(
+    plan: &Plan,
+    tree: &mut dyn SourceTree,
+    out: &mut W,
+    req: &ConvertRequest,
+    ctx: &Ctx,
+) -> anyhow::Result<(u64, Option<WrapReport>)> {
     match plan {
         Plan::Image(image) => {
-            #[cfg(not(target_os = "freebsd"))]
-            let (size, line) = image.write(tree, &mut file, ctx)?;
-            #[cfg(target_os = "freebsd")]
-            let (size, line) = synced(&mut file, cadence, ctx, |out| image.write(tree, out, ctx))?;
+            let (size, line) = image.write(tree, out, ctx)?;
             ctx.log(format!("wrote {line}"));
-            Ok((part, file, size, None))
+            Ok((size, None))
         }
         Plan::Ffpfsc(image, name) => {
             let opts = WrapOptions {
@@ -1234,21 +1421,10 @@ fn write_image(
                 compression_threads(req)
             ));
             let started = std::time::Instant::now();
-            #[cfg(not(target_os = "freebsd"))]
-            let (line, report) = ps5_dump_forge_pfs::wrap(
-                name,
-                image.size(),
-                &mut file,
-                &opts,
-                ctx.cancel,
-                |stream| Ok(image.write(tree, stream, ctx)?.1),
-            )?;
-            #[cfg(target_os = "freebsd")]
-            let (line, report) = synced(&mut file, cadence, ctx, |out| {
+            let (line, report) =
                 ps5_dump_forge_pfs::wrap(name, image.size(), out, &opts, ctx.cancel, |stream| {
                     Ok(image.write(tree, stream, ctx)?.1)
-                })
-            })?;
+                })?;
             let secs = started.elapsed().as_secs_f64().max(1e-3);
             ctx.log(format!(
                 "wrote .ffpfsc: {} bytes holding {name} ({line}); {} of {} blocks compressed, \
@@ -1262,7 +1438,7 @@ fn write_image(
                 report.raw_size as f64 / 1e6 / secs,
                 opts.level
             ));
-            Ok((part, file, report.image_size, Some(report)))
+            Ok((report.image_size, Some(report)))
         }
         _ => unreachable!("only image plans are written as one file"),
     }
@@ -1330,12 +1506,13 @@ fn content(
     Ok(checks)
 }
 
-/// Packs `pack`'s packed files from `tree` (the hashing tree) into the `.part` folder: the
-/// volumes, then the manifest and its sidecars. Returns the bytes the chunks take.
+/// Packs `pack`'s packed files from `tree` (the hashing tree) into the `.part` folder (or the
+/// folder on a peer): the volumes, then the manifest and its sidecars. Returns the bytes the
+/// chunks take.
 fn write_packs(
     tree: &mut dyn SourceTree,
     pack: &crate::lz4::PackPlan,
-    part: &Part,
+    part: &Written,
     req: &ConvertRequest,
     mtime: i64,
     ctx: &Ctx,
@@ -1348,29 +1525,32 @@ fn write_packs(
         .fold(0u64, |sum, f| sum.saturating_add(f.size));
     let threads = compression_threads(req);
     ctx.progress("pack", 0, total);
-    let mut dest = crate::extract::Dest::open(part)?;
     let started = std::time::Instant::now();
-    let report = {
-        let mut out = crate::lz4::PartOutput::new(
-            &mut dest,
-            ctx.cancel,
+    let report = match part {
+        Written::Folder(dir) => {
+            let mut out = dir.packs();
+            let report = pack_into(tree, pack, mtime, threads, &mut out, ctx, total)?;
+            out.publish()?;
+            report
+        }
+        Written::Local(part) => {
+            let mut dest = crate::extract::Dest::open(part)?;
+            let report = {
+                let mut out = crate::lz4::PartOutput::new(
+                    &mut dest,
+                    ctx.cancel,
+                    #[cfg(target_os = "freebsd")]
+                    &mut *cadence,
+                );
+                pack_into(tree, pack, mtime, threads, &mut out, ctx, total)?
+            };
             #[cfg(target_os = "freebsd")]
-            &mut *cadence,
-        );
-        ps5_dump_forge_lz4::writer::pack(
-            tree,
-            &pack.files,
-            mtime,
-            pack.runtime.as_ref(),
-            threads,
-            &mut out,
-            &mut |n| ctx.progress("pack", n, total),
-            ctx.cancel,
-        )?
+            log_cadence(cadence, ctx);
+            dest.sync(ctx)?;
+            report
+        }
+        Written::Remote(_) => unreachable!("packs go into a folder"),
     };
-    #[cfg(target_os = "freebsd")]
-    log_cadence(cadence, ctx);
-    dest.sync(ctx)?;
     ctx.progress("pack", total, total);
     let secs = started.elapsed().as_secs_f64().max(1e-3);
     ctx.log(format!(
@@ -1385,6 +1565,28 @@ fn write_packs(
         pack.rules
     ));
     Ok(report.stored_bytes)
+}
+
+/// [`write_packs`]'s packing into `out`.
+fn pack_into<O: ps5_dump_forge_lz4::writer::PackOutput>(
+    tree: &mut dyn SourceTree,
+    pack: &crate::lz4::PackPlan,
+    mtime: i64,
+    threads: usize,
+    out: &mut O,
+    ctx: &Ctx,
+    total: u64,
+) -> anyhow::Result<ps5_dump_forge_lz4::writer::PackReport> {
+    Ok(ps5_dump_forge_lz4::writer::pack(
+        tree,
+        &pack.files,
+        mtime,
+        pack.runtime.as_ref(),
+        threads,
+        out,
+        &mut |n| ctx.progress("pack", n, total),
+        ctx.cancel,
+    )?)
 }
 
 /// The SMP exFAT layout, read from the volume's boot sector.
@@ -1548,8 +1750,8 @@ impl Seek for Nested {
 }
 
 /// The image file is exactly as large as the writer said, and 64 KiB aligned.
-fn image_checks(file: &File, size: u64) -> anyhow::Result<Vec<String>> {
-    let len = file.metadata()?.len();
+fn image_checks(back: &Back, size: u64) -> anyhow::Result<Vec<String>> {
+    let len = back.len()?;
     if len != size {
         bail!("the image is {len} bytes, but the writer reported {size}");
     }

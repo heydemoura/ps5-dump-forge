@@ -513,12 +513,14 @@ pub(crate) fn fsync_dir(_: &Path) -> io::Result<()> {
 
 /// Renames `from` to `to`, failing with `AlreadyExists` if `to` exists. Works for files
 /// and directories on the same volume. Atomic everywhere except on volumes without an
-/// exclusive rename (macOS exFAT), where it checks `to` and then renames.
+/// exclusive rename (macOS exFAT, Linux NFS and FUSE; FreeBSD always), where it checks `to`
+/// and then renames.
 pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     imp::rename_no_replace(from, to)
 }
 
-/// For volumes without an exclusive rename (macOS exFAT; FreeBSD has none at all). macOS's
+/// For volumes without an exclusive rename (macOS exFAT; Linux NFS and FUSE; FreeBSD has none
+/// at all). macOS's
 /// kernel lookup still fails an existing `to` (in any case) with `EEXIST` before asking the
 /// driver, so there this check only catches what appeared since: nothing at `to`, in any
 /// case, since the lookup follows the volume's case rules, then rename. Nothing is created at
@@ -527,7 +529,7 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
 // is replaced (a window of microseconds, the one the user accepted). macOS offers no way to
 // close it on exFAT today: link(), RENAME_EXCL and clonefile are all unsupported; FreeBSD has
 // no RENAME_EXCL, and a file there is published by hard link where the folder has them.
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "freebsd"))]
 fn checked_rename(from: &Path, to: &Path) -> io::Result<()> {
     match to.symlink_metadata() {
         Ok(_) => return Err(io::Error::from_raw_os_error(libc::EEXIST)),
@@ -537,7 +539,7 @@ fn checked_rename(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn missing(e: &io::Error) -> bool {
     e.kind() == io::ErrorKind::NotFound
 }
@@ -577,23 +579,28 @@ mod imp {
     use super::*;
 
     pub(super) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-        let (from, to) = (c_path(from)?, c_path(to)?);
+        let (c_from, c_to) = (c_path(from)?, c_path(to)?);
         // The raw syscall, not glibc's wrapper: it also links against musl and old glibc.
         // SAFETY: both are valid NUL-terminated paths; the flags are a plain integer.
         let rc = unsafe {
             libc::syscall(
                 libc::SYS_renameat2,
                 libc::AT_FDCWD,
-                from.as_ptr(),
+                c_from.as_ptr(),
                 libc::AT_FDCWD,
-                to.as_ptr(),
+                c_to.as_ptr(),
                 libc::RENAME_NOREPLACE,
             )
         };
-        if rc != 0 {
-            return Err(io::Error::last_os_error());
+        if rc == 0 {
+            return Ok(());
         }
-        Ok(())
+        let err = io::Error::last_os_error();
+        // NFS and FUSE refuse the flag (EINVAL); old kernels and seccomp lack the call (ENOSYS).
+        if matches!(err.raw_os_error(), Some(libc::EINVAL | libc::ENOSYS)) {
+            return checked_rename(from, to);
+        }
+        Err(err)
     }
 
     fn c_path(path: &Path) -> io::Result<std::ffi::CString> {

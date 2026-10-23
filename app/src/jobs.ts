@@ -39,6 +39,29 @@ export interface Job {
   speed?: number;
   log: string[];
   result?: JobResult;
+  /** Started from this page (not restored by a reload): its row scrolls into view. */
+  fresh?: boolean;
+}
+
+/** What an LZ4 job does, for its row: its tag, and whether it is an LZ4 tab job (the yellow
+ * accent). A legacy `lz4` target is a pack into a folder. An `unpatch` without `lz4_in_place` (a
+ * server API request; Convert no longer sends one) is no LZ4 tab job and never "packing". */
+export function lz4Job(r: ConvertRequest | undefined): { id: "pack" | "unpack" | "trace" | "unpatch" | "runtime"; tab: boolean } | null {
+  if (!r) return null;
+  const mode = r.lz4 ?? (r.format === "lz4" ? "pack" : null);
+  if (mode === "pack" || mode === "unpack" || mode === "trace") return { id: mode, tab: true };
+  if (mode === "unpatch") return r.lz4_in_place ? { id: "unpatch", tab: true } : { id: "runtime", tab: false };
+  return null;
+}
+
+/** The tab a job belongs to (its counter and colour): a transfer (Connect), an edit or extract
+ * (Edit), an LZ4 tab job, else a conversion. */
+export type JobType = "convert" | "edit" | "lz4" | "transfer";
+export function jobType(r: ConvertRequest | undefined): JobType {
+  if (r?.transfer?.length) return "transfer";
+  if (r?.edits?.length || r?.extract?.length) return "edit";
+  if (lz4Job(r)?.tab) return "lz4";
+  return "convert";
 }
 
 export type Action =
@@ -106,7 +129,7 @@ const BYTE_STAGES = new Set(["compress", "write", "measure", "pack", "verify"]);
 export function jobsReducer(jobs: Job[], a: Action): Job[] {
   switch (a.type) {
     case "started":
-      return update(jobs, a.id, (j) => ({ ...j, request: a.request }));
+      return update(jobs, a.id, (j) => ({ ...j, request: a.request, fresh: true }));
     case "progress":
       return update(jobs, a.e.job, (j) => {
         const { stage, done, total } = a.e;

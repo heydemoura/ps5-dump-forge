@@ -496,6 +496,9 @@ fn eligible(path: &Path, classify: Classify<'_>) -> Result<(), String> {
 
 fn cover_with(path: &Path, max: u64, classify: Classify<'_>) -> anyhow::Result<Option<String>> {
     use anyhow::{anyhow, bail};
+    if crate::net::is_network(path) {
+        return net_cover(path, max);
+    }
     eligible(path, classify).map_err(|why| anyhow!("{}: {why}", path.display()))?;
     let meta = path.symlink_metadata()?;
     // The same five extensions as the scan (never `.ufs2`).
@@ -536,6 +539,26 @@ fn cover_with(path: &Path, max: u64, classify: Classify<'_>) -> anyhow::Result<O
         }
     };
     Ok(png.and_then(|b| crate::inspect::png_data_url(&b)))
+}
+
+/// [`cover_with`] for an `smb://` or `flink://` folder or image: no links or mounts to check
+/// on a share or a peer (a peer leaves out links and special files).
+fn net_cover(path: &Path, max: u64) -> anyhow::Result<Option<String>> {
+    const ICON: &str = "sce_sys/icon0.png";
+    let png = match Kind::of(path)? {
+        Kind::Folder => crate::net::read_small(path, ICON, max)?,
+        kind => {
+            let mut tree = crate::convert::open_source(path, kind, &AtomicBool::new(false))?;
+            let size = tree.files().iter().find(|f| f.path == ICON).map(|f| f.size);
+            match size {
+                Some(s) if (1..=max).contains(&s) => tree.read(ICON).ok(),
+                _ => None,
+            }
+        }
+    };
+    Ok(png
+        .filter(|b| !b.is_empty() && b.len() as u64 <= max)
+        .and_then(|b| crate::inspect::png_data_url(&b)))
 }
 
 /// Probes every candidate on up to four threads; results in candidate order. A panic skips

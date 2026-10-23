@@ -153,6 +153,12 @@ pub(crate) fn in_place_findings(
     if !req.lz4_in_place {
         return findings;
     }
+    if crate::net::is_network(&req.source) {
+        findings.push(
+            "a game on a NAS or another device is read only here: it can't be patched in place"
+                .into(),
+        );
+    }
     let own = match kind {
         Kind::Exfat => Some(Format::Exfat),
         Kind::Ffpkg => Some(Format::Ffpkg),
@@ -287,8 +293,9 @@ fn combinations(req: &ConvertRequest) -> Vec<String> {
     if req.lz4_traces.is_some() && req.lz4_profile.is_some() {
         findings.push("choose a profile or traces, not both".into());
     }
-    if trace && !(64..=1024).contains(&req.lz4_trace_space_mib)
-        || !req.lz4_trace_space_mib.is_multiple_of(64)
+    if trace
+        && (!(64..=1024).contains(&req.lz4_trace_space_mib)
+            || !req.lz4_trace_space_mib.is_multiple_of(64))
     {
         findings.push(format!(
             "the LZ4 trace space is 64 MiB to 1 GiB, in 64 MiB steps, not {} MiB",
@@ -1000,8 +1007,11 @@ fn traces(
     findings: &mut Vec<String>,
 ) -> anyhow::Result<Option<BTreeSet<String>>> {
     let mut copied_journal = None;
+    // A usable index lists only files the dump has (the membership check below), so one past
+    // what they could take is refused before it is read.
+    let bound = index_bound(tree.files()).min(MAX_INDEX);
     let index = match copied {
-        Some(path) => match crate::lz4_traces::open_copied(path, MAX_INDEX) {
+        Some(path) => match crate::lz4_traces::open_copied(path, bound) {
             Ok((index, journal)) => {
                 copied_journal = Some(journal);
                 index
@@ -1022,8 +1032,10 @@ fn traces(
                 ));
                 return Ok(None);
             };
-            if size > MAX_INDEX {
-                findings.push(format!("{INDEX} is {size} bytes, too big to be one"));
+            if size > bound {
+                findings.push(format!(
+                    "{INDEX} is {size} bytes, too big to be one for this dump's files"
+                ));
                 return Ok(None);
             }
             read_all(tree, INDEX, size)?

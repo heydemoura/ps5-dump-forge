@@ -11,7 +11,8 @@
 // ponytail: no rollback for a folder: a failure part way leaves the earlier ops applied and says
 // which; each file write itself is atomic (a temporary name renamed over the target).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
@@ -25,10 +26,10 @@ use ps5upload_fpkg::source::SourceTree;
 
 use crate::edit::HostFile;
 use crate::edit_job::{Folded, STAGES, fold, request_findings};
-use crate::finalize::{FileId, followed_id, fsync_dir, handle_id, make_dir_open, path_id};
+use crate::finalize::{FileId, followed_id, fsync_dir, make_dir_open, path_id};
 use crate::jobs::Ctx;
 use crate::preflight;
-use crate::scan::{ScannedFolder, Stamp, is_junk, open_nofollow};
+use crate::scan::{ScannedFolder, is_junk, open_nofollow};
 use crate::{ConvertRequest, EditCheck, JobReport, VerifyMode, VerifySummary};
 
 /// Room beyond the added bytes the folder must have: what the filesystem spends on them.
@@ -178,6 +179,10 @@ fn host_findings(root: &Path, edits: &[crate::Edit]) -> Vec<String> {
         let crate::Edit::Add { from, .. } = edit else {
             continue;
         };
+        // A paired device's file is never this folder (and `flink://` spells a local path too).
+        if crate::remote::is_remote(from) {
+            continue;
+        }
         let linked = std::fs::symlink_metadata(from).map_or(true, |m| m.file_type().is_symlink());
         let Some(canon) = (!linked).then(|| from.canonicalize().ok()).flatten() else {
             continue;
@@ -280,6 +285,7 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
         total: written,
         added: BTreeMap::new(),
         touched: BTreeSet::new(),
+        names: HashMap::new(),
     };
     ctx.progress("write", 0, written.max(1));
     let total = planned.ops.len();
@@ -358,6 +364,12 @@ struct Work<'a> {
     total: u64,
     added: BTreeMap<String, (u64, blake3::Hash)>,
     touched: BTreeSet<PathBuf>,
+    /// Folders' exact entry names by folder identity (one folder may be spelled two ways on
+    /// a volume that folds case), listed once when a replace first asks ([`Self::spelled`])
+    /// and kept as the ops add and remove names; a listing is dropped (listed again) when a
+    /// change leaves it unsure: a removed name it doesn't hold, or an added non-ASCII one the
+    /// volume may store normalized otherwise.
+    names: HashMap<FileId, HashSet<OsString>>,
 }
 
 impl Work<'_> {
@@ -382,6 +394,7 @@ impl Work<'_> {
                     bail!("{} is no longer a file or folder", target.display());
                 }
                 .with_context(|| format!("deleting {}", target.display()))?;
+                self.gone(&target, meta.is_dir());
                 self.touch(&target);
                 self.moved(path, None);
             }
@@ -396,9 +409,16 @@ impl Work<'_> {
                     self.make_dirs(dir)?;
                 }
                 let target = self.under(to)?;
-                crate::finalize::rename_no_replace(&source, &target).with_context(|| {
+                let renamed = if recased(&source, &target) {
+                    recase(&source, &target)
+                } else {
+                    crate::finalize::rename_no_replace(&source, &target)
+                };
+                renamed.with_context(|| {
                     format!("renaming {} to {}", source.display(), target.display())
                 })?;
+                self.gone(&source, meta.is_dir());
+                self.came(&target);
                 self.touch(&source);
                 self.touch(&target);
                 self.moved(from, Some(to));
@@ -441,6 +461,7 @@ impl Work<'_> {
                 Err(e) => return Err(e).with_context(|| at.display().to_string()),
             }
             std::fs::create_dir(&at).with_context(|| format!("creating {}", at.display()))?;
+            self.came(&at);
             self.partly = true;
             make_dir_open(&at).with_context(|| format!("setting the mode of {}", at.display()))?;
             self.touch(&at);
@@ -461,7 +482,7 @@ impl Work<'_> {
         }
         // On a volume that folds case or normalization another file can answer to `name`;
         // the replacing rename below would overwrite it.
-        if found.is_ok() && !spelled(target.parent().expect("under the game folder"), name)? {
+        if found.is_ok() && !self.spelled(target.parent().expect("under the game folder"), name)? {
             bail!(
                 "{}: another file in its folder answers to this name (the volume ignores case \
                  or normalization); it is not replaced",
@@ -511,9 +532,68 @@ impl Work<'_> {
                 }
             }
         })?;
+        if found.is_err() {
+            self.came(&target);
+        }
         self.touch(&target);
         self.added.insert(rel.to_string(), (len, hasher.finalize()));
         Ok(())
+    }
+
+    /// Whether `folder` lists an entry spelled exactly `name` ([`Self::names`]).
+    fn spelled(&mut self, folder: &Path, name: &str) -> anyhow::Result<bool> {
+        let Ok((id, _)) = path_id(folder) else {
+            return spelled(folder, name);
+        };
+        if let Some(names) = self.names.get(&id) {
+            return Ok(names.contains(OsStr::new(name)));
+        }
+        let mut names = HashSet::new();
+        let entries = std::fs::read_dir(folder).with_context(|| folder.display().to_string())?;
+        for entry in entries {
+            let entry = entry.with_context(|| folder.display().to_string())?;
+            names.insert(entry.file_name());
+        }
+        let found = names.contains(OsStr::new(name));
+        self.names.insert(id, names);
+        Ok(found)
+    }
+
+    /// `path` was made: its name joins its folder's listed names.
+    fn came(&mut self, path: &Path) {
+        let Some((id, name)) = self.listed(path) else {
+            return;
+        };
+        if name.to_str().is_some_and(str::is_ascii) {
+            self.names.entry(id).or_default().insert(name);
+        } else {
+            self.names.remove(&id);
+        }
+    }
+
+    /// `path` went (deleted, or renamed away): its name leaves its folder's listed names. A
+    /// deleted folder drops every listing (its folders' ids may be reused).
+    fn gone(&mut self, path: &Path, deleted_dir: bool) {
+        if deleted_dir {
+            self.names.clear();
+        } else if let Some((id, name)) = self.listed(path)
+            && !self.names.get_mut(&id).is_some_and(|n| n.remove(&name))
+        {
+            self.names.remove(&id);
+        }
+    }
+
+    /// The identity of `path`'s folder when it is listed, with `path`'s name; every listing
+    /// is dropped when the folder can't be told.
+    fn listed(&mut self, path: &Path) -> Option<(FileId, OsString)> {
+        let id = path.parent().and_then(|dir| path_id(dir).ok());
+        let (Some((id, _)), Some(name)) = (id, path.file_name()) else {
+            self.names.clear();
+            return None;
+        };
+        self.names
+            .contains_key(&id)
+            .then(|| (id, name.to_os_string()))
     }
 
     /// Records that `path`'s folder changed.
@@ -645,6 +725,49 @@ fn spelled(folder: &Path, name: &str) -> anyhow::Result<bool> {
     Ok(false)
 }
 
+/// Renames `from` to another case of its own name through a temporary name: FreeBSD's and
+/// Linux's rename of a file onto itself succeeds and changes nothing. Put back if the second
+/// step fails.
+fn recase(from: &Path, to: &Path) -> std::io::Result<()> {
+    let name = from.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = from.with_file_name(crate::lz4_patch::temp_name(&name));
+    crate::finalize::rename_no_replace(from, &tmp)?;
+    crate::finalize::rename_no_replace(&tmp, to).inspect_err(|_| {
+        let _ = crate::finalize::rename_no_replace(&tmp, from);
+    })
+}
+
+/// A case-only rename on a case-insensitive volume, where the no-replace rename finds `from`
+/// itself at `to` (`delete::move_`'s rule): the same file at both names, one folder, no entry
+/// spelled `to`.
+fn recased(from: &Path, to: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(a), Ok(b)) = (
+            std::fs::symlink_metadata(from),
+            std::fs::symlink_metadata(to),
+        ) else {
+            return false;
+        };
+        let (Some(old), Some(new), Some(dir)) = (from.file_name(), to.file_name(), to.parent())
+        else {
+            return false;
+        };
+        (a.dev(), a.ino()) == (b.dev(), b.ino())
+            && from.parent() == Some(dir)
+            && old != new
+            && old.to_string_lossy().to_lowercase() == new.to_string_lossy().to_lowercase()
+            && spelled(dir, &new.to_string_lossy()).is_ok_and(|found| !found)
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows' MoveFileExW renames a file to another case of its own name.
+        let _ = (from, to);
+        false
+    }
+}
+
 /// `part` of a game path onto `at`, refused unless it is one plain name: a drive or a root
 /// (`C:` on Windows) would replace `at` and lead out of the game folder.
 fn push(at: &mut PathBuf, part: &str) -> anyhow::Result<()> {
@@ -681,13 +804,8 @@ fn copy_host(
             host.size
         )));
     }
-    let named = path_id(&host.path).map_err(with_path)?.0 == host.id;
-    let mut file = open_nofollow(&host.path).map_err(with_path)?;
-    let same = |file: &File| -> io::Result<bool> {
-        let meta = file.metadata()?;
-        Ok(handle_id(file)? == host.id && meta.is_file() && Stamp::of(&meta) == host.stamp)
-    };
-    if !named || !same(&file).map_err(with_path)? {
+    let mut file = host.open().map_err(with_path)?;
+    if !file.same(host).map_err(with_path)? {
         return Err(changed());
     }
     file.seek(SeekFrom::Start(offset)).map_err(with_path)?;
@@ -700,7 +818,7 @@ fn copy_host(
         left -= step as u64;
     }
     // Nor while it was copied.
-    if !same(&file).map_err(with_path)? {
+    if !file.same(host).map_err(with_path)? {
         return Err(changed());
     }
     Ok(())
@@ -881,6 +999,95 @@ mod tests {
         assert_eq!(snapshot(&root), want);
     }
 
+    /// On a case-insensitive volume (APFS, exFAT) the no-replace rename finds the file itself.
+    #[test]
+    fn a_case_only_rename_is_applied() {
+        let dir = crate::test_dir("edit-folder-recase");
+        let root = game(&dir, b"\x7fELF plain eboot", &[]);
+        let req = request(
+            &root,
+            vec![Edit::Rename {
+                from: "data/a.bin".into(),
+                to: "data/A.bin".into(),
+            }],
+        );
+        run_with(&req, |_, _| {}).unwrap_or_else(|e| panic!("{e:#}"));
+        let names: Vec<_> = std::fs::read_dir(root.join("data"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"A.bin".to_string()), "{names:?}");
+        assert!(!names.contains(&"a.bin".to_string()), "{names:?}");
+    }
+
+    /// The listed names follow every op: after each, they answer as a fresh listing does
+    /// (also through another spelling of a folder where the volume folds case).
+    #[test]
+    fn listed_names_follow_the_ops() {
+        let dir = crate::test_dir("edit-folder-names");
+        let root = game(&dir, b"\x7fELF plain eboot", &[]);
+        let emit: Box<dyn Fn(Event) + Send + Sync> = Box::new(|_| {});
+        let cancel = AtomicBool::new(false);
+        let ctx = Ctx::new(1, &emit, &cancel);
+        let mut work = Work {
+            root: &root,
+            root_id: path_id(&root).unwrap().0,
+            partly: false,
+            hosts: &[],
+            ctx: &ctx,
+            done: 0,
+            total: 0,
+            added: BTreeMap::new(),
+            touched: BTreeSet::new(),
+            names: HashMap::new(),
+        };
+        let folded = std::fs::symlink_metadata(root.join("DATA")).is_ok();
+        let put = |path: &str| Op::Put {
+            path: path.into(),
+            len: 2,
+            data: Data::Zero(2),
+        };
+        let ops = [
+            put("data/c.bin"),
+            put("data/a.bin"),
+            Op::Delete {
+                path: "data/a.bin".into(),
+            },
+            put("data/A.bin"),
+            Op::Rename {
+                from: "data/c.bin".into(),
+                to: "data/sub/c.bin".into(),
+            },
+            Op::Mkdir {
+                path: "data/sub/new".into(),
+            },
+            put("data/é.bin"),
+            Op::Delete {
+                path: "data/sub".into(),
+            },
+            put("data/sub/b.bin"),
+        ];
+        let folders = ["data", "data/sub", "DATA"];
+        let names = ["a.bin", "A.bin", "c.bin", "b.bin", "é.bin", "new", "sub"];
+        for op in &ops {
+            work.op(op).unwrap_or_else(|e| panic!("{op:?}: {e:#}"));
+            for folder in folders {
+                let at = root.join(folder);
+                if !at.is_dir() || (folder == "DATA" && !folded) {
+                    continue;
+                }
+                for name in names {
+                    let want = spelled(&at, name).unwrap();
+                    assert_eq!(
+                        work.spelled(&at, name).unwrap(),
+                        want,
+                        "{op:?}: {folder}/{name}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_refusal_changes_nothing() {
         let dir = crate::test_dir("edit-folder-refused");
@@ -954,6 +1161,49 @@ mod tests {
             "{err}"
         );
         assert_eq!(snapshot(&root), before);
+    }
+
+    #[test]
+    fn files_are_added_from_a_peer() {
+        let dir = crate::test_dir("edit-folder-peer");
+        let root = game(&dir, b"\x7fELF plain eboot", &[]);
+        let host = dir.join("host");
+        put(&host, "new.bin", &[9u8; 3 << 20]);
+        put(&host, "pack/x.txt", b"x");
+        put(&host, "pack/.DS_Store", b"junk");
+        std::fs::create_dir_all(host.join("pack/void")).unwrap();
+        let (peer, fake) = crate::remote::tests::peer(&host);
+        let edits = vec![
+            add(&peer.join("new.bin").url(), "data/new.bin"),
+            add(&peer.join("pack").url(), "data/pack"),
+        ];
+        let req = request(&root, edits.clone());
+        let check = crate::jobs::Inner::new(Box::new(|_| {})).edit_check(&req);
+        assert_eq!(check, EditCheck::default(), "{check:?}");
+        run_with(&req, |_, _| {}).unwrap();
+        let after = snapshot(&root);
+        assert_eq!(after["data/new.bin"], Some(vec![9u8; 3 << 20]));
+        assert_eq!(after["data/pack/x.txt"], Some(b"x".to_vec()));
+        assert_eq!(after["data/pack/void"], None);
+        assert!(!after.contains_key("data/pack/.DS_Store"));
+        // A peer file that changes once planned fails its copy; the earlier change stays.
+        let mut edits = vec![
+            mkdir("z"),
+            add(&peer.join("new.bin").url(), "data/again.bin"),
+        ];
+        let req = request(&root, std::mem::take(&mut edits));
+        let err = run_with(&req, move |e, _| {
+            if matches!(e, Event::Log { line, .. } if line == "edit: made folder z") {
+                fake.touch("new.bin");
+            }
+        })
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("changed after it was added"),
+            "{err:#}"
+        );
+        assert!(!root.join("data/again.bin").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

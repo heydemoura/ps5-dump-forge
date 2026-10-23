@@ -25,6 +25,7 @@ mod durable;
 mod extract;
 mod extract_paths;
 mod finalize;
+pub mod ftp;
 mod host_tree;
 mod inspect;
 mod jobs;
@@ -34,12 +35,17 @@ mod listing;
 mod lz4;
 mod lz4_patch;
 mod lz4_traces;
+pub mod net;
+mod nfs;
 mod package;
 mod portable;
 mod prefetch;
 mod preflight;
+pub mod remote;
 mod scan;
 mod sdk;
+pub mod smb;
+mod transfer;
 mod verify;
 #[cfg(windows)]
 mod win;
@@ -217,6 +223,12 @@ pub struct ConvertRequest {
     /// replaced (an extract job when not empty; `format` must be `Folder`).
     #[serde(default)]
     pub extract: Vec<String>,
+    /// Files or folders on this device, a peer (`flink://`) or a NAS (`smb://`) to copy into
+    /// `output`, an existing folder on this device or a peer, each under its own name; nothing
+    /// there is replaced (a transfer job when not empty; `source` and `format` are ignored). A
+    /// transfer runs beside the one heavy job, one transfer at a time.
+    #[serde(default)]
+    pub transfer: Vec<PathBuf>,
     /// For an archive source that needs one. Never serialized.
     #[serde(default, skip_serializing)]
     pub archive_password: Option<ArchivePassword>,
@@ -304,7 +316,7 @@ pub enum Event {
     Done {
         job: JobId,
         /// `Ok` carries the report; `Err` a message for the user (`"cancelled"` when cancelled,
-        /// or an edit's `"cancelled; "` + what stays changed).
+        /// or `"cancelled; "` + what stays changed or what else failed, a restore say).
         result: Result<JobReport, String>,
     },
 }
@@ -344,7 +356,7 @@ pub struct VerifySummary {
     pub seed: u64,
 }
 
-/// Runs jobs on worker threads: one heavy job at a time, the rest queue.
+/// Runs jobs on worker threads: one heavy job and one transfer at a time, the rest queue.
 pub struct Jobs {
     inner: Arc<jobs::Inner>,
 }
@@ -368,7 +380,8 @@ impl Jobs {
     /// Deletes `path`, a file or a folder (links inside are removed, not followed), for good.
     /// Refused for a link, a special file, a drive or volume root, any of `protected` or a
     /// folder holding one, an interrupted edit's undo journal while its image is there, and
-    /// anything at, in or around what an unfinished job reads or writes; on the PS5 also
+    /// anything at, in or around what an unfinished job reads or writes, or what a peer is
+    /// writing through [`Jobs::set_external_busy`]; on the PS5 also
     /// anything at or in ShadowMount+'s mount folder, an image it has mounted and a folder
     /// holding one (fails closed). No job is admitted while it runs. The third explicit exception to "never touch
     /// the source", with the LZ4 patches.
@@ -380,7 +393,7 @@ impl Jobs {
     /// folder, never replaced, and not inside `from`. `from` is refused as
     /// [`Jobs::delete_path`] refuses it (a link, a special file, a root, any of `protected` or
     /// a folder holding one, anything an unfinished job uses), and so is a `to` at, in or
-    /// above what an unfinished job uses, or an image with an interrupted edit's undo journal
+    /// above what an unfinished job uses or a peer is writing, or an image with an interrupted edit's undo journal
     /// beside it. Both folders are synced after; no job is admitted while it runs.
     pub fn move_path(
         &self,
@@ -397,6 +410,20 @@ impl Jobs {
     /// job may start right after.
     pub fn uses(&self, path: &Path) -> bool {
         self.inner.uses(path)
+    }
+
+    /// [`Jobs::uses`] as a hook of its own (Connect refuses a peer's writes into what this
+    /// device's unfinished jobs use).
+    pub fn uses_hook(&self) -> Arc<dyn Fn(&Path) -> bool + Send + Sync> {
+        let inner = self.inner.clone();
+        Arc::new(move |path| inner.uses(path))
+    }
+
+    /// Sets what says another device is writing a path on this device (Connect's open write
+    /// handles): a job using such a path is refused when it starts, and Delete and Move
+    /// refuse it too. Like job admission, the external check is a snapshot.
+    pub fn set_external_busy(&self, busy: Arc<dyn Fn(&Path) -> bool + Send + Sync>) {
+        self.inner.set_external_busy(busy);
     }
 
     /// Which way `request`'s edits can be applied, in place or by a rebuild ([`EditCheck`]),
@@ -556,6 +583,12 @@ pub struct InspectFile {
     pub size: u64,
 }
 
+/// Whether `path` is at, in or above one of `guarded`, as [`Jobs::uses`] judges a job's paths
+/// (Connect's hook for [`Jobs::set_external_busy`]: the files peers are writing here).
+pub fn path_in_use(path: &Path, guarded: &[PathBuf]) -> bool {
+    delete::in_use(path, guarded)
+}
+
 pub fn inspect(path: &Path) -> anyhow::Result<Inspection> {
     inspect::inspect(path, None)
 }
@@ -702,6 +735,72 @@ pub fn generated_output_with(
 /// Leftover `*.part` files/dirs from earlier jobs in `dir`. Never deleted automatically.
 pub fn stale_parts(dir: &Path) -> Vec<PathBuf> {
     finalize::stale_parts(dir)
+}
+
+/// What a paired device writing onto this one (the server's `connect_fs`) writes with: the
+/// same rules as a job's outputs here (no link followed, 0777 on the PS5, its sync retries).
+pub mod out {
+    use std::fs::File;
+    use std::io;
+    use std::path::Path;
+
+    /// Why a peer may not write, rename or remove at `path` (resolved): on the PS5 ShadowMount+'s
+    /// mount folder and everything inside it, as a job's outputs here. ponytail: no destination
+    /// probe (U1) per peer write; the sync rules below still apply.
+    pub fn refusal(path: &Path) -> Option<String> {
+        #[cfg(target_os = "freebsd")]
+        return ps5_refusal(path);
+        #[cfg(not(target_os = "freebsd"))]
+        {
+            let _ = path;
+            None
+        }
+    }
+
+    /// The PS5 destination rule, also available to a server selected by `Platform::Ps5`:
+    /// refuse ShadowMount+'s mount folder and everything inside it, including aliases.
+    pub fn ps5_refusal(path: &Path) -> Option<String> {
+        crate::edit_job::smp_inside(path)
+    }
+
+    /// A file that must not exist yet (a link at `path` not followed).
+    pub fn create_new(path: &Path) -> io::Result<File> {
+        crate::finalize::create_new(path)
+    }
+
+    /// One folder; its parent must exist.
+    pub fn make_dir(path: &Path) -> io::Result<()> {
+        std::fs::create_dir(path)?;
+        crate::finalize::make_dir_open(path)
+    }
+
+    /// A written file's data on the drive. On FreeBSD a sync that only succeeded after a
+    /// retry fails (pages may have been lost in between, U4).
+    pub fn sync_file(file: &File) -> io::Result<()> {
+        #[cfg(target_os = "freebsd")]
+        {
+            let never = std::sync::atomic::AtomicBool::new(false);
+            match crate::durable::sync_retry(file, false, &never)? {
+                crate::durable::Synced::Retried => Err(crate::durable::retried_sync()),
+                _ => Ok(()),
+            }
+        }
+        #[cfg(not(target_os = "freebsd"))]
+        file.sync_all()
+    }
+
+    /// A folder's entries on the drive (a filesystem without folder fsync is fine).
+    pub fn sync_dir(dir: &Path) -> io::Result<()> {
+        crate::finalize::fsync_dir(dir)
+    }
+
+    /// The bytes an unprivileged user may still write in `dir`'s filesystem.
+    pub fn free_space(dir: &Path) -> io::Result<u64> {
+        #[cfg(target_os = "freebsd")]
+        return crate::dest::free_at(dir);
+        #[cfg(not(target_os = "freebsd"))]
+        crate::preflight::fs_stat(dir).map(|(free, _)| free)
+    }
 }
 
 /// Where the app keeps its WebView data: always next to the app (user decision 2026-10-06: no

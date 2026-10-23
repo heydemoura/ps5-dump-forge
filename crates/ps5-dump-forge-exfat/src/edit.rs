@@ -2,10 +2,11 @@
 //! FAT, allocation bitmap, up-case table and the directory tree; [`plan`] turns ops into writes
 //! (deleting, renaming or moving a file or folder, adding or replacing a file, a new folder).
 //!
-//! The FAT (4 B per cluster) and the bitmap are held in memory whole, one directory at a time
-//! beside them, within [`MEMORY_LIMIT`].
+//! The FAT (4 B per cluster) and the bitmap are held in memory whole, a plan's directory listings
+//! beside them while they fit, within [`MEMORY_LIMIT`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -81,6 +82,124 @@ struct Changes {
     missing: BTreeSet<Vec<u16>>,
     /// Where the next allocation search starts (next fit: files laid out one after another).
     cursor: u32,
+    /// Folders listed so far, kept in step with the writes above.
+    listings: RefCell<Listings>,
+}
+
+/// A folder's entries as [`Volume::read_dir`] would read them now: read once per plan, the
+/// entries written since re-read before its next use (so N puts into one folder don't read
+/// it N times).
+#[derive(Debug, Clone, Default)]
+struct Listing {
+    clusters: Vec<u32>,
+    /// Each entry's EntryType, and the index of the first end-of-directory entry (or the count).
+    kinds: Vec<u8>,
+    stop: usize,
+    /// The entry sets before `stop` by their File entry's index, each with its up-cased name;
+    /// and by that name (a damaged folder may repeat one: the first is found, as a scan would).
+    sets: BTreeMap<usize, (Node, Vec<u16>)>,
+    names: HashMap<Vec<u16>, BTreeSet<usize>>,
+    /// Entries written since they were read.
+    dirty: BTreeSet<usize>,
+    /// What it holds, roughly.
+    bytes: u64,
+}
+
+/// The [`Listing`]s held, charged within [`MEMORY_LIMIT`] when added (dropped to make room).
+#[derive(Debug, Clone, Default)]
+struct Listings {
+    /// By the folder's first cluster.
+    by_first: HashMap<u32, Listing>,
+    /// Each cluster of a held folder: that folder's first cluster and the cluster's place in it.
+    owner: HashMap<u32, (u32, usize)>,
+    bytes: u64,
+}
+
+/// What a set held in a [`Listing`] costs: the node, its up-cased name, two map slots.
+fn set_bytes(n: &Node, up: &[u16]) -> u64 {
+    node_bytes(n) + up.len() as u64 * 4 + 64
+}
+
+impl Listing {
+    fn new(clusters: &[u32], kinds: Vec<u8>, nodes: Vec<Node>, v: &Volume) -> Listing {
+        let mut l = Listing {
+            clusters: clusters.to_vec(),
+            stop: kinds.iter().position(|&k| k == 0x00).unwrap_or(kinds.len()),
+            bytes: (clusters.len() * 4 + kinds.len()) as u64,
+            kinds,
+            ..Listing::default()
+        };
+        let per = (v.cluster_size() / ENTRY as u64) as usize;
+        for n in nodes {
+            let i = l.index(n.entries[0], v, per);
+            let up = v.upcased(&n.name);
+            l.insert(i, n, up);
+        }
+        l
+    }
+
+    /// The entry index of image byte `at` (within this folder's clusters).
+    fn index(&self, at: u64, v: &Volume, per: usize) -> usize {
+        let c = ((at - v.heap_offset) / v.cluster_size()) as u32 + FIRST_CLUSTER as u32;
+        let k = self.clusters.iter().position(|&x| x == c).unwrap_or(0);
+        k * per + ((at - v.cluster_offset(c)) / ENTRY as u64) as usize
+    }
+
+    fn insert(&mut self, i: usize, n: Node, up: Vec<u16>) {
+        self.bytes += set_bytes(&n, &up);
+        self.names.entry(up.clone()).or_default().insert(i);
+        self.sets.insert(i, (n, up));
+    }
+
+    fn remove(&mut self, i: usize) {
+        let Some((n, up)) = self.sets.remove(&i) else {
+            return;
+        };
+        self.bytes -= set_bytes(&n, &up).min(self.bytes);
+        if let Some(at) = self.names.get_mut(&up) {
+            at.remove(&i);
+            if at.is_empty() {
+                self.names.remove(&up);
+            }
+        }
+    }
+
+    /// The first set named `up` (up-cased).
+    fn find(&self, up: &[u16]) -> Option<&Node> {
+        let &i = self.names.get(up)?.first()?;
+        self.sets.get(&i).map(|(n, _)| n)
+    }
+}
+
+impl Listings {
+    fn drop_listing(&mut self, first: u32) {
+        if let Some(l) = self.by_first.remove(&first) {
+            for c in &l.clusters {
+                self.owner.remove(c);
+            }
+            self.bytes -= l.bytes.min(self.bytes);
+        }
+    }
+
+    /// Drops the listing holding cluster `c`, if one does.
+    fn drop_cluster(&mut self, c: u32) {
+        if let Some(&(first, _)) = self.owner.get(&c) {
+            self.drop_listing(first);
+        }
+    }
+
+    fn add(&mut self, l: Listing) {
+        // A cluster in two folders (a damaged volume): only the newer listing is kept.
+        for &c in &l.clusters {
+            self.drop_cluster(c);
+        }
+        let first = l.clusters[0];
+        for (k, &c) in l.clusters.iter().enumerate() {
+            self.owner.insert(c, (first, k));
+        }
+        self.bytes += l.bytes;
+        self.by_first.insert(first, l);
+    }
 }
 
 /// Where a stream's data lives.
@@ -379,6 +498,17 @@ impl Volume {
     /// them, would pass [`MEMORY_LIMIT`].
     fn fits(&self, dir_bytes: u64) -> io::Result<()> {
         let total = self.tables_bytes() + dir_bytes;
+        // The listings kept count too; when only they leave no room, they go (a listing in use
+        // is borrowed, and then none is counted).
+        let kept = self.changes.listings.try_borrow().map_or(0, |h| h.bytes);
+        if total + kept <= self.limit {
+            return Ok(());
+        }
+        if kept > 0
+            && let Ok(mut held) = self.changes.listings.try_borrow_mut()
+        {
+            *held = Listings::default();
+        }
         if total <= self.limit {
             return Ok(());
         }
@@ -493,10 +623,7 @@ impl Volume {
         let mut clusters = self.whole_chain(self.root_cluster)?;
         for (i, part) in parts.iter().enumerate() {
             let want = self.upcased(part);
-            let found = self
-                .read_dir(image, &clusters)?
-                .into_iter()
-                .find(|n| self.upcased(&n.name) == want);
+            let found = self.with_listing(image, &clusters, |l| l.find(&want).cloned())?;
             match found {
                 Some(n) if i + 1 == parts.len() => return Ok(Some(n)),
                 Some(n) if n.is_dir() => clusters = self.dir_chain(n.stream)?,
@@ -511,6 +638,11 @@ impl Volume {
     /// The File entry sets of a directory held by `clusters`, each set checked (layout and
     /// SetChecksum). Deleted entries are skipped; an end-of-directory entry stops the scan.
     fn read_dir(&self, image: &mut File, clusters: &[u32]) -> io::Result<Vec<Node>> {
+        Ok(self.scan_dir(image, clusters)?.1)
+    }
+
+    /// [`Self::read_dir`], with each entry's EntryType.
+    fn scan_dir(&self, image: &mut File, clusters: &[u32]) -> io::Result<(Vec<u8>, Vec<Node>)> {
         let cs = self.cluster_size();
         self.fits(clusters.len() as u64 * cs)?;
         let raw = self.read_clusters(image, clusters, clusters.len() as u64 * cs)?;
@@ -531,72 +663,180 @@ impl Volume {
                 return Err(bad(format!("bad entry set at byte {}", at(i))));
             }
             let set = &raw[i * ENTRY..(i + 1 + sc) * ENTRY];
-            if le16(set, 2) != crate::set_checksum(set) {
-                return Err(bad(format!(
-                    "entry set checksum mismatch at byte {}",
-                    at(i)
-                )));
-            }
-            let s = &set[ENTRY..2 * ENTRY];
-            let name_len = usize::from(s[3]);
-            let name_entries = name_len.div_ceil(15);
-            if s[0] != 0xC0 || name_len == 0 || 1 + name_entries > sc {
-                return Err(bad(format!("bad stream extension at byte {}", at(i + 1))));
-            }
-            let mut units = Vec::with_capacity(name_entries * 15);
-            for e in set[2 * ENTRY..].chunks(ENTRY).take(name_entries) {
-                if e[0] != 0xC1 {
-                    return Err(bad(format!(
-                        "bad file name entry in the set at byte {}",
-                        at(i)
-                    )));
-                }
-                units.extend((0..15).map(|j| le16(e, 2 + 2 * j)));
-            }
-            units.truncate(name_len);
-            // After the names: benign secondaries (Vendor Extension 0xE0, Vendor Allocation
-            // 0xE1, ...) are kept as they are; an unknown critical one makes the set unreadable.
-            let mut vendor_allocations = Vec::new();
-            for e in set[(2 + name_entries) * ENTRY..].chunks(ENTRY) {
-                if e[0] < 0xC0 || e[0] & 0x20 == 0 {
-                    return Err(bad(format!(
-                        "unknown secondary entry 0x{:02X} in the set at byte {}",
-                        e[0],
-                        at(i)
-                    )));
-                }
-                if e[1] & 1 != 0 && le64(e, 24) > 0 {
-                    vendor_allocations.push(Stream {
-                        first_cluster: le32(e, 20),
-                        len: le64(e, 24),
-                        no_fat_chain: e[1] & NO_FAT_CHAIN != 0,
-                    });
-                }
-            }
-            let vendor_entries = sc > 1 + name_entries;
-            let name = String::from_utf16(&units)
-                .map_err(|_| bad(format!("name at byte {} is not valid UTF-16", at(i))))?;
-            let node = Node {
-                name,
-                attributes: le16(set, 4),
-                stream: Stream {
-                    first_cluster: le32(s, 20),
-                    len: le64(s, 24),
-                    no_fat_chain: s[1] & NO_FAT_CHAIN != 0,
-                },
-                valid_len: le64(s, 8),
-                cluster: clusters[i / per],
-                entries: (i..=i + sc).map(at).collect(),
-                vendor_entries,
-                vendor_allocations,
-            };
+            let node = parse_set(set, |k| at(i + k), clusters[i / per])?;
             held += node_bytes(&node);
             self.fits(held)?;
             out.push(node);
             i += 1 + sc;
         }
-        Ok(out)
+        Ok((raw.chunks(ENTRY).map(|e| e[0]).collect(), out))
     }
+
+    /// The listing of the folder held by `clusters` (read when not held, or held for another
+    /// chain), its written entries re-read, given to `f`. Held while it fits beside the rest.
+    fn with_listing<R>(
+        &self,
+        image: &mut File,
+        clusters: &[u32],
+        f: impl FnOnce(&Listing) -> R,
+    ) -> io::Result<R> {
+        let Some(&first) = clusters.first() else {
+            return Ok(f(&Listing::default()));
+        };
+        let mut held = self.changes.listings.borrow_mut();
+        if held
+            .by_first
+            .get(&first)
+            .is_some_and(|l| l.clusters != clusters)
+        {
+            held.drop_listing(first);
+        }
+        if let Some(mut l) = held.by_first.remove(&first) {
+            held.bytes -= l.bytes.min(held.bytes);
+            // Taken out while it is brought up to date; an error drops it.
+            for c in &l.clusters {
+                held.owner.remove(c);
+            }
+            self.refresh(image, &mut l)?;
+            // Grown by the refresh: kept within the limit as a new one is.
+            if self.tables_bytes() + held.bytes + l.bytes > self.limit {
+                *held = Listings::default();
+            }
+            held.add(l);
+            return Ok(f(&held.by_first[&first]));
+        }
+        drop(held);
+        let (kinds, nodes) = self.scan_dir(image, clusters)?;
+        let l = Listing::new(clusters, kinds, nodes, self);
+        let mut held = self.changes.listings.borrow_mut();
+        if self.tables_bytes() + held.bytes + l.bytes > self.limit {
+            *held = Listings::default();
+        }
+        if self.tables_bytes() + l.bytes > self.limit {
+            return Ok(f(&l));
+        }
+        held.add(l);
+        Ok(f(&held.by_first[&first]))
+    }
+
+    /// Re-reads `l`'s written entries: their EntryTypes, the sets they were or are part of,
+    /// and the sets an end-of-directory entry moved now hides or shows.
+    fn refresh(&self, image: &mut File, l: &mut Listing) -> io::Result<()> {
+        if l.dirty.is_empty() {
+            return Ok(());
+        }
+        let per = (self.cluster_size() / ENTRY as u64) as usize;
+        let clusters = std::mem::take(&mut l.clusters);
+        let at = |i: usize| self.cluster_offset(clusters[i / per]) + (i % per * ENTRY) as u64;
+        let mut again = std::mem::take(&mut l.dirty);
+        for &j in &again.clone() {
+            l.kinds[j] = self.read_entry(image, at(j))?[0];
+            if let Some((&i, (n, _))) = l.sets.range(..=j).next_back()
+                && i + n.entries.len() > j
+            {
+                again.insert(i);
+            }
+        }
+        for &i in &again {
+            l.remove(i);
+        }
+        let old = l.stop;
+        l.stop = l
+            .kinds
+            .iter()
+            .position(|&k| k == 0x00)
+            .unwrap_or(l.kinds.len());
+        let hidden: Vec<usize> = l.sets.range(l.stop..).map(|(&i, _)| i).collect();
+        for i in hidden {
+            l.remove(i);
+        }
+        again.extend(old..l.stop);
+        let total = l.kinds.len();
+        for i in again {
+            if i >= l.stop || l.kinds[i] != 0x85 {
+                continue;
+            }
+            let sc = usize::from(self.read_entry(image, at(i))?[1]);
+            if sc < 2 || i + sc >= total {
+                return Err(bad(format!("bad entry set at byte {}", at(i))));
+            }
+            let mut set = Vec::with_capacity((1 + sc) * ENTRY);
+            for k in i..=i + sc {
+                set.extend_from_slice(&self.read_entry(image, at(k))?);
+            }
+            let node = parse_set(&set, |k| at(i + k), clusters[i / per])?;
+            let up = self.upcased(&node.name);
+            l.insert(i, node, up);
+        }
+        l.clusters = clusters;
+        Ok(())
+    }
+}
+
+/// The entry set `set` (File entry first, then its secondaries) as a [`Node`], checked:
+/// layout and SetChecksum. `at`: the image byte of the set's entry `k`; `cluster`: the one
+/// holding its File entry.
+fn parse_set(set: &[u8], at: impl Fn(usize) -> u64, cluster: u32) -> io::Result<Node> {
+    let sc = set.len() / ENTRY - 1;
+    if le16(set, 2) != crate::set_checksum(set) {
+        return Err(bad(format!(
+            "entry set checksum mismatch at byte {}",
+            at(0)
+        )));
+    }
+    let s = &set[ENTRY..2 * ENTRY];
+    let name_len = usize::from(s[3]);
+    let name_entries = name_len.div_ceil(15);
+    if s[0] != 0xC0 || name_len == 0 || 1 + name_entries > sc {
+        return Err(bad(format!("bad stream extension at byte {}", at(1))));
+    }
+    let mut units = Vec::with_capacity(name_entries * 15);
+    for e in set[2 * ENTRY..].chunks(ENTRY).take(name_entries) {
+        if e[0] != 0xC1 {
+            return Err(bad(format!(
+                "bad file name entry in the set at byte {}",
+                at(0)
+            )));
+        }
+        units.extend((0..15).map(|j| le16(e, 2 + 2 * j)));
+    }
+    units.truncate(name_len);
+    // After the names: benign secondaries (Vendor Extension 0xE0, Vendor Allocation 0xE1,
+    // ...) are kept as they are; an unknown critical one makes the set unreadable.
+    let mut vendor_allocations = Vec::new();
+    for e in set[(2 + name_entries) * ENTRY..].chunks(ENTRY) {
+        if e[0] < 0xC0 || e[0] & 0x20 == 0 {
+            return Err(bad(format!(
+                "unknown secondary entry 0x{:02X} in the set at byte {}",
+                e[0],
+                at(0)
+            )));
+        }
+        if e[1] & 1 != 0 && le64(e, 24) > 0 {
+            vendor_allocations.push(Stream {
+                first_cluster: le32(e, 20),
+                len: le64(e, 24),
+                no_fat_chain: e[1] & NO_FAT_CHAIN != 0,
+            });
+        }
+    }
+    let vendor_entries = sc > 1 + name_entries;
+    let name = String::from_utf16(&units)
+        .map_err(|_| bad(format!("name at byte {} is not valid UTF-16", at(0))))?;
+    Ok(Node {
+        name,
+        attributes: le16(set, 4),
+        stream: Stream {
+            first_cluster: le32(s, 20),
+            len: le64(s, 24),
+            no_fat_chain: s[1] & NO_FAT_CHAIN != 0,
+        },
+        valid_len: le64(s, 8),
+        cluster,
+        entries: (0..=sc).map(at).collect(),
+        vendor_entries,
+        vendor_allocations,
+    })
 }
 
 impl Volume {
@@ -612,6 +852,15 @@ impl Volume {
         if at >= self.heap_offset {
             let c = ((at - self.heap_offset) / self.cluster_size()) as u32 + FIRST_CLUSTER as u32;
             let base = self.cluster_offset(c);
+            // The listing holding this entry re-reads it before its next use.
+            let i = ((at - base) / ENTRY as u64) as usize;
+            let per = (self.cluster_size() / ENTRY as u64) as usize;
+            let held = self.changes.listings.get_mut();
+            if let Some(&(first, k)) = held.owner.get(&c)
+                && let Some(l) = held.by_first.get_mut(&first)
+            {
+                l.dirty.insert(k * per + i);
+            }
             if self.changes.fresh.contains_key(&c) {
                 let fresh = self.changes.fresh.get_mut(&c).unwrap();
                 return Ok((fresh.as_mut_slice(), (at - base) as usize));
@@ -736,6 +985,7 @@ impl Volume {
         let Some(c) = found else { return Ok(None) };
         let cs = self.cluster_size();
         self.fits(cs)?;
+        self.changes.listings.get_mut().drop_cluster(c);
         self.changes.fresh.insert(c, vec![0u8; cs as usize]);
         self.take(c)?;
         Ok(Some(c))
@@ -1005,12 +1255,10 @@ impl Volume {
             return Err(bad(format!("{to}: its folder owns no cluster")));
         };
         let cs = self.cluster_size();
-        let raw = self.read_clusters(image, &clusters, clusters.len() as u64 * cs)?;
+        let kinds = self.with_listing(image, &clusters, |l| l.kinds.clone())?;
         let per = cs as usize / ENTRY;
         let need = set.len() / ENTRY;
-        let total = raw.len() / ENTRY;
-        let kinds: Vec<u8> = raw.chunks(ENTRY).map(|e| e[0]).collect();
-        drop(raw);
+        let total = kinds.len();
         // Readers stop at the first end-of-directory (0x00) entry, and one must stay after the
         // last set (a reader may otherwise run past the folder's end). `end`: where the
         // unused entries leading up to it start. A set goes into a run of deleted entries

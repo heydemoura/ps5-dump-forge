@@ -5,11 +5,12 @@
 
 import { useEffect, useReducer, useRef, useState } from "react";
 
-import { api, APP_NAME, debugBuild, errorText, events, prettyDuration, runtimePlatform, serverAddress, useOffline, web, type RuntimePlatform } from "./api";
+import { api, APP_NAME, debugBuild, errorText, events, prettyDuration, runtimePlatform, useOffline, web, type RuntimePlatform } from "./api";
 import logo from "./assets/logo.png";
-import { basename, closeOverlays, dirname, Modal, panelId, tabId, TabList, type SourceSelection } from "./common";
+import { closeOverlays, dirname, isNetwork, Modal, panelId, tabId, TabList, usePeerPath, type SourceSelection } from "./common";
+import { Connect, PairPrompt } from "./Connect";
 import { Convert } from "./Convert";
-import { Formats, openConnect } from "./Formats";
+import { Formats } from "./Formats";
 import { useMessages } from "./i18n";
 import type { Messages } from "./locales/en";
 import { Icon } from "./icons";
@@ -18,41 +19,48 @@ import { Lz4 } from "./Lz4";
 import { Storage } from "./Storage";
 import { stepTab, watchShoulders, type Step } from "./shoulders";
 import { UpdateToast } from "./UpdateToast";
-import { jobsReducer, type Job } from "./jobs";
+import { jobName, JobsCard } from "./JobList";
+import { jobsReducer, jobType, type Job, type JobType } from "./jobs";
+import { useOnlineCount } from "./useConnectState";
 
-// Tabs: [Convert Edit] | LZ4 | Storage | About (the dividers are drawn only).
-type Tab = "convert" | "storage" | "lz4" | "edit" | "formats";
+// Tabs: [Convert Edit] | LZ4 | Storage | Connect | About (the dividers are drawn only).
+type Tab = "convert" | "storage" | "lz4" | "edit" | "connect" | "formats";
 /** The bar's order, which L2 / R2 step through. */
-const TAB_ORDER: readonly Tab[] = ["convert", "edit", "lz4", "storage", "formats"];
+const TAB_ORDER: readonly Tab[] = ["convert", "edit", "lz4", "storage", "connect", "formats"];
+/** The job type each tab lists under it (Storage and About list none). */
+const TAB_JOBS: Partial<Record<Tab, JobType>> = { convert: "convert", edit: "edit", lz4: "lz4", connect: "transfer" };
 
 export function App() {
   const t = useMessages().app;
-  const [tab, setTab] = useState<Tab>("convert");
+  // A phone that scanned the Connect card's QR lands on `#connect`.
+  const [tab, setTab] = useState<Tab>(() => (location.hash === "#connect" ? "connect" : "convert"));
+  const online = useOnlineCount();
   const [jobs, dispatch] = useReducer(jobsReducer, []);
   const [closing, setClosing] = useState<"ask" | "stopping" | "stopped" | "failed" | null>(null);
-  const offline = useOffline();
   // Storage handoffs (Library, File explorer): a new id per action, so the same path is read again.
   const [editSel, setEditSel] = useState<SourceSelection | null>(null);
   const [convertSel, setConvertSel] = useState<SourceSelection | null>(null);
   const selId = useRef(0);
-  const handOff = (to: "edit" | "convert", e: { path: string; kind: SourceSelection["kind"] }) => {
-    const sel = { id: ++selId.current, path: e.path, kind: e.kind };
-    (to === "edit" ? setEditSel : setConvertSel)(sel);
+  const goTo = (to: Tab) => {
     setTab(to);
     document.getElementById(tabId("screen", to))?.focus();
   };
+  const handOff = (to: "edit" | "convert", e: { path: string; kind: SourceSelection["kind"] }) => {
+    const sel = { id: ++selId.current, path: e.path, kind: e.kind };
+    (to === "edit" ? setEditSel : setConvertSel)(sel);
+    goTo(to);
+  };
   // http build: the payload on a PS5 (its tile starts it again), or `serve` on a computer;
-  // null until the server answers.
+  // null until the server answers (asked again each time the server is back online).
   const [platform, setPlatform] = useState<RuntimePlatform | null>(null);
+  const offline = useOffline();
   useEffect(() => {
-    if (web) runtimePlatform().then(setPlatform, () => {});
-  }, []);
+    if (web && platform === null && !offline) runtimePlatform().then(setPlatform, () => {});
+  }, [platform, offline]);
   const ps5 = platform !== "host";
   // L2 / R2 (badges in the nav, the pad's triggers, which arrive as F7 / F8): only once the
   // server says PS5.
   const shoulders = platform === "ps5";
-  // The server's host:port (http build), read once before the app rendered.
-  const address = serverAddress();
 
   useEffect(() => {
     const subs = [
@@ -62,6 +70,7 @@ export function App() {
       events.done((e) => dispatch({ type: "done", e })),
       // The quit prompt never opens behind a dialog (help, delete): those close as cancelled.
       events.closeRequested(() => {
+        if (!wasClosing.current && document.activeElement instanceof HTMLElement) quitOpener.current = document.activeElement;
         closeOverlays();
         setClosing((c) => c ?? "ask");
       }),
@@ -74,6 +83,38 @@ export function App() {
 
   const unfinished = jobs.filter((j) => !j.result);
   const active = unfinished.length;
+  // A tab's label with its counter: that tab's unfinished jobs (one white counter on every tab).
+  const counted = (label: string, type: JobType) => {
+    // A job whose request hasn't arrived yet (its events can beat `startJob`'s reply) has no type.
+    const n = unfinished.filter((j) => j.request && jobType(j.request) === type).length;
+    return (
+      <>
+        {label}
+        {n > 0 && (
+          <>
+            <span className="count" aria-hidden="true">
+              {n}
+            </span>
+            <span className="visually-hidden">{t.active(n)}</span>
+          </>
+        )}
+      </>
+    );
+  };
+
+  // Under Convert, Edit, LZ4 and Connect, inside the tab's panel: that tab's own jobs (its type's),
+  // as its count counts them; each list kept mounted (open logs stay open). A job whose request
+  // hasn't arrived yet has no type: listed nowhere yet.
+  const jobsOf = (at: Tab) => {
+    const mine = jobs.filter((j) => j.request && jobType(j.request) === TAB_JOBS[at]);
+    return (
+      mine.length > 0 && (
+        <div className="screen jobs-screen">
+          <JobsCard jobs={mine} dispatch={dispatch} id={`jobs-${at}`} />
+        </div>
+      )
+    );
+  };
 
   const [quitError, setQuitError] = useState<string | null>(null);
   const quit = async () => {
@@ -90,17 +131,29 @@ export function App() {
     }
   };
   // http build: stopping the payload asks first only while jobs run.
-  const askStop = () => (active > 0 ? setClosing("ask") : void quit());
-  // Focus goes back to Stop when its prompt closes.
+  // The notes name the tile or the serve command: know which before stopping.
+  const askStop = async () => {
+    if (platform === null) await runtimePlatform().then(setPlatform, () => {});
+    if (active > 0) setClosing("ask");
+    else void quit();
+  };
+  // Focus goes back to Stop when its prompt closes (the desktop's, opened by the window's close
+  // button: to what had focus then).
   const stopButton = useRef<HTMLButtonElement>(null);
+  const quitOpener = useRef<HTMLElement | null>(null);
   const wasClosing = useRef(false);
   useEffect(() => {
-    if (closing === null && wasClosing.current) stopButton.current?.focus();
+    if (closing === null && wasClosing.current) {
+      const to = stopButton.current ?? quitOpener.current;
+      if (to?.isConnected) to.focus();
+      quitOpener.current = null;
+    }
     wasClosing.current = closing !== null;
   }, [closing]);
   // Escape, a click outside and Keep running/Close: only while a question is up. Once Stop is
   // confirmed (Stopping, has stopped) the dialog takes no keys: the browser keeps its own.
   const dismiss = () => setClosing(null);
+  const shown = usePeerPath();
   const dismissable = closing === "ask" || closing === "failed";
 
   // L2 / R2: the previous or next tab in the bar's order, wrapping; focus follows as a click's
@@ -117,12 +170,12 @@ export function App() {
   stepRef.current = step;
   useEffect(() => (shoulders ? watchShoulders((s) => stepRef.current(s)) : undefined), [shoulders]);
 
-  // Folders this session wrote outputs to: interrupted jobs leave `.part` files there.
+  // Folders on this device this session wrote outputs to: interrupted jobs leave `.part` files there.
   const [outputDirs, setOutputDirs] = useState<string[]>([]);
   useEffect(() => {
     setOutputDirs((prev) => {
       const next = new Set(prev);
-      for (const j of jobs) if (j.request) next.add(dirname(j.request.output));
+      for (const j of jobs) if (j.request && !isNetwork(j.request.output)) next.add(dirname(j.request.output));
       return next.size === prev.length ? prev : [...next];
     });
   }, [jobs]);
@@ -139,17 +192,11 @@ export function App() {
                 <img src={logo} alt="" width={30} height={30} />
                 <span className="visually-hidden">{APP_NAME}</span>
               </h1>
-              {/* The address is a button: How to connect, with the QR code, in a dialog. */}
-              {address && (
-                <button
-                  type="button"
-                  className="address-btn"
-                  aria-label={t.address(`http://${address}`)}
-                  onClick={openConnect}
-                >
-                  <span className="address">{address}</span>
-                </button>
-              )}
+              {/* Connect's state (online paired peers and saved NAS devices); opens the Connect tab. */}
+              <button type="button" className="conn-btn" onClick={() => goTo("connect")}>
+                <span className="visually-hidden">{t.connect} </span>
+                <span className={online > 0 ? "tag green" : "tag"}>{online > 0 ? t.connected(online) : t.disconnected}</span>
+              </button>
             </div>
             <TabList
               label={t.screens}
@@ -160,31 +207,23 @@ export function App() {
               start={shoulders ? <Shoulder name="L2" label={t.prevTab} onClick={() => step(-1)} /> : undefined}
               end={shoulders ? <Shoulder name="R2" label={t.nextTab} onClick={() => step(1)} /> : undefined}
               tabs={[
-                {
-                  id: "convert",
-                  label: (
-                    <>
-                      {t.convert}
-                      {active > 0 && (
-                        <>
-                          <span className="count" aria-hidden="true">
-                            {active}
-                          </span>
-                          <span className="visually-hidden">{t.active(active)}</span>
-                        </>
-                      )}
-                    </>
-                  ),
-                },
-                { id: "edit", label: t.edit },
-                { id: "lz4", label: "LZ4", className: "tab-lz4", sep: true },
+                { id: "convert", label: counted(t.convert, "convert") },
+                { id: "edit", label: counted(t.edit, "edit") },
+                { id: "lz4", label: counted("LZ4", "lz4"), className: "tab-lz4", sep: true },
                 { id: "storage", label: t.storage, sep: true },
+                { id: "connect", label: counted(t.connect, "transfer"), sep: true },
                 { id: "formats", label: t.about, sep: true },
               ]}
             />
             <div className="top-actions">
+              {/* The status region stays mounted, so its text is announced when it changes. */}
+              {web && (
+                <span className="visually-hidden" role="status">
+                  {offline ? t.offline : ""}
+                </span>
+              )}
               {web && offline && (
-                <span className="tag orange" role="status">
+                <span className="tag orange" aria-hidden="true">
                   {t.offline}
                 </span>
               )}
@@ -195,7 +234,7 @@ export function App() {
                 </button>
               )}
               {web && (
-                <button className="small" ref={stopButton} onClick={askStop}>
+                <button className="small" ref={stopButton} onClick={askStop} title={t.stop}>
                   <Icon name="power" />
                   <span className="stop-label">{t.stop}</span>
                 </button>
@@ -222,6 +261,7 @@ export function App() {
                 document.getElementById(tabId("screen", "formats"))?.focus();
               }}
             />
+            {jobsOf("convert")}
           </div>
           <div
             id={panelId("screen", "storage")}
@@ -242,6 +282,7 @@ export function App() {
             hidden={tab !== "lz4"}
           >
             <Lz4 jobs={jobs} dispatch={dispatch} />
+            {jobsOf("lz4")}
           </div>
           <div
             id={panelId("screen", "edit")}
@@ -250,6 +291,16 @@ export function App() {
             hidden={tab !== "edit"}
           >
             <Edit outputDirs={outputDirs} visible={tab === "edit"} selection={editSel} jobs={jobs} dispatch={dispatch} />
+            {jobsOf("edit")}
+          </div>
+          <div
+            id={panelId("screen", "connect")}
+            role="tabpanel"
+            aria-labelledby={tabId("screen", "connect")}
+            hidden={tab !== "connect"}
+          >
+            <Connect dispatch={dispatch} />
+            {jobsOf("connect")}
           </div>
           <div
             id={panelId("screen", "formats")}
@@ -263,6 +314,9 @@ export function App() {
         {/* A newer release (checked once per start); inert with the screens under the quit prompt. */}
         <UpdateToast />
       </div>
+      {/* Another device asks to pair: Allow or Deny, over whatever screen or dialog is open (a
+          portal outside the root `openOverlay` makes inert); not under the quit prompt. */}
+      {closing === null && <PairPrompt />}
 
       {closing && (
         <Modal
@@ -305,7 +359,7 @@ export function App() {
                   {unfinished.map((j) => (
                     <li key={j.id}>
                       <span className="quit-name">
-                        {j.request ? basename(j.request.output) : t.job(j.id)}
+                        {jobName(j, shown, t.job)}
                       </span>
                       <span className="muted">{jobState(j, t)}</span>
                     </li>
@@ -328,7 +382,7 @@ export function App() {
               {/* Its button is gone: focus moves here, inside the dialog (old WebKit has no inert). */}
               <h2 id="quit-title" tabIndex={-1} ref={(el) => el?.focus()}>
                 <span id="quit-text">
-                  {active > 0 || !web ? t.stoppingJobs : t.stoppingForge}
+                  {active > 0 ? t.stoppingJobs : web ? t.stoppingForge : t.quitting}
                 </span>
               </h2>
             </div>

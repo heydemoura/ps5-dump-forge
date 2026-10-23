@@ -16,10 +16,10 @@ image is still an ordinary second convert (the packs are carried along).
 > this on every trace and pack job.
 
 Everything LZ4 is in the app's **LZ4** tab (experimental; **How LZ4 works** there shows the steps below
-in short, offline), in two scenarios: **Trace** (Patch or Unpatch a game folder, `.exfat` or `.ffpkg`;
-Download traces in the console web UI once it holds a journal) and **Pack/Unpack** (pack by traces or a
-profile into an LZ4 packed folder, `.ffpkg`, `.exfat` or `.ffpfs`; Unpack a packed source to a folder,
-`.ffpkg`, `.exfat` or `.ffpfs`). `.ffpfsc` is CLI only there; any packed or unpacked folder converts to
+in short, offline), in two scenarios: **Pack/Unpack** (the default whenever it applies: pack by traces or
+a profile into an LZ4 packed folder, `.ffpkg`, `.exfat` or `.ffpfs`; Unpack a packed source to a folder,
+`.ffpkg`, `.exfat` or `.ffpfs`) and **Trace** (Patch or Unpatch a game folder, `.exfat` or `.ffpkg`;
+Download traces in the console web UI once it holds a journal). `.ffpfsc` is CLI only there; any packed or unpacked folder converts to
 every format in Convert. The Convert tab copies a packed folder as it is, except an outdated or missing runtime
 (see [Every conversion of an AMPR game](#every-conversion-of-an-ampr-game)). For a game that doesn't use
 AMPR the **LZ4** tab says "This game doesn't use AMPR, so LZ4 can't be used here" and offers nothing.
@@ -50,9 +50,9 @@ Which files to pack comes from a recording, so it takes two converts:
    (32 blocks spread across it, at most 16 MiB) and stays loose when the samples save under 5% or 90% of
    them stay uncompressed; hot files (a profile's `hot = true`) are exempt unless `auto_loose_hot_files = true`. A profile tunes it with the
    `[pack] auto_loose_*` keys (`auto_loose_large_files = false` turns it off).
-3. Or pack straight into an image: **LZ4** → **Pack/Unpack** → Target **.ffpkg** (or `.exfat`, `.ffpfs`;
+3. Or pack straight into an image: **LZ4** → **Pack/Unpack** → Target **ffpkg** (or **exfat**, **ffpfs**;
    the CLI also `.ffpfsc`), CLI `convert <dump> --to ffpkg --lz4-pack [--lz4-traces <zip|folder|journal>]
-   [--lz4-profile x.toml]`. `.fpkg` is not offered (packing into a package is not supported yet). The
+   [--lz4-profile x.toml]`. **fpkg** (`.pkg`) is not offered (packing into a package is not supported yet). The
    image is verified as written and through its packs (the logical files against the source).
 
 ## Recommended: a traced `.ffpkg` on the PS5, pack on the computer
@@ -127,7 +127,7 @@ which. The source is left as it is.
   runtime the output gets: an index that lists the old runtime's size (or no runtime) is rebuilt, one that
   already lists the release runtime at its size stays. **Remove backport** leaves files out, so it makes an
   index stale too. An index far bigger than the game's file list
-  needs is judged stale without being read. A `.fpkg` always gets a fresh index from the package builder,
+  needs is judged stale without being read. An fpkg (`.pkg`) always gets a fresh index from the package builder,
   built from the files it actually packages.
 - **A packed game** gets the same runtime rule, but its `ampr_emu.index`, pack manifest, journal and logs
   are copied byte for byte (the manifest's file ids are the index's records). A replaced runtime then no
@@ -144,8 +144,8 @@ which. The source is left as it is.
 - **Only AMPR titles.** A game whose `eboot.bin` does not import `libSceAmpr` is refused (the **LZ4**
   tab says "This game doesn't use AMPR, so LZ4 can't be used here"; Convert shows no AMPR notes for it).
   A game without its own ampr_emu is fine: Pack, Unpack, Patch and Unpatch install the bundled one.
-- **Patch and Unpatch are the only LZ4 operations that change your source** (Delete, in Edit or the
-  Library, removes it). Keep the original dump to pack from. Only a folder, `.exfat` or `.ffpkg` can be
+- **Patch and Unpatch are the only LZ4 operations that change your source** (Delete, in Edit or
+  Storage, removes it). Keep the original dump to pack from. Only a folder, `.exfat` or `.ffpkg` can be
   patched (`.ffpfs`, `.ffpfsc` and `.pkg` are read-only on the console), and a packed source must be
   unpacked first.
 - **Checks are CRCs.** The pack's checksums detect corruption; they do not authenticate anything.

@@ -425,31 +425,7 @@ pub(crate) fn write(tree: &mut dyn SourceTree, part: &Part, ctx: &Ctx) -> anyhow
         let mut out = dest.create(&file.path)?;
         #[cfg(target_os = "freebsd")]
         let mut out = crate::durable::SyncEvery::new(out, &mut cadence, ctx.cancel);
-        let mut offset = 0u64;
-        while offset < file.size {
-            ctx.check()?;
-            let want = (file.size - offset).min(CHUNK) as usize;
-            let buf = tree.read_range(&file.path, offset, want)?;
-            if buf.is_empty() {
-                bail!(
-                    "{}: the source ended at byte {offset} of {}",
-                    file.path,
-                    file.size
-                );
-            }
-            if buf.len() > want {
-                bail!(
-                    "{}: the source gave {} bytes at {offset} where {want} were asked",
-                    file.path,
-                    buf.len()
-                );
-            }
-            out.write_all(&buf)
-                .with_context(|| format!("writing {}", file.path))?;
-            offset += buf.len() as u64;
-            done += buf.len() as u64;
-            ctx.progress("write", done, total);
-        }
+        copy(tree, file, &mut out, &mut done, total, ctx)?;
         #[cfg(not(target_os = "freebsd"))]
         sync_file(&out).with_context(|| format!("syncing {}", file.path))?;
         #[cfg(target_os = "freebsd")]
@@ -466,6 +442,72 @@ pub(crate) fn write(tree: &mut dyn SourceTree, part: &Part, ctx: &Ctx) -> anyhow
     dest.sync(ctx)?;
     ctx.progress("write", total, total);
     Ok(total)
+}
+
+/// [`write`] into a folder on a peer: each file through a temporary name, sent, synced,
+/// closed and renamed (a failure removes the one being written).
+pub(crate) fn write_remote(
+    tree: &mut dyn SourceTree,
+    dest: &mut crate::remote::RemoteDir,
+    ctx: &Ctx,
+) -> anyhow::Result<u64> {
+    let files = tree.files().to_vec();
+    let empty_dirs = tree.empty_dirs().to_vec();
+    let total = files
+        .iter()
+        .try_fold(0u64, |sum, f| sum.checked_add(f.size))
+        .context("total size overflows")?;
+    let mut done = 0u64;
+    for file in &files {
+        ctx.check()?;
+        dest.write_new(&file.path, &mut |out| {
+            copy(tree, file, out, &mut done, total, ctx)
+                .map_err(|e| std::io::Error::other(format!("{e:#}")))
+        })?;
+    }
+    for dir in &empty_dirs {
+        ctx.check()?;
+        dest.dir(dir)?;
+    }
+    ctx.progress("write", total, total);
+    Ok(total)
+}
+
+/// Streams `file` of `tree` into `out` in chunks, checking cancel between them.
+fn copy(
+    tree: &mut dyn SourceTree,
+    file: &ps5upload_fpkg::source::SourceFile,
+    out: &mut dyn Write,
+    done: &mut u64,
+    total: u64,
+    ctx: &Ctx,
+) -> anyhow::Result<()> {
+    let mut offset = 0u64;
+    while offset < file.size {
+        ctx.check()?;
+        let want = (file.size - offset).min(CHUNK) as usize;
+        let buf = tree.read_range(&file.path, offset, want)?;
+        if buf.is_empty() {
+            bail!(
+                "{}: the source ended at byte {offset} of {}",
+                file.path,
+                file.size
+            );
+        }
+        if buf.len() > want {
+            bail!(
+                "{}: the source gave {} bytes at {offset} where {want} were asked",
+                file.path,
+                buf.len()
+            );
+        }
+        out.write_all(&buf)
+            .with_context(|| format!("writing {}", file.path))?;
+        offset += buf.len() as u64;
+        *done += buf.len() as u64;
+        ctx.progress("write", *done, total);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

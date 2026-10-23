@@ -1,6 +1,6 @@
 // Edit: a game's small card on the left (cover, title, ID, version, kind; folds for its facts,
 // param.json and the reader's details; leftover .part files below), its files on the right in
-// an explorer where changes stack up (add, replace, rename, delete, new folder) until Apply.
+// an explorer where changes stack up (add, replace, rename, delete) until Apply.
 // Before a source is chosen the right side says how editing works.
 
 import { useEffect, useId, useMemo, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -20,8 +20,13 @@ import {
 import {
   CardHead,
   dirname,
+  Dots,
   InspectSummary,
   isArchive,
+  isMac,
+  isNetwork,
+  isPeer,
+  isNas,
   isWithin,
   notifyDeleted,
   onDeleted,
@@ -34,6 +39,7 @@ import {
   confirmApply,
   editRequest,
   hostPath,
+  Lines,
   ModeBox,
   UploadLine,
   uploaded,
@@ -64,9 +70,9 @@ import {
 } from "./explorer";
 import { useMessages } from "./i18n";
 import { Icon } from "./icons";
-import { JobsCard } from "./JobList";
 import type { Action, Job } from "./jobs";
 import { inspectSource } from "./password";
+import { readable } from "./peers";
 
 // ponytail: a cap instead of a virtualized list; the filter narrows big folders.
 export const MAX_ROWS = 2000;
@@ -109,6 +115,8 @@ export function Edit(props: {
   const [want, setWant] = useState<Mode>("in_place");
   const [nonce, setNonce] = useState(0);
   const [applying, setApplying] = useState(false);
+  // Apply's own check, with the uploads in, is running: the bar says "Checking" meanwhile.
+  const [fullCheck, setFullCheck] = useState(false);
   const applyingRef = useRef(false);
   const [upload, setUpload] = useState<{ i: number; n: number; sent: number; total: number } | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -117,7 +125,6 @@ export function Edit(props: {
   const [refreshing, setRefreshing] = useState(false);
   /** A re-read after the job is on: its end clears the list (see `onAdd`). */
   const rereading = useRef(false);
-  const started = useRef(new Set<JobId>());
   /** While an Apply or its job runs the source stays: a pick or delete is refused, and a Library
    * hand-off is dropped with a note (`path`), not queued. */
   const holding = useRef(false);
@@ -163,6 +170,7 @@ export function Edit(props: {
   /** Forget the source and any late answer; `path` is what was deleted. */
   const clear = (path: string) => {
     seq.current++; // a late answer for this path never lands
+    abort.current?.abort(); // an Apply's uploads stop: their source is gone
     picked.current = null;
     setSource(null);
     setIns(null);
@@ -270,7 +278,12 @@ export function Edit(props: {
       setIns(found);
       setError(null);
     } catch (e) {
-      if (mine === seq.current) setError(errorText(e));
+      // The changes are in, so the listing shown is out of date: gone, as after a failed pick.
+      // Changes still pending keep theirs, to review or retry.
+      if (mine === seq.current) {
+        if (clear) setIns(null);
+        setError(errorText(e));
+      }
     } finally {
       if (mine === seq.current) {
         if (clear) dispatch({ type: "reset" });
@@ -285,11 +298,10 @@ export function Edit(props: {
   const extract = async (paths: string[]) => {
     if (!source || !ins || paths.length === 0) return;
     const path = source;
-    const output = await pickPath({ directory: true, title: t.pickExtract });
+    const output = await pickPath({ directory: true, title: t.pickExtract, devices: true });
     if (output === null || picked.current !== path) return;
     const request = extractRequest(path, output, paths, pw.current);
     const id = await api.startJob(request);
-    started.current.add(id);
     props.dispatch({ type: "started", id, request });
   };
 
@@ -327,7 +339,7 @@ export function Edit(props: {
           if (!m) handles.set(src.folder, (m = new Map(src.folder.files.map((f) => [f.path, f.file]))));
           file = m.get(rel ?? "");
         }
-        if (!file) throw new Error(`${to}: the dropped file is gone`);
+        if (!file) throw new Error(t.droppedGone(to));
         // Each upload in its own namespace: no two staged paths meet.
         const at = stageAt(to);
         staged = true;
@@ -338,9 +350,15 @@ export function Edit(props: {
         return got;
       });
       setUpload(null);
+      // The changes leave the source as it is: an empty list would start a conversion.
+      if (edits.length === 0) {
+        setApplyError({ lead: t.nothingToChange });
+        return;
+      }
       const request = editRequest(path, base.kind, edits, mode === "rebuild");
       if (staged) {
         // Now with the uploads in: the bar shows this answer, and a refusal stops here.
+        setFullCheck(true);
         const full = await api.editCheck(request);
         if (gen !== live.current.gen) throw new Error("cancelled");
         check.settle(full);
@@ -355,7 +373,6 @@ export function Edit(props: {
       const id = await api.startJob(request);
       job.current = { id, source: path, staged, folder };
       staged = false; // the job's now; discarded once it ends
-      started.current.add(id);
       props.dispatch({ type: "started", id, request });
     } catch (e) {
       const text = errorText(e);
@@ -365,6 +382,7 @@ export function Edit(props: {
       if (staged) void api.discardStaged(path).catch(() => {});
       abort.current = null;
       setUpload(null);
+      setFullCheck(false);
       applyingRef.current = false;
       setApplying(false);
     }
@@ -384,7 +402,7 @@ export function Edit(props: {
       void reread(path, true);
       return;
     }
-    const err = j.result.Err;
+    const err = readable(j.result.Err);
     setApplyError(
       err === "cancelled" || err.startsWith("cancelled; ")
         ? { lead: t.applyCancelled, text: err === "cancelled" ? undefined : err, partly: folder }
@@ -393,9 +411,25 @@ export function Edit(props: {
     if (folder) void reread(path, false);
   }, [props.jobs]);
 
-  const hasJobs = props.jobs.length > 0;
+  // An edit job of this source not started here (restored after a reload, or another viewer's),
+  // or an LZ4 Patch or Unpatch replacing it: when it ends the source is read again; the changes
+  // listed here stay.
+  const others = useRef(new Map<JobId, string>());
+  useEffect(() => {
+    for (const j of props.jobs) {
+      if (!(j.request?.edits?.length || j.request?.lz4_in_place) || j.id === job.current?.id) continue;
+      if (!j.result) {
+        if (j.request.source === picked.current) others.current.set(j.id, j.request.source);
+      } else if (others.current.has(j.id)) {
+        const path = others.current.get(j.id)!;
+        others.current.delete(j.id);
+        if (picked.current === path) void reread(path, false);
+      }
+    }
+  }, [props.jobs]);
+
   return (
-    <div className={hasJobs ? "screen with-jobs" : "screen"}>
+    <div className="screen">
       <div className="cols edit">
         <div className="stack">
           <SourceCard
@@ -409,13 +443,17 @@ export function Edit(props: {
             prefix="e"
             onUnlock={() => source && void pick(source)}
             actions={
-              ins && (
+              // A NAS share or a paired Forge is read only here: nothing to delete.
+              ins &&
+              !isNetwork(source) && (
                 <button
                   className="small danger icon-only"
                   onClick={remove}
-                  disabled={deleting || running || applying}
+                  // While deleting it keeps focus (aria-disabled); remove() ignores clicks then.
+                  disabled={running || applying}
+                  aria-disabled={deleting || undefined}
                   aria-label={deleting ? t.deleting : t.delete}
-                  title={t.delete}
+                  title={deleting ? t.deleting : t.delete}
                 >
                   <Icon name="trash" />
                 </button>
@@ -431,22 +469,22 @@ export function Edit(props: {
             {ins && <GameFolds ins={ins} />}
           </SourceCard>
           {holdNote && (running || applying) && (
-            <p className="note-line warn deleted-note" role="status">
+            <p className="note-line warn source-note" role="status">
               <Icon name="warn" />
               <span>{holdNote.path ? t.notOpened(<span className="path">{holdNote.path}</span>) : t.sourceLocked}</span>
             </p>
           )}
           {deleteError && (
-            <p className="bad deleted-note" role="alert">
-              {messages.library.cantDelete} <span className="backend">{deleteError}</span>
+            <p className="source-note" role="alert">
+              <span className="tag orange">{messages.library.cantDelete}</span> <span className="backend">{deleteError}</span>
             </p>
           )}
           {deleted && (
-            <p className="muted deleted-note" role="status">
+            <p className="muted source-note" role="status">
               {t.deleted} <span className="path">{deleted}</span>
             </p>
           )}
-          <Leftovers dirs={[source && dirname(source), ...props.outputDirs]} visible={props.visible} />
+          <Leftovers dirs={[source && !isNetwork(source) ? dirname(source) : null, ...props.outputDirs]} visible={props.visible} />
         </div>
 
         {/* A new source starts at its root with no filter (the key); a re-read keeps the folder. */}
@@ -455,7 +493,9 @@ export function Edit(props: {
             key={source ?? ""}
             ins={ins}
             tree={folded.tree}
-            editable={!ins.archive && !locked}
+            editable={!ins.archive && !isNetwork(source) && !locked}
+            nas={isNas(source)}
+            peer={isPeer(source)}
             visible={props.visible}
             gen={pending.gen}
             onChanges={onChanges}
@@ -467,14 +507,19 @@ export function Edit(props: {
                 <PendingBar
                   changes={changes}
                   findings={folded.findings}
-                  onUndo={() => dispatch({ type: "undo" })}
+                  onUndo={() => {
+                    dispatch({ type: "undo" });
+                    setApplyError(null);
+                  }}
                   onDiscard={() => void discard()}
                   disabled={locked}
                   actions={
                     <button
                       className="small primary"
                       onClick={() => void apply()}
-                      disabled={locked || mode === null}
+                      // Busy with its own Apply (the dialog, uploads, the job): aria-disabled, so it keeps focus.
+                      disabled={refreshing || mode === null || folded.findings.some((f) => f.length > 0)}
+                      aria-disabled={applying || running || undefined}
                       title={t.applyTip}
                     >
                       <Icon name="check" />
@@ -485,13 +530,13 @@ export function Edit(props: {
                   {running || refreshing ? (
                     <p className="note-line" role="status">
                       <Icon name="info" />
-                      <span>{t.applyRunning}</span>
+                      <span>{running ? t.applyRunning : messages.common.reading}</span>
                     </p>
                   ) : (
                     <ModeBox
                       kind={kind}
                       state={check.state}
-                      current={check.current}
+                      current={check.current && !fullCheck}
                       want={want}
                       onWant={setWant}
                       onRetry={() => setNonce((n) => n + 1)}
@@ -503,13 +548,7 @@ export function Edit(props: {
                     <div className="error-box" role="alert">
                       <strong className="error-title">{applyError.lead}</strong>
                       {applyError.text && <span className="backend">{applyError.text}</span>}
-                      {applyError.lines && (
-                        <ul className="rows backend edit-why">
-                          {applyError.lines.map((l) => (
-                            <li key={l}>{l}</li>
-                          ))}
-                        </ul>
-                      )}
+                      {applyError.lines && <Lines lines={applyError.lines} label={applyError.lead} />}
                       {applyError.partly && <span className="muted">{t.folderPartly}</span>}
                     </div>
                   )}
@@ -517,11 +556,21 @@ export function Edit(props: {
               )
             }
           />
+        ) : source !== null && busy ? (
+          <section className="card explorer" aria-labelledby="e-files">
+            <CardHead icon="folder" title={t.explorer} id="e-files" />
+            <div className="library-busy" role="status" aria-live="polite">
+              <span className="spinner" aria-hidden="true" />
+              <span>
+                {messages.common.reading}
+                <Dots />
+              </span>
+            </div>
+          </section>
         ) : (
           <HowItWorks />
         )}
       </div>
-      {hasJobs && <JobsCard jobs={props.jobs} dispatch={props.dispatch} started={started} prefix="e" />}
     </div>
   );
 }
@@ -570,7 +619,7 @@ function GameFolds({ ins }: { ins: Inspection }) {
         {ins.param_json == null ? (
           <p className="muted">{t.noParam}</p>
         ) : (
-          <pre className="code fold-box" tabIndex={0} aria-label="param.json">
+          <pre className="code fold-box" tabIndex={0} role="region" aria-label="param.json">
             {JSON.stringify(ins.param_json, null, 2)}
           </pre>
         )}
@@ -594,7 +643,7 @@ function GameFolds({ ins }: { ins: Inspection }) {
  * The game's files, one folder at a time: breadcrumbs and Up, then the folder's entries
  * (folders first) in a grid with one focusable row (arrow keys, Home/End, Enter opens a folder,
  * Backspace or Alt+Up goes up). A filter lists everything below the folder whose path from it
- * matches. Editable (not an archive): rows Rename (F2) and Delete (Delete key), New folder, Add
+ * matches. Editable (not an archive): rows Rename (F2) and Delete (Delete key), Add
  * file / Add folder, and drops (onto a folder row: into it; elsewhere on the card: this folder);
  * every change waits in the pending bar until Apply.
  */
@@ -602,6 +651,10 @@ function Explorer(props: {
   ins: Inspection;
   tree: DirNode;
   editable: boolean;
+  /** The source is on a saved NAS (read only: browse and Extract). */
+  nas: boolean;
+  /** The source is on a paired Forge (read only, the same). */
+  peer: boolean;
   /** The tab is showing (drops on a hidden tab are not ours). */
   visible: boolean;
   /** The changes' generation this explorer shows; every action passes the one it began in. */
@@ -677,8 +730,8 @@ function Explorer(props: {
     const at = here;
     const gen = props.gen;
     const paths = folder
-      ? await pickPath({ directory: true, title: t.pickAddFolder }).then((p) => (p === null ? null : [p]))
-      : await pickFiles({ directory: false, title: t.pickAddFiles });
+      ? await pickPath({ directory: true, title: t.pickAddFolder, devices: true, peersOnly: true }).then((p) => (p === null ? null : [p]))
+      : await pickFiles({ directory: false, title: t.pickAddFiles, devices: true, peersOnly: true });
     if (paths !== null) await add(gen, at, () => Promise.all(paths.map(fromHost)));
   };
   const extract = async (paths: string[]) => {
@@ -691,7 +744,10 @@ function Explorer(props: {
   };
   // The folder shown; at the root, the whole game (each top-level entry on disk).
   const folderPaths = here === "" ? [...onDisk].filter((p) => !p.includes("/")) : onDisk.has(here) ? [here] : [];
+  // A failed add or Extract is said until the next change (or a new generation).
+  useEffect(() => setAddError(null), [props.gen]);
   const remove = (e: Entry) => {
+    setAddError(null);
     const i = shown.findIndex((x) => x.path === e.path);
     const next = shown[i + 1] ?? shown[i - 1];
     want.current = next ? next.path : "";
@@ -699,6 +755,7 @@ function Explorer(props: {
   };
   const renamed = (e: Entry, name: string | null) => {
     setRenaming(null);
+    if (name !== null) setAddError(null);
     const to = name === null ? e.path : join(parentOf(e.path), name);
     want.current = to;
     if (name !== null) props.onChanges(props.gen, [{ op: "rename", from: e.path, to }]);
@@ -793,10 +850,10 @@ function Explorer(props: {
       <CardHead icon="folder" title={t.explorer} id="e-files">
         <span className="tag">{t.fileCount(ins.files.length)}</span>
       </CardHead>
-      {ins.archive && (
+      {(ins.archive || props.nas || props.peer) && (
         <p className="note-line explorer-note">
           <Icon name="info" />
-          <span>{t.archiveNote}</span>
+          <span>{props.nas ? t.nasNote : props.peer ? t.peerNote : t.archiveNote}</span>
         </p>
       )}
       {props.pending}
@@ -855,7 +912,7 @@ function Explorer(props: {
               className="small"
               onClick={() => void extract(folderPaths)}
               disabled={folderPaths.length === 0}
-              title={here === "" ? t.extractGameTip : t.extractFolderTip}
+              title={here === "" ? t.extractGameTip : folderPaths.length === 0 ? t.extractNotOnDisk : t.extractFolderTip}
             >
               <Icon name="download" />
               {t.extractFolder}
@@ -884,7 +941,8 @@ function Explorer(props: {
           }}
           spellCheck={false}
         />
-        <span className="muted count-text" role="status">
+        {/* Quiet during a drag: every row crossed rewrites it. */}
+        <span className="muted count-text" role="status" aria-live={dropAt !== null ? "off" : undefined}>
           {count}
         </span>
       </div>
@@ -906,7 +964,9 @@ function Explorer(props: {
             <span role="columnheader" className="xsize">
               {t.size}
             </span>
-            <span role="columnheader" className="xact" />
+            <span role="columnheader" className="xact">
+              <span className="visually-hidden">{t.actions}</span>
+            </span>
           </div>
           {shown.map((e, i) => {
             const isDir = e.node.kind === "dir";
@@ -974,7 +1034,7 @@ function Explorer(props: {
                       className="small icon-only xbtn danger"
                       tabIndex={mine}
                       aria-label={t.removeItem(e.node.name)}
-                      title={t.removeTip}
+                      title={isMac ? t.removeTipMac : t.removeTip}
                       onClick={() => remove(e)}
                     >
                       <Icon name="trash" />
@@ -1011,7 +1071,6 @@ function Explorer(props: {
   );
 }
 
-/** `base`, or `base 2`, `base 3`, ... : the first name `dir` doesn't hold. */
 /** The browser's files the changes upload on Apply: how many, and their bytes. */
 function uploadsOf(list: readonly NewChange[]): { files: number; bytes: number } {
   let files = 0;
@@ -1035,6 +1094,7 @@ function MarkTag({ node }: { node: TreeNode }) {
   return (
     <span className={`tag xmark ${MARK_CLASS[node.mark]}`} title={node.from ? t.wasAt(node.from) : undefined}>
       {label}
+      {node.from && <span className="visually-hidden">{t.wasAt(node.from)}</span>}
     </span>
   );
 }
@@ -1045,25 +1105,28 @@ function Size({ node }: { node: TreeNode }) {
   const t = useMessages().edit;
   if (node.kind === "dir" && node.host)
     return (
-      <span title={t.sizeLater} aria-label={t.sizeLater}>
-        —
-      </span>
+      <>
+        <span title={t.sizeLater} aria-hidden="true">
+          —
+        </span>
+        <span className="visually-hidden">{t.sizeLater}</span>
+      </>
     );
   return <>{node.kind === "dir" ? t.items(node.children.size) : prettyBytes(node.size)}</>;
 }
 
 /**
- * A name typed in place (Rename, New folder): focused with the name before its extension
- * selected; Enter keeps it, Escape drops it, leaving keeps a valid one. A name that can't be (empty,
- * `/`, `\`, `.`, `..`, or taken in the folder) says why and stays open. `fresh`: the initial
- * name counts as typed (a new folder's suggestion).
+ * A name typed in place (Rename): focused with the name before its extension selected; Enter
+ * keeps it, Escape drops it, leaving keeps a valid one. A name that can't be (empty, `/`, `\`,
+ * `.`, `..`, or taken in the folder) says why and stays open.
  */
 export function NameInput(props: {
   initial: string;
-  fresh?: boolean;
   label: string;
   taken: (name: string) => boolean;
   onDone: (name: string | null) => void;
+  /** A folder: its whole name is selected (a file's up to its extension). */
+  dir?: boolean;
 }) {
   const t = useMessages().edit;
   const [value, setValue] = useState(props.initial);
@@ -1076,7 +1139,7 @@ export function NameInput(props: {
     if (!i) return;
     i.focus();
     const dot = props.initial.lastIndexOf(".");
-    i.setSelectionRange(0, dot > 0 && !props.fresh ? dot : props.initial.length);
+    i.setSelectionRange(0, dot > 0 && !props.dir ? dot : props.initial.length);
     // Once, on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1086,7 +1149,7 @@ export function NameInput(props: {
     props.onDone(name);
   };
   const commit = (leaving: boolean) => {
-    if (value === props.initial && !props.fresh) return finish(null);
+    if (value === props.initial) return finish(null);
     const why =
       value === "" ? t.nameEmpty : !validName(value) ? t.nameBad : props.taken(value) ? t.nameTaken(value) : null;
     if (why === null) return finish(value);
@@ -1104,6 +1167,8 @@ export function NameInput(props: {
         aria-describedby={error ? errId : undefined}
         spellCheck={false}
         autoComplete="off"
+        autoCapitalize="none"
+        autoCorrect="off"
         onChange={(e) => {
           setValue(e.target.value);
           setError(null);
@@ -1140,17 +1205,18 @@ function Leftovers(props: { dirs: (string | null)[]; visible: boolean }) {
   const t = useMessages().edit;
   const dirs = [...new Set(props.dirs.filter((d): d is string => !!d))];
   const key = JSON.stringify(dirs);
-  const [parts, setParts] = useState<string[]>([]);
+  // The last answer, kept (no jump) while the same folders are checked again on a tab show.
+  const [found, setFound] = useState<{ key: string; parts: string[] }>({ key: "[]", parts: [] });
+  const parts = found.key === key ? found.parts : [];
 
   useEffect(() => {
     if (!props.visible) return;
-    setParts([]);
     const list: string[] = JSON.parse(key);
     if (list.length === 0) return;
     let live = true;
     api.staleParts(list).then(
-      (p) => live && setParts(p),
-      () => {},
+      (p) => live && setFound({ key, parts: p }),
+      () => live && setFound({ key, parts: [] }),
     );
     return () => {
       live = false;
@@ -1163,7 +1229,7 @@ function Leftovers(props: { dirs: (string | null)[]; visible: boolean }) {
       <CardHead icon="file" title={t.leftovers} id="e-leftovers">
         <span className="tag orange">{t.found(parts.length)}</span>
       </CardHead>
-      <ul className="rows path">
+      <ul className="rows path fold-box" tabIndex={0} aria-label={t.leftovers}>
         {parts.map((p) => (
           <li key={p}>{p}</li>
         ))}

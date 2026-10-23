@@ -1,0 +1,102 @@
+//! Outputs on an FTP server (the ftp crate's in-process one): an fpkg goes back over what it
+//! wrote, which the server's rewrite probe allows.
+
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::mpsc;
+
+use ps5_dump_forge_core::{ConvertRequest, Event, Format, JobReport, Jobs, KrakenLevel};
+use ps5_dump_forge_ftp::fake;
+
+fn dir(name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn write(root: &Path, rel: &str, bytes: &[u8]) {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+fn run(req: ConvertRequest) -> Result<JobReport, String> {
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let jobs = Jobs::new(move |e| {
+        let _ = tx.lock().unwrap().send(e);
+    });
+    jobs.start(req);
+    loop {
+        if let Event::Done { result, .. } = rx.recv().unwrap() {
+            return result;
+        }
+    }
+}
+
+fn request(source: &Path, format: Format, output: &Path) -> ConvertRequest {
+    ConvertRequest {
+        source: source.to_path_buf(),
+        format,
+        output: output.to_path_buf(),
+        compression_threads: None,
+        inner: None,
+        remove_backport: false,
+        full_verify: true,
+        kraken_level: KrakenLevel::Fast,
+        ffpfsc_level: 6,
+        lz4: None,
+        lz4_profile: None,
+        lz4_traces: None,
+        lz4_trace_space_mib: 256,
+        lz4_in_place: false,
+        edits: Vec::new(),
+        extract: Vec::new(),
+        transfer: Vec::new(),
+        edit_rebuild: false,
+        archive_password: None,
+    }
+}
+
+#[test]
+fn fpkg_onto_an_ftp_server_reads_back_as_the_game() {
+    let root = dir("ftp-pkg");
+    let src = root.join("src");
+    write(&src, "eboot.bin", b"\x7fELF fake eboot");
+    write(
+        &src,
+        "sce_sys/param.json",
+        br#"{"titleId":"PPSA01234","contentId":"UP0000-PPSA01234_00-TESTTESTTESTTEST"}"#,
+    );
+    let big: Vec<u8> = (0..3 * 1024 * 1024 + 7).map(|i| (i % 251) as u8).collect();
+    write(&src, "data/big.bin", &big);
+
+    let server = fake::start();
+    let pkg = PathBuf::from(format!("ftp://127.0.0.1:{}/PPSA01234.pkg", server.port));
+    let report = run(request(&src, Format::Pkg, &pkg)).unwrap();
+    let on_server = server.root.join("PPSA01234.pkg");
+    assert_eq!(report.bytes, std::fs::metadata(&on_server).unwrap().len());
+    assert!(std::fs::read(&on_server).unwrap().starts_with(b"\x7fFIH"));
+
+    // The package converts back to the game.
+    let back = root.join("back");
+    run(request(&on_server, Format::Folder, &back)).unwrap();
+    assert_eq!(std::fs::read(back.join("data/big.bin")).unwrap(), big);
+    assert_eq!(
+        std::fs::read_dir(&server.root).unwrap().count(),
+        1,
+        "no probe or part left behind"
+    );
+}
+
+#[test]
+fn a_session_the_server_closed_is_replaced_on_the_next_call() {
+    let server = fake::start();
+    write(&server.root, "game/eboot.bin", b"x");
+    let at = PathBuf::from(format!("ftp://127.0.0.1:{}/game", server.port));
+    assert_eq!(ps5_dump_forge_core::list_dir(&at).unwrap().entries.len(), 1);
+    // The cached session dies as an idle one does; the call logs in again instead of failing.
+    server.kick();
+    assert_eq!(ps5_dump_forge_core::list_dir(&at).unwrap().entries.len(), 1);
+}

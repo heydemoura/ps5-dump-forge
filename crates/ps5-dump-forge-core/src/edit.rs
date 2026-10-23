@@ -1,8 +1,8 @@
 //! An in-place edit's tree: the source with its [`Edit`]s folded over it, served as one
 //! `SourceTree`. Nothing is copied: a base file is read from the base at its original path, an
-//! added one from this computer, checked unchanged on every read.
+//! added one from this computer or a paired device (`flink://`), checked unchanged on every read.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -15,29 +15,87 @@ use ps5upload_fpkg::source::{SourceFile, SourceTree};
 
 use crate::Edit;
 use crate::finalize::{FileId, followed_id, handle_id, path_id};
-use crate::scan::{ScannedFolder, Stamp, ancestors, open_nofollow};
+use crate::remote::{FlinkPath, RemoteReader, RemoteTree};
+use crate::scan::{JunkFiltered, ScannedFolder, Stamp, ancestors, open_nofollow};
 
 /// Where an edited file's bytes come from.
 #[derive(Debug, Clone)]
 enum Origin {
     /// The base tree's file at this path.
     Base(String),
-    /// A file on this computer, as it was when the edit was resolved: its stamp, and which
-    /// file the path named (so a file renamed over it later is caught).
-    Host(PathBuf, Stamp, FileId),
+    /// A file an `Add` copies, as it was when the edit was resolved.
+    Host(HostFile),
 }
 
 /// A file's size and where its bytes come from.
 type Entry = (u64, Origin);
 
-/// A file on this computer an `Add` copies, as it was when the edit was resolved; a format
-/// editor's [`Data::Source`] `id` is its index in [`Edited::hosts`].
+/// A file an `Add` copies (on this computer, or a `flink://` path on a paired device), as it
+/// was when the edit was resolved; a format editor's [`Data::Source`] `id` is its index in
+/// [`Edited::hosts`].
 #[derive(Debug, Clone)]
 pub(crate) struct HostFile {
     pub path: PathBuf,
     pub size: u64,
     pub stamp: Stamp,
-    pub id: FileId,
+    /// Which file the path named (so a file renamed over it later is caught); `None` on a
+    /// peer, which has no identity to give: its size and mtime are checked.
+    pub id: Option<FileId>,
+}
+
+impl HostFile {
+    /// Opens the file for reading; [`Opened::same`] then says whether it is still this one.
+    pub(crate) fn open(&self) -> io::Result<Opened> {
+        if self.id.is_some() {
+            return open_nofollow(&self.path).map(Opened::Local);
+        }
+        let at = FlinkPath::parse(&self.path).map_err(io::Error::other)?;
+        let reader =
+            RemoteReader::open(crate::remote::get_for(&at)?, &at).map_err(io::Error::other)?;
+        Ok(Opened::Peer(reader))
+    }
+}
+
+/// A [`HostFile`] open for reading: a local file by handle, a peer's through its reader.
+pub(crate) enum Opened {
+    Local(File),
+    Peer(RemoteReader),
+}
+
+impl Opened {
+    /// Whether this is still `host` as the edit was resolved with it: the path names the
+    /// handle's file (local), and its size and modification time are unchanged.
+    pub(crate) fn same(&self, host: &HostFile) -> io::Result<bool> {
+        match self {
+            Opened::Local(file) => {
+                let named = Some(path_id(&host.path)?.0) == host.id;
+                let meta = file.metadata()?;
+                let held = Some(handle_id(file)?) == host.id;
+                Ok(named && held && meta.is_file() && Stamp::of(&meta) == host.stamp)
+            }
+            Opened::Peer(reader) => Ok(reader
+                .stamp_now()?
+                .is_some_and(|s| !s.dir && Stamp::new(s.size, s.mtime) == host.stamp)),
+        }
+    }
+}
+
+impl Read for Opened {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Opened::Local(file) => file.read(buf),
+            Opened::Peer(reader) => reader.read(buf),
+        }
+    }
+}
+
+impl Seek for Opened {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        match self {
+            Opened::Local(file) => file.seek(to),
+            Opened::Peer(reader) => reader.seek(to),
+        }
+    }
 }
 
 /// The tree while the edits fold over it: every file by game path, and every directory (each
@@ -62,7 +120,7 @@ pub(crate) struct Edited {
     ops: Vec<Op>,
     hosts: Vec<HostFile>,
     /// The last host file read, kept open: writers read one file in many chunks.
-    open: Option<(usize, File)>,
+    open: Option<(usize, Opened)>,
 }
 
 impl Edited {
@@ -142,32 +200,29 @@ impl Edited {
     }
 
     /// Host file `i`, open and still exactly as it was when the edit was resolved.
-    fn host(&mut self, i: usize) -> ps5upload_fpkg::Result<&mut File> {
-        let Origin::Host(host, stamp, id) = &self.origins[i] else {
+    fn host(&mut self, i: usize) -> ps5upload_fpkg::Result<&mut Opened> {
+        let Origin::Host(host) = &self.origins[i] else {
             unreachable!("only called for host files");
         };
         let path = &self.files[i].path;
         let with_path = |e: io::Error| {
             Error::Io(io::Error::new(
                 e.kind(),
-                format!("{} ({path}): {e}", host.display()),
+                format!("{} ({path}): {e}", host.path.display()),
             ))
         };
         // The path must still name the stamped file, and the handle (kept open across reads)
         // must be that file: a file renamed over the path is caught on the next read.
-        let named = path_id(host).map_err(with_path)?.0 == *id;
         if self.open.as_ref().is_none_or(|(at, _)| *at != i) {
             self.open = None;
-            self.open = Some((i, open_nofollow(host).map_err(with_path)?));
+            self.open = Some((i, host.open().map_err(with_path)?));
         }
         let file = &mut self.open.as_mut().expect("opened above").1;
-        let meta = file.metadata().map_err(with_path)?;
-        let held = handle_id(file).map_err(with_path)? == *id;
-        if !named || !held || !meta.is_file() || Stamp::of(&meta) != *stamp {
+        if !file.same(host).map_err(with_path)? {
             return Err(Error::Format(format!(
                 "{} ({path}) changed after it was added (replaced, or its size or modification time); \
                  add it again",
-                host.display()
+                host.path.display()
             )));
         }
         Ok(file)
@@ -379,6 +434,15 @@ impl State {
         source: Option<FileId>,
         cancel: &AtomicBool,
     ) -> anyhow::Result<Vec<String>> {
+        if crate::remote::is_flink(from) {
+            return self.add_peer(from, to, cancel);
+        }
+        if crate::remote::is_remote(from) {
+            return Ok(vec![format!(
+                "{}: files are added from this device or a paired one, not a NAS",
+                from.display()
+            )]);
+        }
         let shown = from.display();
         // `link/`, `link/.` or `link/..` would follow a link at `link`.
         let raw = from.as_os_str().as_encoded_bytes();
@@ -425,8 +489,13 @@ impl State {
                 Ok((id, _)) => id,
                 Err(e) => return Ok(vec![format!("{shown}: {e}")]),
             };
-            let origin = Origin::Host(from.to_path_buf(), Stamp::of(&meta), id);
-            self.put(to, meta.len(), origin);
+            let host = HostFile {
+                path: from.to_path_buf(),
+                size: meta.len(),
+                stamp: Stamp::of(&meta),
+                id: Some(id),
+            };
+            self.put(to, host);
             return Ok(Vec::new());
         }
         if self.files.contains_key(to) {
@@ -437,13 +506,117 @@ impl State {
             Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
             Err(e) => return Ok(vec![format!("{e:#}")]),
         };
-        let targets: Vec<String> = folder.files().iter().map(|f| join(to, &f.path)).collect();
-        let empty: Vec<String> = folder.empty_dirs().iter().map(|d| join(to, d)).collect();
-        let mut why: Vec<String> = targets
-            .iter()
-            .filter(|t| self.dirs.contains(*t))
-            .map(|t| format!("{t} is a folder"))
+        let mut why = Vec::new();
+        let mut hosts = Vec::with_capacity(folder.files().len());
+        for (f, stamp) in folder.files().iter().zip(folder.stamps()) {
+            let mut host = folder.root().to_path_buf();
+            host.extend(f.path.split('/'));
+            match path_id(&host) {
+                Ok((id, _)) => hosts.push(HostFile {
+                    path: host,
+                    size: f.size,
+                    stamp: *stamp,
+                    id: Some(id),
+                }),
+                Err(e) => why.push(format!("{}: {e}", host.display())),
+            }
+        }
+        Ok(self.add_folder(to, folder.files(), folder.empty_dirs(), hosts, why))
+    }
+
+    /// [`Self::add`] of a `flink://` path: a file or folder on a paired device, as it lists
+    /// it (links refused, junk left out as a conversion leaves it out).
+    fn add_peer(
+        &mut self,
+        from: &Path,
+        to: &str,
+        cancel: &AtomicBool,
+    ) -> anyhow::Result<Vec<String>> {
+        let shown = from.display();
+        let at = match FlinkPath::parse(from) {
+            Ok(at) => at,
+            Err(e) => return Ok(vec![format!("{e:#}")]),
+        };
+        let remote = match crate::remote::get_for(&at) {
+            Ok(remote) => remote,
+            Err(e) => return Ok(vec![format!("{shown}: {e}")]),
+        };
+        let entry = match crate::remote::entry(&*remote, &at) {
+            Ok(entry) => entry,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(vec![format!("{shown} does not exist")]);
+            }
+            Err(e) => return Ok(vec![format!("{shown}: {e}")]),
+        };
+        if entry.link {
+            return Ok(vec![format!("{shown} is a link (not followed)")]);
+        }
+        if entry.special {
+            return Ok(vec![format!("{shown} is not a file or folder")]);
+        }
+        if entry.bad_name {
+            return Ok(vec![format!("{shown}: name is not valid UTF-8")]);
+        }
+        if let Some(why) = self.blocked(to, false) {
+            return Ok(vec![why]);
+        }
+        if !entry.dir {
+            if self.dirs.contains(to) {
+                return Ok(vec![format!("{to} is a folder")]);
+            }
+            let host = HostFile {
+                path: at.url(),
+                size: entry.size,
+                stamp: Stamp::new(entry.size, entry.mtime),
+                id: None,
+            };
+            self.put(to, host);
+            return Ok(Vec::new());
+        }
+        if self.files.contains_key(to) {
+            return Ok(vec![format!("{to} is a file")]);
+        }
+        let tree = match RemoteTree::open(remote, &at, cancel) {
+            Ok(tree) => tree,
+            Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
+            Err(e) => return Ok(vec![format!("{e:#}")]),
+        };
+        let stamps: HashMap<String, Stamp> = (tree.files().iter())
+            .filter_map(|f| {
+                let s = tree.stamp(&f.path)?;
+                Some((f.path.clone(), Stamp::new(s.size, s.mtime)))
+            })
             .collect();
+        let folder = JunkFiltered::new(Box::new(tree));
+        let hosts = (folder.files().iter())
+            .map(|f| HostFile {
+                path: (f.path.split('/').fold(at.clone(), |a, p| a.join(p))).url(),
+                size: f.size,
+                stamp: stamps[&f.path],
+                id: None,
+            })
+            .collect();
+        Ok(self.add_folder(to, folder.files(), folder.empty_dirs(), hosts, Vec::new()))
+    }
+
+    /// Adds a folder's `files` (`hosts` holds each one's origin, in order) and `empty_dirs`
+    /// at `to`, unless `why` (what was found already) or the tree refuses them.
+    fn add_folder(
+        &mut self,
+        to: &str,
+        files: &[SourceFile],
+        empty_dirs: &[String],
+        hosts: Vec<HostFile>,
+        mut why: Vec<String>,
+    ) -> Vec<String> {
+        let targets: Vec<String> = files.iter().map(|f| join(to, &f.path)).collect();
+        let empty: Vec<String> = empty_dirs.iter().map(|d| join(to, d)).collect();
+        why.extend(
+            targets
+                .iter()
+                .filter(|t| self.dirs.contains(*t))
+                .map(|t| format!("{t} is a folder")),
+        );
         why.extend(
             targets
                 .iter()
@@ -451,42 +624,26 @@ impl State {
                 .filter_map(|t| self.blocked(t, false)),
         );
         why.extend(empty.iter().filter_map(|d| self.blocked(d, true)));
-        let mut hosts = Vec::with_capacity(targets.len());
-        for (f, stamp) in folder.files().iter().zip(folder.stamps()) {
-            let mut host = folder.root().to_path_buf();
-            host.extend(f.path.split('/'));
-            match path_id(&host) {
-                Ok((id, _)) => hosts.push(Origin::Host(host, *stamp, id)),
-                Err(e) => why.push(format!("{}: {e}", host.display())),
-            }
-        }
         why.sort();
         why.dedup();
         if !why.is_empty() {
-            return Ok(why);
+            return why;
         }
         for d in std::iter::once(to).chain(empty.iter().map(String::as_str)) {
             self.add_dir(d);
             self.ops.push(Op::Mkdir { path: d.into() });
         }
-        for ((target, f), origin) in targets.iter().zip(folder.files()).zip(hosts) {
-            self.put(target, f.size, origin);
+        for (target, host) in targets.iter().zip(hosts) {
+            self.put(target, host);
         }
-        Ok(Vec::new())
+        Vec::new()
     }
 
-    /// Adds host file `origin` at `path`, and its `Put`.
-    fn put(&mut self, path: &str, size: u64, origin: Origin) {
-        let Origin::Host(host, stamp, id) = &origin else {
-            unreachable!("only host files are put");
-        };
+    /// Adds `host` at `path`, and its `Put`.
+    fn put(&mut self, path: &str, host: HostFile) {
+        let size = host.size;
         let source = u32::try_from(self.hosts.len()).expect("fewer than 2^32 host files");
-        self.hosts.push(HostFile {
-            path: host.clone(),
-            size,
-            stamp: *stamp,
-            id: *id,
-        });
+        self.hosts.push(host.clone());
         self.ops.push(Op::Put {
             path: path.into(),
             len: size,
@@ -496,7 +653,7 @@ impl State {
                 len: size,
             },
         });
-        self.add_file(path, size, origin);
+        self.add_file(path, size, Origin::Host(host));
     }
 }
 

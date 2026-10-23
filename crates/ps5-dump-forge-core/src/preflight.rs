@@ -123,6 +123,9 @@ fn is_title_id(id: &str) -> bool {
 
 /// The output as an absolute path whose parent exists. The `.part` goes next to it.
 pub(crate) fn output_path(output: &Path) -> anyhow::Result<PathBuf> {
+    if let Some(why) = crate::net::output_refusal(output) {
+        bail!("{why}");
+    }
     let Some(name) = output.file_name() else {
         bail!("{} does not name a file or folder", output.display());
     };
@@ -174,7 +177,7 @@ pub(crate) fn stem_limit(format: Format) -> usize {
 /// `output` is absolute (from [`output_path`]).
 pub(crate) fn output(source: &Path, output: &Path, format: Format) -> Vec<String> {
     let mut findings = Vec::new();
-    if output.symlink_metadata().is_ok() {
+    if crate::net::exists(output) {
         findings.push(format!("{} already exists", output.display()));
     }
     if let Some(ext) = extension(format) {
@@ -187,6 +190,17 @@ pub(crate) fn output(source: &Path, output: &Path, format: Format) -> Vec<String
         }
     }
     findings.extend(stem_finding(output, format));
+    if let (Ok(source), Ok(out)) = (
+        crate::remote::FlinkPath::parse(source),
+        crate::remote::FlinkPath::parse(output),
+    ) && out.within(&source)
+    {
+        findings.push(format!(
+            "{} is inside the source {}",
+            output.display(),
+            source.url().display()
+        ));
+    }
     if let Ok(source) = source.canonicalize()
         && source.is_dir()
         && inside(output, &source)
@@ -414,7 +428,7 @@ fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
 /// (free bytes for an unprivileged user, whether the filesystem is FAT). The FAT answer can
 /// fail on its own (Windows asks the volume root separately).
 #[cfg(target_os = "macos")]
-fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
+pub(crate) fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
     let c = c_path(dir)?;
     // SAFETY: `c` is a valid C string and `st` a properly sized out-parameter.
     let mut st: libc::statfs = unsafe { std::mem::zeroed() };
@@ -433,7 +447,7 @@ fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
 
 #[cfg(target_os = "linux")]
 #[allow(clippy::unnecessary_cast)] // field widths differ between Linux targets
-fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
+pub(crate) fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
     const MSDOS_SUPER_MAGIC: i64 = 0x4d44;
     let c = c_path(dir)?;
     // SAFETY: `c` is a valid C string and both out-parameters are properly sized.
@@ -451,7 +465,7 @@ fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
 
 /// FAT12/16/32 report `FAT` or `FAT32`; exFAT has no 4 GiB limit.
 #[cfg(windows)]
-fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
+pub(crate) fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
     let free = crate::win::free_bytes(dir)?;
     let fat = crate::win::fs_name(dir).map(|name| matches!(name.as_str(), "FAT" | "FAT32"));
     Ok((free, fat))
@@ -465,7 +479,7 @@ fn fs_stat(dir: &Path) -> io::Result<(u64, io::Result<bool>)> {
     windows,
     target_os = "freebsd"
 )))]
-fn fs_stat(_: &Path) -> io::Result<(u64, io::Result<bool>)> {
+pub(crate) fn fs_stat(_: &Path) -> io::Result<(u64, io::Result<bool>)> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "not implemented on this OS",

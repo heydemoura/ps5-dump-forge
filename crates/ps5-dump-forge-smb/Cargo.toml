@@ -1,0 +1,13 @@
+[package]
+name = "ps5-dump-forge-smb"
+description = "A small blocking SMB2 client: NTLMv2 or guest, list and read only"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+hmac = "0.13"
+md-5 = "0.11"
+sha2 = "0.11"

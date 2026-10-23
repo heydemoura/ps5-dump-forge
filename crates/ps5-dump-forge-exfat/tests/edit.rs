@@ -898,3 +898,66 @@ fn every_op_in_one_plan() {
     std::fs::create_dir_all(tree.join("data")).unwrap();
     std::fs::copy(&image, keep.join("every-op.exfat")).unwrap();
 }
+
+#[test]
+fn many_ops_in_one_folder_see_each_other() {
+    // A plan holds each folder's listing once and keeps it in step with its own writes: every
+    // op below depends on what an earlier one did to `d`.
+    let tmp = TempDir::new("onefolder");
+    // 682 sets of 3 entries leave 2 of a 64 KiB cluster's 2048 unused.
+    let (image, _) = build_with(&tmp, &Options::default(), &fillers("d/", 682));
+    let mut want = read_back(&image);
+    let (mut f, v) = open(&image);
+    let at = |f: &mut File, p: &str| v.lookup(f, p).unwrap().unwrap().entries[0];
+    let (f010, f030) = (at(&mut f, "d/f010"), at(&mut f, "d/f030"));
+    let ops = [
+        Op::Delete {
+            path: "d/f010".into(),
+        },
+        put("d/n1", Data::Zero(0)),        // into f010's entries
+        put("d/n2", Data::Zero(0)),        // the folder grows a cluster
+        put("d/n3", source(40, 0, 10)),    // after n2, in the new cluster
+        ren("d/f020", "d/g020"),           // in place
+        put("d/g020", source(41, 0, 100)), // replaces the renamed file
+        mkdir("d/sub"),
+        put("d/sub/x", source(42, 0, 7)),
+        ren("d/f030", "d/sub/f030"), // moved out of d
+        put("d/m1", Data::Zero(0)),  // into f030's entries
+        Op::Delete {
+            path: "d/f040".into(),
+        },
+        ren("d/f041", "d/f040"),
+        put("d/f041", source(43, 0, 3)),
+    ];
+    edit(&image, &ops);
+    for p in ["d/f010", "d/f020", "d/f030", "d/f040", "d/f041"] {
+        want.remove(p);
+    }
+    for (p, b) in [
+        ("d/n1", Vec::new()),
+        ("d/n2", Vec::new()),
+        ("d/n3", bytes(40, 10)),
+        ("d/g020", bytes(41, 100)),
+        ("d/sub/x", bytes(42, 7)),
+        ("d/sub/f030", Vec::new()),
+        ("d/m1", Vec::new()),
+        ("d/f040", Vec::new()),
+        ("d/f041", bytes(43, 3)),
+    ] {
+        want.insert(p.into(), b);
+    }
+    assert_eq!(read_back(&image), want);
+    let (mut f, v) = open(&image);
+    let at = |f: &mut File, p: &str| v.lookup(f, p).unwrap().unwrap().entries[0];
+    assert_eq!(at(&mut f, "d/n1"), f010);
+    assert_eq!(at(&mut f, "d/m1"), f030);
+    // n2 spans into the new cluster, n3 follows it there.
+    let d = v
+        .chain(v.lookup(&mut f, "d").unwrap().unwrap().stream)
+        .unwrap();
+    let n2 = v.lookup(&mut f, "d/n2").unwrap().unwrap();
+    assert_eq!(d.len(), 2);
+    assert_eq!(n2.entries[2], v.cluster_offset(d[1]));
+    assert_eq!(at(&mut f, "d/n3"), n2.entries[2] + 32);
+    assert_eq!(v.list(&mut f, "d").unwrap().len(), 682 + 3);
+}
