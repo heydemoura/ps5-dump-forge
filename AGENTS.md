@@ -113,7 +113,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   self copy. `POST /api/edit_upload` and `POST /api/connect/upload` are the routes whose body is streamed
   (no 1 MiB cap; `BodyReader` in `http.rs`). Connect: the `ps5-dump-forge-flink` crate (below),
   `connect.rs` (`Connect`: identity (`node.key`),
-  approvals (`Approvals`, `Outgoing`), `peers.json`, the TCP 9120 listener, pair/forget/devices, liveness, `snapshot`;
+  approvals (`Approvals`, `Outgoing`), `peers.json`, the TCP 9883 listener, pair/forget/devices, liveness, `snapshot`;
   also used by the Tauri app), `connect_fs.rs` (a peer's files over FLINK: the peer side's RPCs and lanes,
   `ConnectRemote`, core's `Remote` on this side; the busy hooks both ways), `discovery.rs` (Forge on UDP 8094), `probe.rs` (Add a device: what answers at an address), `payload.rs` (elfldr's address as Install on PS5 and Send a payload take it, port 9021 by default), `mdns.rs` (NAS: smb/ftp/nfs; `merge`), `wsd.rs` (Windows PCs by WS-Discovery),
   `nas.rs` (saved NAS devices: `nas.json`, one entry per host + port, `protocol` smb/ftp/nfs, credentials;
@@ -617,7 +617,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
 - Connect (the tab after Storage, `app/src/Connect.tsx`; server `connect.rs`, also run by the Tauri app at
   setup: FLINK and UDP only, no HTTP listener): Forge ↔ Forge pairing, a peer's files read and written
   over FLINK, transfer jobs, plus a LAN Discover. **FLINK** v2 (crate `ps5-dump-forge-flink`, our own protocol modelled on ps5upload's AVA1, ideas only; std +
-  blake3 + serde_json + x25519-dalek, by user decision) on TCP 9120: authenticated by BLAKE3 MACs (per-direction keys,
+  blake3 + serde_json + x25519-dalek, by user decision) on TCP 9883: authenticated by BLAKE3 MACs (per-direction keys,
   counters never reused) but **not encrypted** (by user decision; plaintext on the LAN, How to connect says
   so). **Pairing is approved on the other device** (by user decision; it replaced the magic code): the
   requester commits to an X25519 key, the target sends its key, the requester reveals (checked against the
@@ -659,7 +659,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   or `[v6]:port` (`nas::parse_host`), the name looked up once (IPv4 preferred, within 1.5 s), then every check at
   once, each confirmed by its protocol, never by an open port: a Forge by a FLINK Hello (`flink::introduce`:
   Hellos swapped, nothing paired, asked or counted; local addresses only) on the port its reply to Discover's
-  query sent unicast to UDP 8094 names (1 s; `discovery::ask`), else on 9120 or the typed port, SMB by an SMB2 NEGOTIATE reply (any status), NFS by an RPC NULL to program
+  query sent unicast to UDP 8094 names (1 s; `discovery::ask`), else on 9883 or the typed port, SMB by an SMB2 NEGOTIATE reply (any status), NFS by an RPC NULL to program
   100003 v3 (PROG_MISMATCH counts), FTP by a `220` greeting. No port: Forge > SMB 445 > NFS 2049 > FTP 21; a
   port: FTP > NFS > SMB > Forge there. Each check gets 1.5 s to connect and 1.5 s for its exchange, then its
   socket is shut down (a server dripping bytes can't hold it): about 3 s, 4 s for a local Forge; replies are
@@ -921,7 +921,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `--cfg libc_unstable_freebsd_version="11"` (the env var is ignored by libc ≥ 0.2.187) and struct-size
   asserts in the CLI. `panic=abort`.
 - The server has **no protections** by user decision: no pairing, token, Host/Origin/CSRF checks or path
-  confinement. Don't re-add them (Connect's pairing guards FLINK on 9120 only, not the HTTP routes,
+  confinement. Don't re-add them (Connect's pairing guards FLINK on 9883 only, not the HTTP routes,
   `/api/connect/*` included). Its delete and move routes (`delete_path`, Edit's and Storage's;
   `move_path`, the File explorer's; by user decision) refuse only what exception 3 lists (`edit_discard` removes a staging folder by the same rules); the
   page's question is UI, not authentication. `edit_upload` writes only under a source's staging folder.

@@ -1420,7 +1420,7 @@ mod tests {
             key_id: hex(&[id; 16]),
             name: name.into(),
             platform: "test".into(),
-            port: 9120,
+            port: 9883,
         }
     }
 
@@ -1508,7 +1508,7 @@ mod tests {
         });
         let mut c = Conn::connect(addr, MAX_CONTROL_BODY, t).unwrap();
         let peer = introduce(&mut c, &me(1, "mac")).unwrap();
-        assert_eq!((peer.name.as_str(), peer.port), ("ps5", 9120));
+        assert_eq!((peer.name.as_str(), peer.port), ("ps5", 9883));
         drop(c);
         let (failed, asked, budget) = server.join().unwrap();
         assert!(failed && asked == 0);
@@ -1545,7 +1545,7 @@ mod tests {
         let (c, s) = (c.unwrap(), s.unwrap());
         assert_eq!(c.peer.name, "ps5");
         assert_eq!(s.peer.name, "mac");
-        assert_eq!(s.peer.port, 9120);
+        assert_eq!(s.peer.port, 9883);
         assert_eq!(c.new_secret, s.new_secret);
         assert!(c.new_secret.is_some());
         let check = shown.unwrap();

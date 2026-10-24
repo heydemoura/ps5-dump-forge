@@ -292,7 +292,7 @@ fn console_nickname() -> Option<String> {
 // `DEAD_AFTER`. ponytail: a fresh conn per probe instead of a held control link with keepalive.
 
 /// FLINK's TCP port.
-pub const PORT: u16 = 9120;
+pub const PORT: u16 = 9883;
 /// Saved devices shown (the UI's 3×3 grid).
 pub const MAX_SHOWN: usize = 9;
 /// Inbound conns at once: 8 lanes per remote read or write, several peers, the probes.
@@ -972,9 +972,6 @@ impl Inner {
         }
     }
 
-    /// A control conn to the paired device `key_id`: its last address, then the newest
-    /// discovery address for it. Another device answering there is recorded as itself (its own
-    /// entry, if paired) and the next address tried.
     /// Whether `key_id` is paired here and the service runs (`connect_fs` picks a service).
     pub(crate) fn serves(&self, key_id: &str) -> bool {
         !self.stop.load(Ordering::SeqCst) && lock(&self.peers).get(key_id).is_some()
@@ -1000,6 +997,10 @@ impl Inner {
         Ok((rpc, hs))
     }
 
+    /// A control conn to the paired device `key_id`: its last address, then the newest
+    /// discovery address for it, then (saved on 9120, the port before 9883) its IP on `PORT`.
+    /// Another device answering there is recorded as itself (its own entry, if paired) and the
+    /// next address tried.
     fn open(&self, key_id: &str) -> io::Result<(Conn, Handshake)> {
         let last = lock(&self.peers)
             .get(key_id)
@@ -1008,15 +1009,23 @@ impl Inner {
             .as_deref()
             .and_then(|a| a.parse::<SocketAddr>().ok());
         let found = lock(&self.found).get(key_id).copied();
+        // Saved on the old port: a device updated since is found again where discovery can't
+        // reach it (the handshake saves the new address). Only its refusal (`not_paired`, ...)
+        // replaces the error, so a guess that finds nothing never hides the saved address's.
+        let moved = last
+            .filter(|a| a.port() == 9120)
+            .map(|a| SocketAddr::new(a.ip(), PORT))
+            .filter(|m| Some(*m) != found);
         let mut err = io::Error::new(io::ErrorKind::NotFound, "no address for that device");
-        for addr in [last, found.filter(|f| Some(*f) != last)]
+        for addr in [last, found.filter(|f| Some(*f) != last), moved]
             .into_iter()
             .flatten()
         {
             match self.dial(addr) {
                 Ok((conn, hs)) if hs.peer.key_id == key_id => return Ok((conn, hs)),
                 Ok(_) => err = io::Error::other(format!("another device answers at {addr}")),
-                Err(e) => err = e,
+                Err(e) if Some(addr) != moved || refusal(&e).is_some() => err = e,
+                Err(_) => {}
             }
         }
         Err(err)
@@ -1790,12 +1799,12 @@ mod tests {
     fn a_pairing_done_as_cancel_came_says_paired() {
         let dir = temp_dir("cancel-race");
         let c = Connect::start(&dir, 0).unwrap();
-        let addr: SocketAddr = "127.0.0.1:9120".parse().unwrap();
+        let addr: SocketAddr = "127.0.0.1:9883".parse().unwrap();
         let device = Device {
             key_id: "k".into(),
             name: "ps5".into(),
             platform: "ps5".into(),
-            address: Some("127.0.0.1:9120".into()),
+            address: Some("127.0.0.1:9883".into()),
             last_seen: 0,
             online: true,
         };
@@ -1973,20 +1982,20 @@ mod tests {
             secret: "ab".repeat(32),
         };
         let mut p = Peers::default();
-        p.upsert(peer("a", "10.0.0.2:9120"));
-        p.upsert(peer("b", "10.0.0.3:9120"));
+        p.upsert(peer("a", "10.0.0.2:9883"));
+        p.upsert(peer("b", "10.0.0.3:9883"));
         // Pairing again with a known key id updates that one entry.
         p.upsert(Peer {
             name: "renamed".into(),
-            ..peer("a", "10.0.0.9:9120")
+            ..peer("a", "10.0.0.9:9883")
         });
         assert_eq!(p.peers.len(), 2);
         // Seen at b's old address: b keeps its own entry and address.
-        assert!(p.seen(&"a".repeat(32), "10.0.0.3:9120", 20));
-        assert!(!p.seen(&"c".repeat(32), "10.0.0.4:9120", 20));
+        assert!(p.seen(&"a".repeat(32), "10.0.0.3:9883", 20));
+        assert!(!p.seen(&"c".repeat(32), "10.0.0.4:9883", 20));
         assert_eq!(
             p.get(&"b".repeat(32)).unwrap().address.as_deref(),
-            Some("10.0.0.3:9120")
+            Some("10.0.0.3:9883")
         );
         assert_eq!(
             p.get(&"a".repeat(32)).unwrap().pair_secret(),

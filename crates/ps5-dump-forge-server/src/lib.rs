@@ -106,7 +106,7 @@ pub struct Options {
     /// Connect's data folder (node secret, peers); `None` runs no Connect service (tests). The
     /// CLI's `serve` passes [`connect::default_dir`].
     pub connect_dir: Option<PathBuf>,
-    /// Connect's FLINK port: 9120, or `FORGE_FLINK_PORT` (local tests of two copies; 0 = any).
+    /// Connect's FLINK port: 9883, or `FORGE_FLINK_PORT` (local tests of two copies; 0 = any).
     pub connect_port: u16,
 }
 

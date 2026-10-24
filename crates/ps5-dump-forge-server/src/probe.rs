@@ -1,6 +1,6 @@
 //! Connect's smart Pair by address: what answers at `host` or `host:port`, each confirmed by its
 //! own protocol, never by an open port alone. No port: a Forge (discovery by unicast on UDP 8094,
-//! else a FLINK Hello on 9120), then SMB 445, NFS 2049, FTP 21. A port: an FTP banner, an NFS
+//! else a FLINK Hello on 9883), then SMB 445, NFS 2049, FTP 21. A port: an FTP banner, an NFS
 //! NULL call, an SMB2 NEGOTIATE, then a FLINK Hello. Every check runs at once, each within
 //! `WAIT` to connect and `WAIT` for the exchange (then its socket is shut down, so a server that
 //! drips bytes can't hold it), so a probe ends within about 3 s, 4 s for a Forge on a local
@@ -234,7 +234,7 @@ fn ftp_banner(addr: SocketAddr) -> io::Result<String> {
 }
 
 /// A Forge at `base` as (FLINK port, name): a FLINK Hello on the port its discovery reply names
-/// (which must be `port` when one is given), else on `port` or 9120. Off the local network no
+/// (which must be `port` when one is given), else on `port` or 9883. Off the local network no
 /// Hello is sent (it names this device): the discovery reply alone, for the not-local error.
 fn forge(base: SocketAddr, port: u16, me: &Me, ports: &Ports) -> Option<(u16, String)> {
     let ip = base.ip();
@@ -269,7 +269,7 @@ mod tests {
             key_id: "a".repeat(32),
             name: "Prober".into(),
             platform: "macos".into(),
-            port: 9120,
+            port: 9883,
         }
     }
 

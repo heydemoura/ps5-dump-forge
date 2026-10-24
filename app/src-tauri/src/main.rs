@@ -38,7 +38,7 @@ struct AppState {
     quitting: Mutex<bool>,
     /// What each finished job published: the only paths `reveal` will show.
     outputs: Arc<Mutex<HashMap<JobId, PathBuf>>>,
-    /// Connect's service (FLINK 9120 + discovery on UDP 8094; no HTTP listener), started at
+    /// Connect's service (FLINK 9883 + discovery on UDP 8094; no HTTP listener), started at
     /// setup and shut down at exit; `Err` says why it isn't running.
     connect: Result<Arc<Connect>, String>,
 }

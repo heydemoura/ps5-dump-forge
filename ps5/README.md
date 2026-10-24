@@ -171,7 +171,7 @@ it in Edit first). Same locks as `delete_path`.
 Connect (`connect.rs`, crate `ps5-dump-forge-flink`, `discovery.rs`, `mdns.rs`, `nas.rs`): started by `Server::new` when
 `Options.connect_dir` is set (`serve` sets it: `/data/dumpforge/connect/` on the PS5, else the OS data
 dir + `ps5-dump-forge/connect`; it holds `node.key`, `peers.json` and `nas.json`, all 0600); a failed start answers every
-`/api/connect/*` with 503 and the reason, a failed call 400 `{error}`. Ports: **TCP 9120** FLINK
+`/api/connect/*` with 503 and the reason, a failed call 400 `{error}`. Ports: **TCP 9883** FLINK
 (`FORGE_FLINK_PORT` overrides; a control connection per paired device + up to 8 data lanes each for reads and writes) and **UDP 8094**
 Forge discovery (passive responder always on; replies name, platform, FLINK port and key id, never the
 code); Discover also sends mDNS to 224.0.0.251:5353 and a WS-Discovery Probe to 239.255.255.250:3702 (UDP

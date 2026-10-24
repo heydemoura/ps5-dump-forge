@@ -535,7 +535,7 @@ mod tests {
         let busy = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let busy_at = v4(busy.local_addr().unwrap());
         let noop: OnReply = Arc::new(|_, _| {});
-        let retry = Discovery::new_on(node('a', 9120), busy_at, Some(vec![]), noop);
+        let retry = Discovery::new_on(node('a', 9883), busy_at, Some(vec![]), noop);
         assert!(retry.scan().error.is_some());
         retry.shutdown();
 
@@ -543,7 +543,7 @@ mod tests {
         let h = heard.clone();
         let on: OnReply = Arc::new(move |k, a| lock(&h).push((k.to_string(), a)));
         let d = Discovery::new_on(
-            node('a', 9120),
+            node('a', 9883),
             SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
             Some(vec![target]),
             on,
@@ -560,7 +560,7 @@ mod tests {
         let reply = Packet::parse(&bytes[..len]).unwrap();
         assert_eq!(
             (reply.kind.as_str(), reply.node),
-            ("reply", Some(node('a', 9120)))
+            ("reply", Some(node('a', 9883)))
         );
         assert!(!String::from_utf8_lossy(&bytes[..len]).contains("code"));
         assert!(!d.scan().searching);
@@ -580,7 +580,7 @@ mod tests {
         assert!(d.scan().devices.is_empty());
         // Its own key id is ignored too.
         packet.scan_id = id;
-        packet.node = Some(node('a', 9120));
+        packet.node = Some(node('a', 9883));
         remote
             .send_to(&serde_json::to_vec(&packet).unwrap(), source)
             .unwrap();
