@@ -21,6 +21,8 @@ ps5-dump-forge-core.workspace = true
 # ponytail: the crate's build script also embeds the web bundle; nothing here references it,
 # so the linker drops it.
 ps5-dump-forge-server.workspace = true
+# Install on PS5 and Send a payload: an ELF streamed to the console's elfldr.
+ps5-dump-forge-updater.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"

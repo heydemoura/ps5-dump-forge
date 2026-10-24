@@ -309,27 +309,6 @@ impl Drop for Flag<'_> {
     }
 }
 
-/// `X.Y.Z`, each part 1 to 9 digits.
-pub(crate) fn plain_version(v: &str) -> bool {
-    let parts: Vec<&str> = v.split('.').collect();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| (1..=9).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// Every byte but the unreserved ones as `%XX`.
-pub(crate) fn percent_encode(text: &str) -> String {
-    text.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
 /// The browse roots and the notes about candidates left out; an error on a computer with no
 /// usable `--root` (also checked before a takeover, so a bad start never stops a good server).
 pub(crate) fn usable_roots(opts: &Options) -> std::io::Result<(Roots, Vec<String>)> {
@@ -1248,17 +1227,20 @@ impl Server {
         Ok(Response::json(&json!({ "up": up })))
     }
 
-    /// `{"version": "X.Y.Z"}` (PS5 only): elfldr downloads that release and starts it; this
+    /// `{"version": "X.Y.Z"}` (PS5 only): Forge downloads that release's PS5 ELF over HTTPS
+    /// (elfldr can't follow GitHub's redirect), keeps it in memory or, when memory can't hold
+    /// it, saves it over the self copy first, then streams it to elfldr, which starts it; this
     /// server keeps serving, and the new one takes over once it is idle (`serve`). Refused for
     /// a version not newer than this one, while a job is queued or running, once stopping and
-    /// while another update is waiting. Blocks while elfldr downloads (its own handler thread).
+    /// while another update is waiting. Blocks while it downloads and sends (its own handler
+    /// thread).
     fn self_update(&self, body: &[u8]) -> Reply {
         if self.opts.platform != Platform::Ps5 {
             return Err(Response::error(404, "unknown route"));
         }
         let version = parse::<VersionArg>(body)?.version;
         let current = env!("CARGO_PKG_VERSION");
-        if !plain_version(&version)
+        if !ps5_dump_forge_updater::plain_version(&version)
             || crate::compare_versions(&version, current) != std::cmp::Ordering::Greater
         {
             return Err(Response::error(
@@ -1283,7 +1265,13 @@ impl Server {
                 ));
             }
         }
-        crate::payload::load_release(self.opts.elfldr, &version).map_err(|e| match e.kind() {
+        #[cfg(target_env = "ps5")]
+        let spill = Some(std::path::Path::new(crate::self_copy::TARGET));
+        #[cfg(not(target_env = "ps5"))]
+        let spill = None;
+        ps5_dump_forge_updater::install(self.opts.elfldr, &version, spill).map_err(|e| match e
+            .kind()
+        {
             std::io::ErrorKind::NotConnected => Response::error(
                 503,
                 format!(
@@ -1661,6 +1649,18 @@ fn qr_svg(code: &qrcode::QrCode) -> String {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// Every byte but the unreserved ones as `%XX`, as the UI encodes a query.
+    fn percent_encode(text: &str) -> String {
+        text.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
 
     fn server() -> Server {
         let opts = Options::new(0, vec![std::env::temp_dir()], Platform::Host, |_: &str| {});
@@ -2120,7 +2120,8 @@ mod tests {
         assert_eq!((r.status, r.text().contains("unknown route")), (404, true));
 
         let mut opts = Options::new(0, vec![], Platform::Ps5, |_: &str| {});
-        // A closed port, in case a check below lets a request through.
+        // A closed port, in case a check below lets a request through (it would download from
+        // GitHub first: every case here must be refused before that).
         opts.elfldr = "127.0.0.1:1".parse().unwrap();
         let server = Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap());
         let current = env!("CARGO_PKG_VERSION");
@@ -2294,8 +2295,6 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert!(plain_version("0.1.2") && plain_version("10.20.30"));
-        assert!(!plain_version("0.1") && !plain_version("0.1.2.3") && !plain_version("0..2"));
         assert_eq!(
             percent_encode("https://x/a b?args=serve&pipe=0"),
             "https%3A%2F%2Fx%2Fa%20b%3Fargs%3Dserve%26pipe%3D0"

@@ -85,8 +85,8 @@ their games are converted and their folders take outputs, but in Edit they are o
 on a phone, and File Transfer can upload to or download from the device serving the page.
 
 In the desktop app, **Dump Forge on PS5** installs Dump Forge on a console in one click: type its address and press
-**Install on PS5**, and the console's ELF loader downloads the release matching the app (or the latest) from GitHub
-and starts it. **Send a payload** sends any other ELF file from the computer the same way. It needs an ELF loader
+**Install on PS5**, and the app downloads the release matching it (or the latest) from GitHub and sends it to the
+console's ELF loader, which starts it (the console needs no internet). **Send a payload** sends any other ELF file from the computer the same way. It needs an ELF loader
 that listens on the network (port 9021).
 
 ## LZ4 asset packs
@@ -117,7 +117,7 @@ front what it will do.
 
 Every release archive on the Releases page holds the app and the `ps5-dump-forge` command-line tool. Nothing to install; the app writes nothing beyond its own
 WebView data, so keep it in any folder you can write to. At every start the app and the console's page check GitHub
-for a newer release and offer it (on the PS5, **Update** loads it through the ELF loader).
+for a newer release and offer it (on the PS5, **Update** downloads it and hands it to the ELF loader).
 
 ### PS5 (jailbroken, with an ELF loader)
 

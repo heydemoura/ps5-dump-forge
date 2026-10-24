@@ -875,8 +875,9 @@ async fn connect_probe(
     connect_call(app, move |c| c.probe(&address)).await
 }
 
-/// Install on PS5: elfldr at `address` (port 9021 by default) downloads v`version`'s PS5 ELF
-/// from its GitHub release and starts it.
+/// Install on PS5: v`version`'s PS5 ELF downloaded from its GitHub release into memory here and
+/// streamed to elfldr at `address` (port 9021 by default), which starts it; the console needs no
+/// internet.
 #[tauri::command(rename_all = "snake_case")]
 async fn connect_payload_install(
     app: AppHandle,
@@ -885,12 +886,15 @@ async fn connect_payload_install(
 ) -> Result<(), String> {
     blocking(app, move |_, _| {
         let addr = payload::address(&address).map_err(|e| e.to_string())?;
-        payload::load_release(addr, &version).map_err(|e| e.to_string())
+        ps5_dump_forge_updater::install(addr, &version, None)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     })
     .await
 }
 
-/// Send a payload: the ELF file at `path` streamed to elfldr at `address`; the bytes sent.
+/// Send a payload: the ELF file at `path` streamed to elfldr at `address` (port 9021 by
+/// default); the bytes sent.
 #[tauri::command(rename_all = "snake_case")]
 async fn connect_payload_send(
     app: AppHandle,
@@ -899,7 +903,7 @@ async fn connect_payload_send(
 ) -> Result<u64, String> {
     blocking(app, move |_, _| {
         let addr = payload::address(&address).map_err(|e| e.to_string())?;
-        payload::send(addr, &path).map_err(|e| e.to_string())
+        ps5_dump_forge_updater::send(addr, &path).map_err(|e| e.to_string())
     })
     .await
 }

@@ -126,7 +126,7 @@ impl Options {
             write_timeout: Duration::from_secs(30),
             exit: Arc::new(|code| std::process::exit(code)),
             interrupt: None,
-            elfldr: SocketAddr::from((Ipv4Addr::LOCALHOST, 9021)),
+            elfldr: SocketAddr::from((Ipv4Addr::LOCALHOST, ps5_dump_forge_updater::PORT)),
             connect_dir: None,
             connect_port: std::env::var("FORGE_FLINK_PORT")
                 .ok()
@@ -392,12 +392,7 @@ fn left(deadline: Instant) -> io::Result<Duration> {
 
 /// Sends `request` and reads the reply until the peer closes, at most `max` bytes, all by
 /// `deadline` (a peer that trickles bytes can't stall the caller).
-pub(crate) fn ask(
-    mut stream: TcpStream,
-    request: &str,
-    deadline: Instant,
-    max: usize,
-) -> io::Result<Vec<u8>> {
+fn ask(mut stream: TcpStream, request: &str, deadline: Instant, max: usize) -> io::Result<Vec<u8>> {
     stream.set_write_timeout(Some(left(deadline)?))?;
     stream.write_all(request.as_bytes())?;
     let (mut reply, mut buf) = (Vec::new(), [0u8; 4096]);

@@ -1,0 +1,15 @@
+[package]
+name = "ps5-dump-forge-updater"
+description = "A Dump Forge release's PS5 ELF downloaded over HTTPS and streamed to the PS5's ELF loader"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# HTTPS with rustls (ring, webpki-roots); redirects followed (GitHub's release downloads 302).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+# `O_NOFOLLOW` on the spill's lock and temporary file, as the server's self copy opens them.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

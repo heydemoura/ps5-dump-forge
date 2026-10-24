@@ -114,9 +114,17 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `connect.rs` (`Connect`: identity (`node.key`),
   approvals (`Approvals`, `Outgoing`), `peers.json`, the TCP 9120 listener, pair/forget/devices, liveness, `snapshot`;
   also used by the Tauri app), `connect_fs.rs` (a peer's files over FLINK: the peer side's RPCs and lanes,
-  `ConnectRemote`, core's `Remote` on this side; the busy hooks both ways), `discovery.rs` (Forge on UDP 8094), `probe.rs` (Add a device: what answers at an address), `payload.rs` (elfldr on port 9021: `load_release`, a release it downloads itself, for self-update and Install on PS5; `send`, a local ELF streamed to it), `mdns.rs` (NAS: smb/ftp/nfs; `merge`), `wsd.rs` (Windows PCs by WS-Discovery),
+  `ConnectRemote`, core's `Remote` on this side; the busy hooks both ways), `discovery.rs` (Forge on UDP 8094), `probe.rs` (Add a device: what answers at an address), `payload.rs` (elfldr's address as Install on PS5 and Send a payload take it, port 9021 by default), `mdns.rs` (NAS: smb/ftp/nfs; `merge`), `wsd.rs` (Windows PCs by WS-Discovery),
   `nas.rs` (saved NAS devices: `nas.json`, one entry per host + port, `protocol` smb/ftp/nfs, credentials;
   `publish` hands SMB logins to `core::smb::set_credentials`, FTP ones to `core::ftp::set_logins`).
+- `crates/ps5-dump-forge-updater`: the PS5's ELF loader (elfldr, port 9021) from here (one `lib.rs`): `download`
+  (a release's `ps5-dump-forge-<v>-ps5.elf` from GitHub over HTTPS, redirects followed, 50 s; `200`, a
+  Content-Length of at most 64 MiB and the ELF magic required, a cut or longer body refused; held in memory, or
+  with a `spill` file (the PS5's self copy) saved over it as the self copy saves itself: temp + sync + rename
+  under its flock), `install` (elfldr probed, connect and close; then download, then stream the bytes to elfldr),
+  `send` / `send_bytes` (an ELF file or bytes streamed, at most 64 MiB, 120 s). One dependency, `ureq` with
+  rustls (ring, webpki roots; + `libc` on unix for `O_NOFOLLOW`), by user decision: elfldr can't follow GitHub's
+  302, so it is never handed a URL. ponytail: TLS authenticates GitHub; no signature or version check.
 - `crates/ps5-dump-forge-flink`: FLINK v2, Connect's protocol (one `lib.rs`: 16 B frames with CRC-32,
   BLAKE3 MACs, the Hello/Pair handshake, RPC, data lanes, `tune_buffers`); std + blake3 + crc32fast + serde_json + x25519-dalek + getrandom.
 - `ps5/`: the payload's Docker harness: `Dockerfile`, `build.sh`, `linker.sh`, `entry.c` (launch modes,
@@ -766,10 +774,11 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   request, the desktop app only; not the PS5's page) **Dump Forge on PS5** (a plain card, no pitch): a PS5
   address (a saved PS5's IP prefilled, port 9021 by default) and **Install on PS5**, one click: `update.ts`
   `ps5Release` asks GitHub for this app's version's release carrying `ps5-dump-forge-<v>-ps5.elf`, else the latest
-  release's, and Tauri `connect_payload_install {address, version}` has the console's elfldr download and start it
-  (`payload::load_release`, as self-update: `?uri=` with `args=serve`; the console needs the internet, the PC only
-  GitHub's API); **Send a payload** picks any ELF on this computer (ELF magic, at most 64 MiB) and streams it to
-  the same address (`connect_payload_send {address, path}`, `payload::send`; elfldr answers nothing, so a payload
+  release's, and Tauri `connect_payload_install {address, version}` downloads that ELF into memory on the PC and
+  streams it to elfldr, which starts it (`ps5_dump_forge_updater::install`, no spill; a Forge ELF started with no
+  arguments runs `serve`, unless a developer `args` file is pending; elfldr probed before the download; the PC needs GitHub, the console no internet); **Send a payload** picks any ELF on this
+  computer (ELF magic, at most 64 MiB) and streams it to the same address (`connect_payload_send {address, path}`,
+  `ps5_dump_forge_updater::send`; elfldr answers nothing, so a payload
   that fails to start isn't seen). Needs an elfldr that listens on the network (the webkit autoloader's is
   loopback-only). How to connect opens with a highlighted box: its title and a short paragraph on the GitHub download. Then Add a device (one address box + Connect: it probes the address
   first, `connect.probe`, "Checking <address>" meanwhile, a Forge pairs and the waiting dialog shows the
@@ -882,8 +891,11 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   folder sits beside the exe) and `open_update {version}` (plain `X.Y.Z`; opens the release archive's URL in the
   browser via `open_url`, no self-replace; CSP `connect-src` has `https://api.github.com`). PS5 (`ps5.elf`, only
   while `GET /api/elfldr` says `{"up": true}`: a 1 s connect to elfldr, closed at once): `POST
-  /api/self_update {version}` asks elfldr (`Options.elfldr`, `127.0.0.1:9021`) for `GET /?uri=<release
-  .elf?args=serve&pipe=0>`; the page then polls `GET /api/session` for a new `instance` (1 s; 1 min in all from the request, download included) and
+  /api/self_update {version}` has the server download that release's ELF over HTTPS
+  (`ps5_dump_forge_updater::install`; HTTPS for this download only, by user decision: elfldr can't follow GitHub's
+  302) into memory, or, when that much memory can't be reserved, over the self copy
+  `/data/dumpforge/ps5-dump-forge.elf` first (temp + sync + rename under its flock), and stream it to elfldr
+  (`Options.elfldr`, `127.0.0.1:9021`; elfldr's `?uri=` is not used); the page then polls `GET /api/session` for a new `instance` (1 s; 1 min in all from the request, download included) and
   reloads through AppCache; the old server never stops itself. Any newly loaded copy, of any version (by user
   decision: older and the same too), that finds Forge on the port closes it when idle and takes over
   (handover: `quit {"if_idle": true}` for one with session `handover: true`; for v0.1.1 and older, a `GET

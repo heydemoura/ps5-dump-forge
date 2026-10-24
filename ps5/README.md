@@ -134,7 +134,7 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug, GET /pro
 | `POST /api/connect/upload?dir=&name=` | raw bytes (`Content-Length` required) | `{path}`: a phone's file as `<dir>/<name>` via a `.part` and a no-replace rename; 411 no length, 400 not a plain name, 404 `dir` not a folder, 409 taken or stopping |
 | `POST /api/connect/upload?dir=&name=&id=&offset=&size=` | one chunk's raw bytes | the web UI's parallel upload (File Transfer's **Upload to this device**, off in the console's own browser; 8 MiB chunks, 4 requests at once from a browser, where FLINK between devices uses 8 lanes; 35 MB/s to the PS5 where one request does 28): chunks of one `id` (1–32 letters/digits) land at their offsets in one `.part`; `{done: false}`, or `{path, done: true}` from the chunk that completes `size` bytes; `&cancel=1` (empty body) drops the upload and its part; a failed chunk drops the whole upload |
 | `GET /api/connect/download?path=` | | File Transfer's **Download from this device**: the file, `application/octet-stream`, `Content-Disposition: attachment`; 404 missing, 400 not a file |
-| `POST /api/self_update` | `{version}` (`X.Y.Z`, newer than this one) | `{}` once elfldr has answered (downloaded and started it); this server keeps serving until the new copy takes over when idle (below); 404 on a computer, 400 bad or not newer, 409 stopping, a job queued or running, a patch or delete holding admission past 1 s, or another update in flight, 502 elfldr refused or failed, 503 elfldr not listening |
+| `POST /api/self_update` | `{version}` (`X.Y.Z`, newer than this one) | `{}` once the release's ELF is downloaded and streamed to elfldr (which starts it); this server keeps serving until the new copy takes over when idle (below); 404 on a computer, 400 bad or not newer, 409 stopping, a job queued or running, a patch or delete holding admission past 1 s, or another update in flight, 502 the download, the save over the self copy or the send failed, 503 elfldr not listening |
 
 `lz4_traces` (LZ4 → Trace → Download traces; the button is left out in the console's own browser, which
 can't save it): `source` (a folder or any image Forge reads; percent-encoded, else
@@ -270,15 +270,21 @@ and exit 0 (see [Updates](#updates)); by anything else, exits 1.
   swap in the new page. One minute in all from the request, download included; then the toast says to stop
   Dump Forge and open it again (a downloaded version that couldn't take over, such as v0.1.1 without
   handover, has saved itself: the tile starts it).
-- `self_update` (`payload::load_release`, shared with the desktop app's Install on PS5): admission checked like `lz4_patch` and released before
-  elfldr is asked (the new copy's `if_idle` needs it), one at a time (an `AtomicBool`). It never stops this
-  server itself. Connects to `Options.elfldr` (`127.0.0.1:9021`) within 3 s and sends exactly
-  `GET /?uri=<percent-encoded U> HTTP/1.1`, `Host`, `Connection: close`, with U =
-  `https://github.com/quer3q/ps5-dump-forge/releases/download/v<v>/ps5-dump-forge-<v>-ps5.elf?args=serve&pipe=0`
-  (elfldr reads `args`/`pipe` from U's own query). Reads the reply (64 KiB, 55 s: the download happens
-  inside it): no `200` → 502 "elfldr refused the request"; a body line with `Error` (elfldr's `Error
-  reading HTTP payload` / `Error spawning payload`) → 502 "elfldr couldn't download or start v<v>: <line>".
-- Handover: a newly loaded copy of any version (elfldr's `?uri=`, `nc`, an autoloader; an older or the same
+- `self_update` (`ps5_dump_forge_updater::install`, shared with the desktop app's Install on PS5): admission
+  checked like `lz4_patch` and released before the download (the new copy's `if_idle` needs it), one at a time
+  (an `AtomicBool`). It never stops this server itself. elfldr can't follow GitHub's 302 to its asset host
+  (`Error reading HTTP payload`), so it is never handed a URL (no `?uri=`): the server
+  downloads `https://github.com/quer3q/ps5-dump-forge/releases/download/v<v>/ps5-dump-forge-<v>-ps5.elf` itself
+  (`ureq` + rustls, webpki roots, redirects followed, 50 s; `200` and a Content-Length of at most 64 MiB
+  required, the body exactly that long and starting with the ELF magic). It holds it in memory when that much
+  can be reserved; else it first replaces the self copy `/data/dumpforge/ps5-dump-forge.elf` (a temporary
+  file beside it, synced, renamed over it, the folder synced, under the self copy's flock; a bad or short
+  download leaves the copy as it was) and streams that file. Then it connects to `Options.elfldr`
+  (`127.0.0.1:9021`) and streams the raw ELF (1 MiB writes, 120 s in all); a Forge ELF started with no
+  arguments runs `serve` (unless a developer `args` file is pending: that runs instead). elfldr is probed
+  first (connect and close, 3 s), so nothing is downloaded while it is down. Nothing answering → 503; any other
+  failure (download, save, send) → 502 with its text ("couldn't download v<v>: ...").
+- Handover: a newly loaded copy of any version (a self-update or Install on PS5, `nc`, an autoloader; an older or the same
   version too) that finds the port held by Forge closes it when idle and takes its place. It reads the
   running copy's session; one with `handover` gets `quit {"if_idle": true}`; one without (v0.1.1 and
   older: they ignore the body and cancel their jobs on quit) first gets `GET /api/jobs` and a plain `quit {}`
@@ -291,9 +297,9 @@ and exit 0 (see [Updates](#updates)); by anything else, exits 1.
   close Dump Forge - some jobs are still running." and exits 0; no answer or a port still taken after 30 s
   notifies "Dump Forge v<new> could not take over from v<old>" and fails. Both notices are in the
   console's language (`notice.rs`).
-- Known limits (`ponytail:` in `api.rs`): elfldr ignores certificate errors and nothing
-  checks a signature (whoever can intercept the console's traffic can serve an ELF); it reads the body once
-  without checking its length, so a short read could start a cut ELF.
+- Known limits (`ponytail:` in the updater's `lib.rs`): TLS authenticates GitHub, but nothing checks a
+  signature or the ELF's version marker. elfldr gives no answer, so an ELF that fails to start isn't seen
+  (the page's 1-minute wait for a new `instance` ends with its stop-and-reopen note).
 
 ## Writing safely on the PS5
 

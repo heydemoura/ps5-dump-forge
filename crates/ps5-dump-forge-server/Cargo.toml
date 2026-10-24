@@ -20,6 +20,8 @@ ps5-dump-forge-flink.workspace = true
 # Connect's probe (`probe.rs`): an NFS NULL call, an SMB2 NEGOTIATE.
 ps5-dump-forge-nfs.workspace = true
 ps5-dump-forge-smb.workspace = true
+# Self-update: the release's PS5 ELF downloaded over HTTPS and streamed to elfldr.
+ps5-dump-forge-updater.workspace = true
 
 # The self copy (src/self_copy.rs): only the PS5 payload unpacks it, only tests on a host.
 [target.'cfg(target_env = "ps5")'.dependencies]

@@ -867,8 +867,10 @@ fn fake_elfldr(reply: &'static str) -> (SocketAddr, Log<String>) {
     (addr, log)
 }
 
-/// `POST /api/self_update` asks elfldr for the release's PS5 ELF (`args`/`pipe` inside the
-/// percent-encoded `uri`), and reports what elfldr answered.
+/// `GET /api/elfldr` says whether elfldr answers; `POST /api/self_update` refuses an old or
+/// malformed version before anything is downloaded or sent, and answers 503 while elfldr is down.
+/// Offline: with elfldr up a newer version would be downloaded from GitHub
+/// (ps5-dump-forge-updater's tests cover the download and the send).
 #[test]
 fn self_update_through_elfldr() {
     let newer = json!({ "version": "999.0.0" });
@@ -888,6 +890,7 @@ fn self_update_through_elfldr() {
     drop(closed);
     let srv = ps5("update-none", addr);
     assert_eq!(srv.get("/api/elfldr"), (200, json!({ "up": false })));
+    // elfldr is probed before anything is downloaded, so this stays offline.
     let (status, v) = srv.post("/api/self_update", newer.clone());
     assert_eq!(status, 503, "{v}");
     assert_eq!(
@@ -903,49 +906,16 @@ fn self_update_through_elfldr() {
     let srv = ps5("update-up", listening.local_addr().unwrap());
     assert_eq!(srv.get("/api/elfldr"), (200, json!({ "up": true })));
 
+    // Old or malformed versions never reach elfldr, and the server keeps serving.
     let (addr, log) = fake_elfldr("HTTP/1.1 200 OK\r\n\r\n");
-    let srv = ps5("update-ok", addr);
-    assert_eq!(
-        srv.post("/api/self_update", newer.clone()),
-        (200, json!({}))
-    );
-    let uri = "https%3A%2F%2Fgithub.com%2Fquer3q%2Fps5-dump-forge%2Freleases%2Fdownload%2Fv999.0.0\
-               %2Fps5-dump-forge-999.0.0-ps5.elf%3Fargs%3Dserve%26pipe%3D0";
-    assert_eq!(
-        *log.lock().unwrap(),
-        [format!(
-            "GET /?uri={uri} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-        )]
-    );
-    // The server keeps serving until the new copy takes over.
+    let srv = ps5("update-old", addr);
+    for bad in ["0.0.1", "999.0", "v999.0.0"] {
+        let (status, v) = srv.post("/api/self_update", json!({ "version": bad }));
+        assert_eq!(status, 400, "{bad}: {v}");
+    }
+    assert!(log.lock().unwrap().is_empty());
     assert_eq!(srv.get("/api/session").1["stopping"], false);
     assert!(srv.exits.lock().unwrap().is_empty());
-    // Old or malformed versions never reach elfldr.
-    assert_eq!(
-        srv.post("/api/self_update", json!({ "version": "0.0.1" }))
-            .0,
-        400
-    );
-    assert_eq!(log.lock().unwrap().len(), 1);
-
-    let (addr, _) = fake_elfldr(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n[elfldr.elf] Error reading HTTP payload\r\n",
-    );
-    let srv = ps5("update-error", addr);
-    let (status, v) = srv.post("/api/self_update", newer.clone());
-    assert_eq!(status, 502, "{v}");
-    assert_eq!(
-        v["error"],
-        "elfldr couldn't download or start v999.0.0: [elfldr.elf] Error reading HTTP payload"
-    );
-    // A refused update keeps this server serving.
-    assert_eq!(srv.get("/api/session").1["stopping"], false);
-    assert!(srv.exits.lock().unwrap().is_empty());
-
-    let (addr, _) = fake_elfldr("HTTP/1.1 404 Not Found\r\n\r\n");
-    let (status, v) = ps5("update-refused", addr).post("/api/self_update", newer);
-    assert_eq!(status, 502, "{v}");
-    assert_eq!(v["error"], "elfldr refused the request");
 }
 
 /// A fake older copy of the server on a port of its own: `GET /api/session` gets `session`
