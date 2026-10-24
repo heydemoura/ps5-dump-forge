@@ -500,6 +500,9 @@ pub struct Inspection {
     /// An image whose last in-place edit was interrupted: its undo journal
     /// (`<image>.forge-undo`) is beside it, and the next edit restores the image first.
     pub interrupted_edit: bool,
+    /// A patch package (`.pkg` starting `\x7FLIH`): `files` are the ones it carries whole;
+    /// browsed and extracted from only, never converted or edited.
+    pub patch: bool,
 }
 
 /// What an archive source is.

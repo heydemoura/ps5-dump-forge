@@ -59,6 +59,8 @@ const ja: Messages = {
     lz4Backport:
       "このゲームのアセットは LZ4 でパックされており、LZ4 マニフェストにバックポートが含まれています。先に「LZ4」タブでアンパックしてから、ここでバックポートを除外してください。",
     unreadable: "ビルドできません：このソースを読み込めませんでした（「ソース」を参照）。",
+    patchBlocked: "ビルドできません：これはパッチパッケージで、アップデートで変更された部分だけを含みます。ファイルを抽出するには「編集」で開いてください。",
+    openInEdit: "「編集」で開く",
     noContentId: "fpkg としてビルドできません：このゲームの param.json には、パッケージに必要な Content ID がありません。",
     blocked: (first, more) =>
       more > 0
@@ -194,6 +196,7 @@ const ja: Messages = {
     open: (name) => `${name} を開く`,
     archiveNote: "アーカイブは閲覧できますが、編集はできません。変更するには、先にフォルダーかイメージに変換してください。",
     nasNote: "NAS 上のゲームは閲覧と抽出はできますが、編集はできません。変更するには、先にこのデバイスへ変換または抽出してください。",
+    patchNote: "これはパッチパッケージで、アップデートで変更された部分だけを含みます。完全に含まれているファイルだけを表示しています。閲覧と抽出はできますが、編集はできません。",
     peerNote: "別の Forge 上のゲームは閲覧と抽出はできますが、編集はできません。変更するには、先にこのデバイスへ変換または抽出してください。",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "ファイルを追加",
@@ -496,6 +499,7 @@ const ja: Messages = {
         ? "リリース版ランタイムでこのイメージを再ビルドし、置き換えます。"
         : "このフォルダーにリリース版ランタイムを戻します。",
     noAmpr: "このゲームは AMPR を使用していません",
+    isPatch: "パッチパッケージです",
     noEboot: "eboot.bin がありません",
     packedFirst: "ソースは LZ4 パック済みです。先にアンパックしてください",
     damaged: "LZ4 パックが破損しています",
@@ -525,6 +529,7 @@ const ja: Messages = {
     },
     chooseGame: "先にゲームのフォルダー、イメージまたはアーカイブを選んでください。",
     noAmprGame: "このゲームは AMPR を使用していないため、LZ4 は使えません。",
+    patch: "これはパッチパッケージのため、LZ4 は使えません。",
     additionalContent: "これは追加コンテンツ（eboot.bin なし）のため、LZ4 は使えません。",
     installsRuntime: (a, version) =>
       a === "pack"
@@ -691,6 +696,7 @@ const ja: Messages = {
     emptyText: "PS5 のゲームフォルダー、またはそのイメージ、パッケージ、アーカイブ。",
     accepted: "対応するソース",
     unknownTitle: "不明なタイトル",
+    patch: "パッチ",
     additionalContent: "追加コンテンツ",
     reading: "ソースを読み込み中",
     unreadable: "読み込めないソース",

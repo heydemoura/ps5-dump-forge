@@ -58,6 +58,8 @@ export function Convert(props: {
   onCompare: () => void;
   /** A game the Library opened here; each new `id` is read once. */
   selection?: SourceSelection | null;
+  /** Open this source in the Edit tab (a patch package, which only Edit reads). */
+  onEdit?: (path: string) => void;
 }) {
   const t = useMessages().convert;
   const [source, setSource] = useState<string | null>(null);
@@ -210,7 +212,9 @@ export function Convert(props: {
   const hard = ins ? ins.findings.filter((l) => classify(l).kind === "block") : [];
   const blockReason = insError
     ? t.unreadable
-    : hard.length > 0
+    : ins?.patch
+      ? t.patchBlocked
+      : hard.length > 0
       ? t.blocked(hard[0], hard.length - 1)
       : format === "pkg" && ins && !ins.content_id
         ? t.noContentId
@@ -366,6 +370,12 @@ export function Convert(props: {
                     <Prose text={blockReason} />
                   </span>
                 </p>
+              )}
+              {ins?.patch && source && props.onEdit && (
+                <button type="button" className="small" onClick={() => props.onEdit?.(source)}>
+                  <Icon name="pencil" />
+                  {t.openInEdit}
+                </button>
               )}
               {!blockReason && formatWarn > 0 && (
                 <p className="note-line warn">

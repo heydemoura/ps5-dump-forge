@@ -330,6 +330,9 @@ fn scan_with(
     }
     let kind = Kind::of(&image)?;
     findings.extend(kind_finding(kind, rebuild));
+    if kind == Kind::Pkg && ps5_dump_forge_fpkg::is_patch(&image) {
+        findings.push(preflight::PATCH_EDIT.into());
+    }
     if !findings.is_empty() {
         return Ok(Err(findings));
     }

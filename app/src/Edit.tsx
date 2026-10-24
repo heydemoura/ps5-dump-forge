@@ -493,7 +493,7 @@ export function Edit(props: {
             key={source ?? ""}
             ins={ins}
             tree={folded.tree}
-            editable={!ins.archive && !isNetwork(source) && !locked}
+            editable={!ins.archive && !ins.patch && !isNetwork(source) && !locked}
             nas={isNas(source)}
             peer={isPeer(source)}
             visible={props.visible}
@@ -850,10 +850,10 @@ function Explorer(props: {
       <CardHead icon="folder" title={t.explorer} id="e-files">
         <span className="tag">{t.fileCount(ins.files.length)}</span>
       </CardHead>
-      {(ins.archive || props.nas || props.peer) && (
+      {(ins.archive || ins.patch || props.nas || props.peer) && (
         <p className="note-line explorer-note">
           <Icon name="info" />
-          <span>{props.nas ? t.nasNote : props.peer ? t.peerNote : t.archiveNote}</span>
+          <span>{props.nas ? t.nasNote : props.peer ? t.peerNote : ins.patch ? t.patchNote : t.archiveNote}</span>
         </p>
       )}
       {props.pending}

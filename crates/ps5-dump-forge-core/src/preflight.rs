@@ -56,6 +56,14 @@ pub(crate) const NO_EBOOT: &str = "eboot.bin is missing at the game root";
 pub(crate) const ADDITIONAL_CONTENT_TARGET: &str =
     "additional content (no eboot.bin) can only be packaged as fpkg or written to a folder";
 
+/// The finding for a conversion of a patch package.
+pub(crate) const PATCH_SOURCE: &str = "a patch package (LIH) holds only what its update changed, \
+     so it can't be converted: open it in Edit to extract its files";
+
+/// The finding for an edit of a patch package.
+pub(crate) const PATCH_EDIT: &str =
+    "a patch package (LIH) can be browsed and extracted from, not edited";
+
 /// Reads `sce_sys/param.json` (when there is one) and checks the game root's layout.
 pub(crate) fn input(tree: &mut dyn SourceTree) -> (GameInfo, Vec<String>) {
     let mut findings = Vec::new();

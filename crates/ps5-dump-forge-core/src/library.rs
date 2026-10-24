@@ -428,6 +428,10 @@ fn probe_folder(dir: &Path) -> Option<LibraryEntry> {
 
 /// An image's entry. Opening reads the image's own metadata, so this costs more than a folder.
 fn probe_image(path: &Path, kind: Kind) -> Result<Option<LibraryEntry>, String> {
+    // A patch package is no game by itself.
+    if kind == Kind::Pkg && ps5_dump_forge_fpkg::is_patch(path) {
+        return Ok(None);
+    }
     let mut tree = crate::convert::open_source(path, kind, &AtomicBool::new(false))
         .map_err(|e| format!("skipped, cannot open: {e}"))?;
     let size = |name: &str| tree.files().iter().find(|f| f.path == name).map(|f| f.size);

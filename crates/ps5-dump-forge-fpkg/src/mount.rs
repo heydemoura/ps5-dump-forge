@@ -60,7 +60,7 @@ pub(crate) enum Layout {
 impl Layout {
     /// Which layout `blob` describes for an image of `image_size` stored bytes. A Kraken
     /// layout drops `blob` once it is walked, before its own block list is built.
-    pub fn parse(blob: Vec<u8>, image_size: u64) -> Result<Self> {
+    pub fn parse(blob: Vec<u8>, image_size: u64, patch: bool) -> Result<Self> {
         if blob.len() < 16 {
             return Err(err(
                 CORRUPT,
@@ -82,7 +82,7 @@ impl Layout {
                 ),
             ));
         }
-        let kraken = is_kraken(&blob, w0, w1);
+        let kraken = is_kraken(&blob, w0, w1, patch);
         let cost = open_cost(kraken, blob.len() as u64, w0, w1);
         if cost > MAX_OPEN {
             return Err(err(
@@ -119,16 +119,20 @@ impl Layout {
 }
 
 /// The Kraken descriptor's mark: after the boundary tables, padded to eight bytes, the ublock
-/// size `0x040000` as three bytes, then the records (see `kraken_image::layout`). The flat
-/// descriptor has records straight after its tables.
-fn is_kraken(blob: &[u8], w0: u64, w1: u64) -> bool {
+/// size `0x040000` as three bytes (`0x060000` in a patch package's, and only there), then the records (see
+/// `kraken_image::layout`). The flat descriptor has records straight after its tables.
+fn is_kraken(blob: &[u8], w0: u64, w1: u64, patch: bool) -> bool {
     // Every count is a 24-bit field, so none of this can overflow.
     let files = (w0 & 0xFF_FFFF) as usize + 1;
     let ublocks = ((w0 >> 32) & 0xFF_FFFF) as usize;
     let outer = (w1 & 0xFF_FFFF) as usize;
     let u2c_end = 16 + outer * 8 + files * 6 + (ublocks / 8 + 1) * 10;
     let rec_at = u2c_end.next_multiple_of(8) + 3;
-    blob.get(rec_at - 3..rec_at) == Some(&[0, 0, 4][..])
+    match blob.get(rec_at - 3..rec_at) {
+        Some([0, 0, 4]) => true,
+        Some([0, 0, 6]) => patch,
+        _ => false,
+    }
 }
 
 /// The most opening a descriptor of `len` bytes with header words `w0`, `w1` holds at once.
@@ -220,6 +224,17 @@ impl Kraken {
 
     pub fn block_count(&self) -> usize {
         self.blocks.len()
+    }
+
+    /// The stored byte ranges behind mount bytes `off..off + len`.
+    pub fn stored(&self, off: u64, len: u64) -> impl Iterator<Item = std::ops::Range<u64>> + '_ {
+        let first = self
+            .blocks
+            .partition_point(|b| b.logical + u64::from(b.len) <= off);
+        let last = self.blocks.partition_point(|b| b.logical < off + len);
+        self.blocks[first..last.max(first)]
+            .iter()
+            .map(|b| b.stored_at..b.stored_at + u64::from(b.stored_len))
     }
 
     /// Blocks stored whole and raw (the stored-Kraken diagnostic stores every block so).

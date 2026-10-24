@@ -55,6 +55,8 @@ const ko: Messages = {
     lz4Backport:
       "이 게임의 에셋은 LZ4로 패킹되어 있고 LZ4 매니페스트에 백포트가 포함되어 있습니다. 먼저 ‘LZ4’ 탭에서 언패킹한 다음 여기에서 백포트를 제거하세요.",
     unreadable: "빌드할 수 없습니다: 이 소스를 읽지 못했습니다(‘소스’ 참고).",
+    patchBlocked: "빌드할 수 없습니다: 패치 패키지라서 업데이트로 바뀐 부분만 들어 있습니다. 파일을 추출하려면 ‘편집’에서 여세요.",
+    openInEdit: "‘편집’에서 열기",
     noContentId: "fpkg로 빌드할 수 없습니다: 이 게임의 param.json에 패키지에 필요한 Content ID가 없습니다.",
     blocked: (first, more) =>
       `빌드할 수 없습니다: ${first}${more > 0 ? ` (외 ${num(more)}개, ‘소스’ 참고)` : ""}.`,
@@ -188,6 +190,7 @@ const ko: Messages = {
     open: (name) => `${name} 열기`,
     archiveNote: "압축 파일은 둘러볼 수 있지만 편집할 수는 없습니다. 수정하려면 먼저 폴더나 이미지로 변환하세요.",
     nasNote: "NAS의 게임은 둘러보고 추출할 수 있지만 편집할 수는 없습니다. 변경하려면 먼저 이 기기로 변환하거나 추출하세요.",
+    patchNote: "패치 패키지입니다. 업데이트로 바뀐 부분만 들어 있으며, 온전히 들어 있는 파일만 표시됩니다. 둘러보고 추출할 수 있지만 편집할 수는 없습니다.",
     peerNote: "다른 Forge의 게임은 둘러보고 추출할 수 있지만 편집할 수는 없습니다. 변경하려면 먼저 이 기기로 변환하거나 추출하세요.",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "파일 추가",
@@ -490,6 +493,7 @@ const ko: Messages = {
         ? "릴리스 런타임으로 이 이미지를 다시 빌드한 다음 교체합니다."
         : "이 폴더에 릴리스 런타임을 되돌립니다.",
     noAmpr: "게임이 AMPR을 사용하지 않음",
+    isPatch: "패치 패키지입니다",
     noEboot: "eboot.bin이 없음",
     packedFirst: "소스가 LZ4로 패킹됨: 먼저 언패킹하세요",
     damaged: "LZ4 팩이 손상됨",
@@ -512,6 +516,7 @@ const ko: Messages = {
       `${{ patch: "패치할", unpatch: "패치를 해제할", pack: "패킹할", unpack: "언패킹할" }[a]} 수 없습니다: ${first}${more > 0 ? ` (외 ${num(more)}개, ‘소스’ 참고)` : ""}.`,
     chooseGame: "먼저 게임 폴더, 이미지 또는 압축 파일을 선택하세요.",
     noAmprGame: "이 게임은 AMPR을 사용하지 않으므로 여기서는 LZ4를 쓸 수 없습니다.",
+    patch: "패치 패키지이므로 여기서는 LZ4를 쓸 수 없습니다.",
     additionalContent: "추가 콘텐츠(eboot.bin 없음)이므로 여기서는 LZ4를 쓸 수 없습니다.",
     installsRuntime: (a, version) =>
       a === "pack"
@@ -675,6 +680,7 @@ const ko: Messages = {
     emptyText: "PS5 게임 폴더 또는 그 게임의 이미지, 패키지나 압축 파일입니다.",
     accepted: "지원하는 소스",
     unknownTitle: "알 수 없는 게임",
+    patch: "패치",
     additionalContent: "추가 콘텐츠",
     reading: "소스 읽는 중",
     unreadable: "읽을 수 없는 소스",

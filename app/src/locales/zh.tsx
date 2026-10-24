@@ -54,6 +54,8 @@ const zh: Messages = {
     lz4Backport:
       "此游戏的资源已用 LZ4 打包，且其 LZ4 清单包含向下移植文件：请先在“LZ4”选项卡中解包，再在此处移除向下移植。",
     unreadable: "无法构建：无法读取此源（见“源”）。",
+    patchBlocked: "无法构建：这是补丁包，只包含更新改动的内容。请在“编辑”中打开它以提取其中的文件。",
+    openInEdit: "在“编辑”中打开",
     noContentId: "无法构建为 fpkg：此游戏的 param.json 没有软件包所需的 Content ID。",
     blocked: (first, more) =>
       `无法构建：${first}${more > 0 ? `（另有 ${num(more)} 项，见“源”）` : ""}。`,
@@ -186,6 +188,7 @@ const zh: Messages = {
     open: (name) => `打开 ${name}`,
     archiveNote: "压缩包可以浏览，但不能编辑。如需修改，请先将其转换为文件夹或镜像。",
     nasNote: "NAS 上的游戏可以浏览和提取，但不能编辑。要修改它，请先将其转换或提取到本设备。",
+    patchNote: "这是补丁包：只包含更新改动的内容。这里列出它完整包含的文件；可以浏览和提取，但不能编辑。",
     peerNote: "其他 Forge 上的游戏可以浏览和提取，但不能编辑。要修改它，请先将其转换或提取到本设备。",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "添加文件",
@@ -485,6 +488,7 @@ const zh: Messages = {
         ? "用正式版运行时重新构建此镜像，然后替换原镜像。"
         : "在此文件夹中恢复正式版运行时。",
     noAmpr: "该游戏未使用 AMPR",
+    isPatch: "这是补丁包",
     noEboot: "没有 eboot.bin",
     packedFirst: "源已用 LZ4 打包：请先解包",
     damaged: "其 LZ4 包已损坏",
@@ -507,6 +511,7 @@ const zh: Messages = {
       `无法${a === "patch" ? "打补丁" : a === "unpatch" ? "移除补丁" : a === "pack" ? "打包" : "解包"}：${first}${more > 0 ? `（另有 ${num(more)} 项，见“源”）` : ""}。`,
     chooseGame: "请先选择游戏文件夹、镜像或压缩包。",
     noAmprGame: "该游戏未使用 AMPR，因此这里无法使用 LZ4。",
+    patch: "这是补丁包，因此这里无法使用 LZ4。",
     additionalContent: "这是附加内容（没有 eboot.bin），因此这里无法使用 LZ4。",
     installsRuntime: (a, version) =>
       a === "pack"
@@ -650,6 +655,7 @@ const zh: Messages = {
     emptyText: "PS5 游戏文件夹，或其镜像、安装包或压缩包。",
     accepted: "支持的源",
     unknownTitle: "未知游戏",
+    patch: "补丁",
     additionalContent: "附加内容",
     reading: "正在读取源",
     unreadable: "无法读取的源",

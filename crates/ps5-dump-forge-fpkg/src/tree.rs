@@ -40,6 +40,8 @@ pub(crate) struct InnerTree {
     pub empty_dirs: Vec<String>,
     /// Every directory path (for collisions with container entries).
     pub dirs: Vec<String>,
+    /// A patch's directories and files left out: their metadata is the base game's.
+    pub in_base: Vec<String>,
 }
 
 struct Inode {
@@ -50,8 +52,15 @@ struct Inode {
 }
 
 /// Walk the tree whose metadata starts at `meta_base` of a mount `mount_size` long. File data
-/// must lie below `meta_base`.
-pub(crate) fn walk(reader: &mut Reader, meta_base: u64, mount_size: u64) -> Result<InnerTree> {
+/// must lie below `meta_base`. A `patch` skips (and lists in `in_base`) each directory or file
+/// whose metadata the patch doesn't carry.
+pub(crate) fn walk(
+    reader: &mut Reader,
+    meta_base: u64,
+    mount_size: u64,
+    patch: bool,
+) -> Result<InnerTree> {
+    let skipped = |e: &ps5upload_fpkg::Error| patch && e.to_string().contains(crate::IN_BASE);
     if meta_base.checked_add(BLOCK).is_none_or(|e| e > mount_size) {
         return Err(err(
             CORRUPT,
@@ -102,6 +111,7 @@ pub(crate) fn walk(reader: &mut Reader, meta_base: u64, mount_size: u64) -> Resu
         files: Vec::new(),
         empty_dirs: Vec::new(),
         dirs: Vec::new(),
+        in_base: Vec::new(),
     };
     let mut entries = 0usize;
     let mut path_bytes = 0usize;
@@ -118,7 +128,13 @@ pub(crate) fn walk(reader: &mut Reader, meta_base: u64, mount_size: u64) -> Resu
                 format!("directory inode {dir_ino} is linked twice (a cycle)"),
             ));
         }
-        let dir = inode(reader, dir_ino)?;
+        let dir = match inode(reader, dir_ino) {
+            Err(e) if skipped(&e) => {
+                tree.in_base.push(prefix);
+                continue;
+            }
+            dir => dir?,
+        };
         if dir.mode & 0xF000 != 0x4000 {
             return Err(err(
                 CORRUPT,
@@ -148,7 +164,13 @@ pub(crate) fn walk(reader: &mut Reader, meta_base: u64, mount_size: u64) -> Resu
             )
         })?;
         let mut bytes = vec![0u8; dir.size as usize];
-        reader.mount(dir.logical, &mut bytes)?;
+        match reader.mount(dir.logical, &mut bytes) {
+            Err(e) if skipped(&e) => {
+                tree.in_base.push(prefix);
+                continue;
+            }
+            read => read?,
+        }
         let mut children = 0usize;
         let mut o = 0usize;
         while o + 16 <= bytes.len() {
@@ -203,7 +225,13 @@ pub(crate) fn walk(reader: &mut Reader, meta_base: u64, mount_size: u64) -> Resu
                 tree.dirs.push(path.clone());
                 pending.push((ino, path));
             } else if kind == i32::from(DIRENT_FILE) {
-                let f = inode(reader, ino)?;
+                let f = match inode(reader, ino) {
+                    Err(e) if skipped(&e) => {
+                        tree.in_base.push(path);
+                        continue;
+                    }
+                    f => f?,
+                };
                 if f.mode & 0xF000 != 0x8000 {
                     return Err(err(
                         CORRUPT,

@@ -54,6 +54,10 @@ impl Pkg {
         Self { file, len }
     }
 
+    pub fn into_file(self) -> Box<dyn ReadSeek> {
+        self.file
+    }
+
     pub fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<()> {
         let fits = off
             .checked_add(buf.len() as u64)
@@ -484,6 +488,19 @@ impl OuterFile {
             size: node.size,
             map,
         })
+    }
+
+    /// The outer blocks behind bytes `range` of this file (clipped to it).
+    pub fn outer_blocks(&self, range: std::ops::Range<u64>) -> impl Iterator<Item = u64> + '_ {
+        let first = (range.start / BLOCK) as usize;
+        let last = if range.is_empty() {
+            first
+        } else {
+            (range.end.min(self.size).div_ceil(BLOCK) as usize).max(first)
+        };
+        self.map[first.min(self.map.len())..last.min(self.map.len())]
+            .iter()
+            .map(|&i| u64::from(i))
     }
 
     /// Exactly `buf.len()` bytes at `off`.

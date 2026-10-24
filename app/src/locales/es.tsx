@@ -64,6 +64,8 @@ const es: Messages = {
     lz4Backport:
       "Los recursos de este juego están empaquetados con LZ4 y su manifiesto LZ4 incluye el backport: primero desempaquétalo en la pestaña LZ4 y luego quita el backport aquí.",
     unreadable: "No se puede crear: no se pudo leer este origen (consulta “Origen”).",
+    patchBlocked: "No se puede crear: es un paquete de parche, que solo contiene lo que cambió la actualización. Ábrelo en “Editar” para extraer sus archivos.",
+    openInEdit: "Abrir en “Editar”",
     noContentId: "No se puede crear como fpkg: el param.json de este juego no tiene Content ID, y un paquete lo necesita.",
     blocked: (first, more) =>
       `No se puede crear: ${first}${more > 0 ? ` (y ${num(more)} más, consulta “Origen”)` : ""}.`,
@@ -207,6 +209,7 @@ const es: Messages = {
     open: (name) => `Abrir ${name}`,
     archiveNote: "Los archivos comprimidos se pueden explorar, pero no editar. Para cambiarlo, conviértelo antes en una carpeta o una imagen.",
     nasNote: "Los juegos de un NAS se pueden explorar y extraer, pero no editar. Para cambiarlo, conviértelo o extráelo primero a este dispositivo.",
+    patchNote: "Es un paquete de parche: solo contiene lo que cambió la actualización. Se muestran los archivos que contiene completos; se pueden explorar y extraer, pero no editar.",
     peerNote: "Los juegos de otro Forge se pueden explorar y extraer, pero no editar. Para cambiarlo, conviértelo o extráelo primero a este dispositivo.",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "Añadir archivos",
@@ -523,6 +526,7 @@ const es: Messages = {
         ? "Vuelve a crear esta imagen con el runtime de lanzamiento y luego la reemplaza."
         : "Vuelve a poner el runtime de lanzamiento en esta carpeta.",
     noAmpr: "el juego no usa AMPR",
+    isPatch: "es un paquete de parche",
     noEboot: "no hay eboot.bin",
     packedFirst: "el origen está empaquetado con LZ4: desempaquétalo primero",
     damaged: "sus paquetes LZ4 están dañados",
@@ -550,6 +554,7 @@ const es: Messages = {
     },
     chooseGame: "Elige primero una carpeta, imagen o archivo comprimido de juego.",
     noAmprGame: "Este juego no usa AMPR, así que LZ4 no se puede usar aquí.",
+    patch: "Es un paquete de parche, así que LZ4 no se puede usar aquí.",
     additionalContent: "Esto es contenido adicional (sin eboot.bin), así que LZ4 no se puede usar aquí.",
     installsRuntime: (a, version) =>
       a === "pack"
@@ -712,6 +717,7 @@ const es: Messages = {
     emptyText: "Una carpeta de juego de PS5 o una imagen, paquete o archivo comprimido de ella.",
     accepted: "Orígenes admitidos",
     unknownTitle: "Título desconocido",
+    patch: "Parche",
     additionalContent: "Contenido adicional",
     reading: "Leyendo el origen",
     unreadable: "Origen ilegible",

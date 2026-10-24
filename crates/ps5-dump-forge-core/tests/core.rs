@@ -530,6 +530,106 @@ fn pkg_to_folder_round_trip() {
     assert!(stale_parts(&root).is_empty());
 }
 
+/// `pkg` re-wrapped as a patch package (`\x7FLIH`) carrying every outer block: a 64 KiB header,
+/// the FIH block, the blocks, the container (see `ps5-dump-forge-fpkg`'s `lih.rs`).
+fn patch_of(pkg: &[u8]) -> Vec<u8> {
+    const B: usize = 0x10000;
+    let le = |at: usize| u64::from_le_bytes(pkg[at..at + 8].try_into().unwrap()) as usize;
+    let (pfs_offset, pfs_size, cnt_offset) = (le(0x10), le(0x18), le(0x58));
+    let cnt_end = if cnt_offset < pfs_offset {
+        pfs_offset
+    } else {
+        pkg.len()
+    };
+    let mut out = vec![0u8; B];
+    out.extend_from_slice(&pkg[..B]);
+    out.extend_from_slice(&pkg[pfs_offset..pfs_offset + pfs_size]);
+    let cnt_at = out.len();
+    out.extend_from_slice(&pkg[cnt_offset..cnt_end]);
+    let len = out.len();
+    out[..4].copy_from_slice(b"\x7FLIH");
+    for (at, v) in [
+        (0x18, len),
+        (0x20, B),
+        (0x28, B),
+        (0x30, cnt_at),
+        (0x38, cnt_end - cnt_offset),
+    ] {
+        out[at..at + 8].copy_from_slice(&(v as u64).to_le_bytes());
+    }
+    out
+}
+
+/// A patch package is browsed and extracted from only: inspect flags it, Extract copies its
+/// files, a conversion and an edit refuse it, and the Library leaves it out.
+#[test]
+fn a_patch_package_is_extracted_from_only() {
+    let root = dir("patch-pkg");
+    let src = root.join("src");
+    game(&src);
+    let pkg = root.join("PPSA01234.pkg");
+    run(request(&src, Format::Pkg, &pkg)).1.unwrap();
+    let patch = root.join("patches/PPSA01234-patch.pkg");
+    write(
+        &root,
+        "patches/PPSA01234-patch.pkg",
+        &patch_of(&std::fs::read(&pkg).unwrap()),
+    );
+
+    let ins = inspect(&patch).unwrap();
+    assert!(ins.patch && ins.lz4.is_none(), "{:?}", ins.details);
+    assert!(
+        !ins.additional_content && ins.findings.is_empty(),
+        "{:?}",
+        ins.findings
+    );
+    assert_eq!(ins.title_id.as_deref(), Some("PPSA01234"));
+    assert!(!inspect(&pkg).unwrap().patch);
+
+    let out = root.join("out");
+    std::fs::create_dir(&out).unwrap();
+    run(ConvertRequest {
+        extract: vec!["data".into()],
+        ..request(&patch, Format::Folder, &out)
+    })
+    .1
+    .unwrap();
+    assert!(
+        std::fs::read(out.join("data/big.bin")).unwrap()
+            == std::fs::read(src.join("data/big.bin")).unwrap()
+    );
+
+    // Refused before the patch is read: no LZ4 step logs anything first.
+    let (events, result) = run(request(&patch, Format::Exfat, &root.join("x.exfat")));
+    let err = result.unwrap_err();
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::Log { .. })),
+        "{events:?}"
+    );
+    assert!(err.contains("a patch package (LIH)"), "{err}");
+    assert!(!root.join("x.exfat").exists());
+    let check = edit_check(&ConvertRequest {
+        edits: vec![ps5_dump_forge_core::Edit::Delete {
+            path: "data/zero.bin".into(),
+        }],
+        ..request(&patch, Format::Pkg, &patch)
+    });
+    for findings in [&check.in_place, &check.rebuild] {
+        assert!(
+            findings.iter().any(|f| f.contains("patch package")),
+            "{check:?}"
+        );
+    }
+
+    let scan = ps5_dump_forge_core::scan_library_folder(&root).unwrap();
+    let listed: Vec<&Path> = scan.entries.iter().map(|e| e.path.as_path()).collect();
+    assert!(
+        listed.contains(&pkg.as_path()) && !listed.contains(&patch.as_path()),
+        "{listed:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Cancels `format`'s job at the first progress of `at`, while its `.part` exists.
 fn cancel_removes_only_this_jobs_part(format: Format, out: &str, at: &'static str) {
     cancel_removes_only_this_jobs_part_of(game, format, out, at);

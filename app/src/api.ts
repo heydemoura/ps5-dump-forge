@@ -286,6 +286,9 @@ export interface Inspection {
    * is beside it, and the next edit (or check) puts the image back first. Missing from an older
    * backend. */
   interrupted_edit?: boolean;
+  /** A patch package (`.pkg` starting `\x7FLIH`): `files` are the ones it carries whole;
+   * browsed and extracted from only. Missing from an older backend. */
+  patch?: boolean;
 }
 
 /** What patching (or unpatching) a folder in place for LZ4 tracing did. */

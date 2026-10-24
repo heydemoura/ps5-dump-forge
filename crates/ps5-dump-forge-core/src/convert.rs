@@ -555,6 +555,10 @@ pub(crate) fn convert(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobRepo
     ctx.stages(&stages(req));
     ctx.progress("scan", 0, 1);
     let kind = Kind::of(&req.source)?;
+    // Before the open, which reads all of a patch (an edit's rebuild is refused by its scan).
+    if kind == Kind::Pkg && !rebuild && ps5_dump_forge_fpkg::is_patch(&req.source) {
+        return Err(preflight_failed(vec![preflight::PATCH_SOURCE.to_string()]));
+    }
     // A rebuilt `.ffpfsc` keeps its inner image's format.
     let mut inner = req.inner;
     let (source, stamp) = if rebuild {

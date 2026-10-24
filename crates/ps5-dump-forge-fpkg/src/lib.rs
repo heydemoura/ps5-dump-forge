@@ -15,10 +15,12 @@
 //! Errors are [`ps5upload_fpkg::Error::Format`] messages that start with one of the prefixes
 //! below, so a caller can tell the cases apart without parsing the rest.
 
+mod lih;
 mod mount;
 mod pfs;
 mod tree;
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use ps5upload_fpkg::cnt::ids;
@@ -47,6 +49,8 @@ pub const NATIVE_UNDECODABLE: &str = "native-encrypted image this reader cannot 
 pub const UNSUPPORTED_CODEC: &str = "unsupported codec";
 /// Anything else: truncated, damaged, or structurally inconsistent.
 pub const CORRUPT: &str = "corrupt package";
+/// A patch package's read of a block only the base game holds.
+pub const IN_BASE: &str = "not in this patch";
 
 /// The most [`SourceTree::read`] returns whole; larger files go through `read_range`.
 pub const MAX_WHOLE_READ: u64 = 256 << 20;
@@ -119,6 +123,16 @@ pub(crate) struct Reader {
 }
 
 impl Reader {
+    /// Every outer block behind mount bytes `at..at + size` is in `present`.
+    pub(crate) fn carried(&self, at: u64, size: u64, present: &HashSet<u64>) -> bool {
+        let has =
+            |r: std::ops::Range<u64>| self.image.outer_blocks(r).all(|b| present.contains(&b));
+        match &self.layout {
+            Layout::Kraken(k) => k.stored(at, size).all(has),
+            Layout::Flat(_) => has(at..at + size),
+        }
+    }
+
     /// Exactly `buf.len()` bytes at `off`: of the mount for a Kraken image; of the stored image
     /// for a flat one, which is the mount from the metadata base on and where a file's `at` is
     /// already its on-disk offset (see [`flat_placements`]).
@@ -141,6 +155,7 @@ pub struct FpkgSource {
     label: String,
     content_id: String,
     reader: Reader,
+    patch: bool,
 }
 
 impl FpkgSource {
@@ -162,6 +177,20 @@ impl FpkgSource {
         let label = label.into();
         let passcode = passcode.unwrap_or(DEFAULT_PASSCODE);
         let mut pkg = Pkg::new(file, len);
+        let mut magic = [0u8; 4];
+        let patch = if len >= 4 {
+            pkg.read_at(0, &mut magic)?;
+            lih::is_lih(&magic)
+        } else {
+            false
+        };
+        let mut patch_facts = None;
+        if patch {
+            let (view, facts) = lih::View::open(pkg.into_file(), len)?;
+            let len = view.len();
+            pkg = Pkg::new(Box::new(view), len);
+            patch_facts = Some(facts);
+        }
         let h = pfs::header(&mut pkg)?;
         let cnt = pfs::container(&mut pkg, h.cnt_offset)?;
         let digests = cnt
@@ -191,6 +220,14 @@ impl FpkgSource {
                 h.format_version
             ),
         ];
+        if let Some(p) = &patch_facts {
+            facts.push(format!(
+                "patch package (LIH): holds {} of the patched package's {} outer blocks; the \
+                 rest are the base game's",
+                p.present.len(),
+                p.outer_blocks
+            ));
+        }
         if sb.plaintext {
             facts.push("image mode: plaintext (PPRPLAIN-NOAUTH!), no passcode needed".into());
         } else {
@@ -238,7 +275,7 @@ impl FpkgSource {
         let naps_file = OuterFile::map(&mut outer, &nodes[naps_ino], "naps_pkg_layout.dat")?;
         let mut blob = vec![0u8; naps_file.size as usize];
         naps_file.read(&mut outer, 0, &mut blob)?;
-        let layout = Layout::parse(blob, image.size)?;
+        let layout = Layout::parse(blob, image.size, patch)?;
 
         let meta_base = h.meta_base;
         let mount_size = match &layout {
@@ -277,7 +314,7 @@ impl FpkgSource {
             image,
             layout,
         };
-        let mut inner = tree::walk(&mut reader, meta_base, mount_size)?;
+        let mut inner = tree::walk(&mut reader, meta_base, mount_size, patch)?;
         if let Layout::Flat(l) = &reader.layout {
             flat_placements(&mut inner.files, l, meta_base)?;
         }
@@ -345,6 +382,31 @@ impl FpkgSource {
             ));
             from_container += 1;
         }
+        // A patch lists only the files it carries whole: the rest read the base game's blocks.
+        if let Some(p) = &patch_facts {
+            let mut partial = Vec::new();
+            files.retain(|(f, at)| {
+                let whole = match at {
+                    Where::Container(_) => true,
+                    Where::Inner(at) => reader.carried(*at, f.size, &p.present),
+                };
+                if !whole {
+                    partial.push(f.path.clone());
+                }
+                whole
+            });
+            partial.sort();
+            inner.in_base.sort();
+            facts.push(format!(
+                "patch: {} files carried whole; left out: {} files partly the base game's{}, {} \
+                 entries the base game lists{}",
+                files.len(),
+                partial.len(),
+                first_ten(&partial),
+                inner.in_base.len(),
+                first_ten(&inner.in_base)
+            ));
+        }
         files.sort_by(|a, b| a.0.path.cmp(&b.0.path));
         empty_dirs.sort();
         facts.push(format!(
@@ -363,7 +425,13 @@ impl FpkgSource {
             label,
             content_id: cnt.content_id,
             reader,
+            patch,
         })
+    }
+
+    /// A patch package (`\x7FLIH`): only the files it carries whole are listed.
+    pub fn is_patch(&self) -> bool {
+        self.patch
     }
 
     /// Format facts for `inspect` (content id, image mode, codec, sizes), one per line.
@@ -382,6 +450,15 @@ impl FpkgSource {
             .binary_search_by(|f| f.path.as_str().cmp(path))
             .map_err(|_| Error::Format(format!("{path} is not in {}", self.label)))
     }
+}
+
+/// `path` starts with a patch package's magic (`\x7FLIH`); `false` when it can't be read.
+pub fn is_patch(path: &Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok_and(|()| lih::is_lih(&magic))
 }
 
 impl SourceTree for FpkgSource {
@@ -428,6 +505,15 @@ impl SourceTree for FpkgSource {
 
     fn describe(&self) -> String {
         format!("fpkg {} ({})", self.label, self.content_id)
+    }
+}
+
+/// ` (a, b, … and N more)` for a list's first ten; empty for none.
+fn first_ten(items: &[String]) -> String {
+    match items.len() {
+        0 => String::new(),
+        n if n <= 10 => format!(" ({})", items.join(", ")),
+        n => format!(" ({} and {} more)", items[..10].join(", "), n - 10),
     }
 }
 

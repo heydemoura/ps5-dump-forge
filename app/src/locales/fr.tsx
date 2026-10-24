@@ -60,6 +60,8 @@ const fr: Messages = {
     lz4Backport:
       "Les ressources de ce jeu sont empaquetées en LZ4 et son manifeste LZ4 inclut le backport : dépaquetez-le d’abord dans l’onglet « LZ4 », puis retirez le backport ici.",
     unreadable: "Création impossible : cette source n’a pas pu être lue (voir « Source »).",
+    patchBlocked: "Création impossible : c’est un paquet de correctif, qui ne contient que ce que la mise à jour a changé. Ouvrez-le dans « Modifier » pour en extraire les fichiers.",
+    openInEdit: "Ouvrir dans « Modifier »",
     noContentId: "Création en fpkg impossible : le param.json de ce jeu n’a pas de Content ID, indispensable à un paquet.",
     blocked: (first, more) =>
       `Création impossible : ${first}${more > 0 ? ` (et ${num(more)} de plus, voir « Source »)` : ""}.`,
@@ -193,6 +195,7 @@ const fr: Messages = {
     open: (name) => `Ouvrir ${name}`,
     archiveNote: "Les archives peuvent être parcourues, mais pas modifiées. Pour la modifier, convertissez-la d’abord en dossier ou en image.",
     nasNote: "Les jeux d’un NAS peuvent être parcourus et extraits, mais pas modifiés. Pour le modifier, convertissez-le ou extrayez-le d’abord sur cet appareil.",
+    patchNote: "C’est un paquet de correctif : il ne contient que ce que la mise à jour a changé. Les fichiers qu’il contient en entier sont listés ; ils peuvent être parcourus et extraits, mais pas modifiés.",
     peerNote: "Les jeux d’un autre Forge peuvent être parcourus et extraits, mais pas modifiés. Pour le modifier, convertissez-le ou extrayez-le d’abord sur cet appareil.",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "Ajouter des fichiers",
@@ -513,6 +516,7 @@ const fr: Messages = {
         ? "Recrée cette image avec le runtime de production, puis la remplace."
         : "Remet le runtime de production dans ce dossier.",
     noAmpr: "le jeu n’utilise pas AMPR",
+    isPatch: "c’est un paquet de correctif",
     noEboot: "il n’y a pas d’eboot.bin",
     packedFirst: "la source est empaquetée en LZ4 : dépaquetez-la d’abord",
     damaged: "ses paquets LZ4 sont endommagés",
@@ -535,6 +539,7 @@ const fr: Messages = {
       `${a === "patch" ? "Impossible de patcher" : a === "unpatch" ? "Impossible de retirer le patch" : a === "pack" ? "Impossible d’empaqueter" : "Impossible de dépaqueter"} : ${first}${more > 0 ? ` (et ${num(more)} de plus, voir « Source »)` : ""}.`,
     chooseGame: "Choisissez d’abord un dossier de jeu, une image ou une archive.",
     noAmprGame: "Ce jeu n’utilise pas AMPR, donc LZ4 ne peut pas servir ici.",
+    patch: "C’est un paquet de correctif, donc LZ4 ne peut pas servir ici.",
     additionalContent: "C’est un contenu additionnel (sans eboot.bin), donc LZ4 ne peut pas servir ici.",
     installsRuntime: (a, version) =>
       a === "pack"
@@ -682,6 +687,7 @@ const fr: Messages = {
     emptyText: "Un dossier de jeu PS5 ou une image, un paquet ou une archive de ce jeu.",
     accepted: "Sources acceptées",
     unknownTitle: "Titre inconnu",
+    patch: "Correctif",
     additionalContent: "Contenu additionnel",
     reading: "Lecture de la source",
     unreadable: "Source illisible",

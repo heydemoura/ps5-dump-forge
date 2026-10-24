@@ -253,6 +253,7 @@ export function App() {
           >
             <Convert
               selection={convertSel}
+              onEdit={(path) => handOff("edit", { path, kind: "pkg" })}
               jobs={jobs}
               dispatch={dispatch}
               onCompare={() => {

@@ -64,6 +64,8 @@ const it: Messages = {
     lz4Backport:
       "Gli asset di questo gioco sono impacchettati con LZ4 e il suo manifest LZ4 elenca il backport: prima spacchettalo nella scheda LZ4, poi rimuovi qui il backport.",
     unreadable: "Impossibile creare: non è stato possibile leggere questa sorgente (vedi “Sorgente”).",
+    patchBlocked: "Impossibile creare: è un pacchetto di patch, che contiene solo ciò che l’aggiornamento ha cambiato. Aprilo in “Modifica” per estrarne i file.",
+    openInEdit: "Apri in “Modifica”",
     noContentId: "Impossibile creare come fpkg: il param.json di questo gioco non ha un Content ID, che un pacchetto richiede.",
     blocked: (first, more) =>
       `Impossibile creare: ${first}${more > 0 ? ` (e ${num(more)} ${plural(more, { one: "altro", many: "altri", other: "altri" })}, vedi “Sorgente”)` : ""}.`,
@@ -199,6 +201,7 @@ const it: Messages = {
     open: (name) => `Apri ${name}`,
     archiveNote: "Gli archivi si possono sfogliare, ma non modificare. Per cambiarlo, prima convertilo in una cartella o in un'immagine.",
     nasNote: "I giochi su un NAS si possono sfogliare ed estrarre, ma non modificare. Per modificarlo, convertilo o estrailo prima su questo dispositivo.",
+    patchNote: "È un pacchetto di patch: contiene solo ciò che l’aggiornamento ha cambiato. Sono elencati i file che contiene per intero; si possono sfogliare ed estrarre, ma non modificare.",
     peerNote: "I giochi su un altro Forge si possono sfogliare ed estrarre, ma non modificare. Per modificarlo, convertilo o estrailo prima su questo dispositivo.",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "Aggiungi file",
@@ -515,6 +518,7 @@ const it: Messages = {
         ? "Ricrea questa immagine con il runtime di rilascio, poi la sostituisce."
         : "Rimette il runtime di rilascio in questa cartella.",
     noAmpr: "il gioco non usa AMPR",
+    isPatch: "è un pacchetto di patch",
     noEboot: "manca eboot.bin",
     packedFirst: "la sorgente è impacchettata con LZ4: prima spacchettala",
     damaged: "i suoi pacchetti LZ4 sono danneggiati",
@@ -542,6 +546,7 @@ const it: Messages = {
     },
     chooseGame: "Scegli prima una cartella, un'immagine o un archivio di gioco.",
     noAmprGame: "Questo gioco non usa AMPR, quindi LZ4 non si può usare qui.",
+    patch: "Questo è un pacchetto di patch, quindi LZ4 non si può usare qui.",
     additionalContent: "Questo è contenuto aggiuntivo (senza eboot.bin), quindi LZ4 non si può usare qui.",
     installsRuntime: (a, version) =>
       a === "pack"
@@ -707,6 +712,7 @@ const it: Messages = {
       "Una cartella di gioco PS5 oppure un'immagine, un pacchetto o un archivio che la contiene.",
     accepted: "Sorgenti accettate",
     unknownTitle: "Titolo sconosciuto",
+    patch: "Patch",
     additionalContent: "Contenuto aggiuntivo",
     reading: "Lettura della sorgente",
     unreadable: "Sorgente illeggibile",

@@ -64,7 +64,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `recover`, `journal_path`; `Syncs` hooks (core passes FreeBSD's `sync_retry`). The format crates depend
   on it for types, so they never depend on core.
 - `crates/ps5-dump-forge-fpkg`: streaming `.pkg` reader (`FpkgSource`), CNT entries merged with the
-  inner filesystem.
+  inner filesystem; `lih.rs` reads a patch package (`\x7FLIH`) as the package it patches (Patch packages
+  below).
 - `crates/ps5-dump-forge-lz4`: ampr_emu asset packs: AMPRPAK4 manifest + AMPRDAT3 volume writer and
   reader (unpack view as a `SourceTree`), AMPRIDX3 and AMPRCMD1 (journal) readers, pack rules (`rules.rs`),
   the embedded runtimes (`runtime.rs`). Glue in `core/src/lz4.rs` (open/unpack, trace, index, runtime swap);
@@ -498,6 +499,21 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     param.json category not checked; the LZ4 tab shows a note and no actions. The `.pkg` builder no longer
     refuses it (vendor patch 0023; `content_class` gives 0x21 when param.json has neither
     `applicationCategoryType` nor `applicationDrmType`, else the game classes 0x20/0x26; package.rs notes "packaged as additional content (DLC) or an update").
+  - **Patch packages** (user request, from issue #7): a `.pkg` starting `\x7FLIH` (a debug patch; layout
+    measured on one, PPSA23566 01.006, no public spec) is a 64 KiB header with `{offset, size}` pairs for
+    the patched package's FIH block (`0x20`), its CNT (`0x30`) and a stored zip of PlayGo/relocation tables
+    (`0x40`, unread), and between FIH and CNT the outer blocks the update changed. FIH and CNT describe the
+    whole patched package, so `lih::View` places each stored block by its SHA3 in `imagedigs` and serves
+    that package; any other block is the base game's (`IN_BASE` error). Its layout descriptor carries
+    `0x060000` for the ublock size (accepted for a patch only; vendor patch 0027: no nibble checks then). The tree walk skips
+    directories and inodes the patch doesn't carry, and only files every block of which it carries are
+    listed (the container's always); `details` names what is left out. `Inspection.patch`: an orange
+    **Patch** tag on the source card; Edit browses and extracts only (`edit.patchNote`; edits refused in
+    both modes); Convert, LZ4 and every conversion refuse it (`preflight::PATCH_SOURCE`, Convert's
+    `patchBlocked` with **Open in Edit**; a conversion refuses it before opening it, since opening reads
+    and hashes the whole patch); its root isn't judged (no findings, never additional content); `lz4`
+    facts `None`; the Library leaves it out. Applying a patch
+    to its base needs the base package's own blocks (a dump has none of them): not done.
 - Storage (the tab after LZ4, `app/src/Storage.tsx`; it replaced the Library tab, by user request): one card
   (by user decision, design "D"), its head the view switch (`.seg.view-switch`, `role="radiogroup"`, smaller
   than the screen tabs so it never reads as a second navbar): **[disc] Library** | **[folder] File

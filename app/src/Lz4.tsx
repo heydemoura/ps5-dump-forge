@@ -152,10 +152,22 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const archive = isArchive(kind);
   const net = netOf(source);
   const why = (s: Scenario) =>
-    !source ? t.chooseFirst : !ins ? t.notRead : ins.additional_content ? t.noEboot : scenarioWhy(s, lz4, archive, net);
+    !source
+      ? t.chooseFirst
+      : !ins
+        ? t.notRead
+        : ins.additional_content
+          ? t.noEboot
+          : ins.patch
+            ? t.isPatch
+            : scenarioWhy(s, lz4, archive, net);
   const usable = SCENARIOS.filter((s) => why(s) === null);
   const scenario: Scenario | null =
-    chosen && usable.includes(chosen) ? chosen : ins && !ins.additional_content ? defaultScenario(lz4, archive, net) : null;
+    chosen && usable.includes(chosen)
+      ? chosen
+      : ins && !ins.additional_content && !ins.patch
+        ? defaultScenario(lz4, archive, net)
+        : null;
   const packed = !!lz4?.packed;
   const traceAct: TraceAct = act ?? (lz4?.runtime === "forge_trace" ? "unpatch" : "patch");
   const writableImage = sourceIsImage && WRITABLE_IMAGES.includes(kind as Format);
@@ -482,7 +494,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           ) : ins && usable.length === 0 ? (
             <p className="note-line warn lz4-why">
               <Icon name="warn" />
-              <span>{ins.additional_content ? t.additionalContent : t.noAmprGame}</span>
+              <span>{ins.additional_content ? t.additionalContent : ins.patch ? t.patch : t.noAmprGame}</span>
             </p>
           ) : (
             ins &&

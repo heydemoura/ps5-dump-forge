@@ -711,6 +711,7 @@ function GameHead(props: { path: string; ins: Inspection | null; busy: boolean; 
           {ins && ins.emulators.length > 0 && <span className="tag">{t.emulators}</span>}
           {ins && ins.dlcs.length > 0 && <span className="tag violet">DLC</span>}
           {ins?.additional_content && <span className="tag violet">{t.additionalContent}</span>}
+          {ins?.patch && <span className="tag orange">{t.patch}</span>}
         </div>
         <PathLine path={props.path} />
       </div>

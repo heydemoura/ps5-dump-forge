@@ -56,6 +56,8 @@ const de: Messages = {
     lz4Backport:
       "Die Assets dieses Spiels sind LZ4-gepackt und sein LZ4-Manifest enthält den Backport: Entpacken Sie es zuerst im Tab „LZ4“ und entfernen Sie dann hier den Backport.",
     unreadable: "Erstellen nicht möglich: Diese Quelle konnte nicht gelesen werden (siehe „Quelle“).",
+    patchBlocked: "Erstellen nicht möglich: Das ist ein Patch-Paket, das nur enthält, was das Update geändert hat. Öffne es unter „Bearbeiten“, um seine Dateien zu extrahieren.",
+    openInEdit: "Unter „Bearbeiten“ öffnen",
     noContentId: "Erstellen als fpkg nicht möglich: Die param.json dieses Spiels hat keine Content-ID, die ein Paket braucht.",
     blocked: (first, more) =>
       `Erstellen nicht möglich: ${first}${more > 0 ? ` (und ${num(more)} weitere, siehe „Quelle“)` : ""}.`,
@@ -192,6 +194,7 @@ const de: Messages = {
     open: (name) => `${name} öffnen`,
     archiveNote: "Archive können durchsucht, aber nicht bearbeitet werden. Um es zu ändern, konvertieren Sie es zuerst in einen Ordner oder ein Image.",
     nasNote: "Spiele auf einem NAS lassen sich durchsuchen und extrahieren, aber nicht bearbeiten. Konvertiere oder extrahiere das Spiel zuerst auf dieses Gerät, um es zu ändern.",
+    patchNote: "Das ist ein Patch-Paket: Es enthält nur, was das Update geändert hat. Aufgeführt sind die Dateien, die es vollständig enthält; sie lassen sich durchsuchen und extrahieren, aber nicht bearbeiten.",
     peerNote: "Spiele auf einem anderen Forge lassen sich durchsuchen und extrahieren, aber nicht bearbeiten. Konvertiere oder extrahiere das Spiel zuerst auf dieses Gerät, um es zu ändern.",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "Dateien hinzufügen",
@@ -508,6 +511,7 @@ const de: Messages = {
         ? "Erstellt dieses Image mit der Release-Runtime neu und ersetzt es dann."
         : "Stellt die Release-Runtime in diesem Ordner wieder her.",
     noAmpr: "das Spiel nutzt kein AMPR",
+    isPatch: "es ist ein Patch-Paket",
     noEboot: "es gibt kein eboot.bin",
     packedFirst: "die Quelle ist LZ4-gepackt: zuerst entpacken",
     damaged: "seine LZ4-Pakete sind beschädigt",
@@ -538,6 +542,7 @@ const de: Messages = {
     },
     chooseGame: "Wählen Sie zuerst einen Spielordner, ein Image oder ein Archiv.",
     noAmprGame: "Dieses Spiel nutzt kein AMPR, daher ist LZ4 hier nicht nutzbar.",
+    patch: "Das ist ein Patch-Paket, daher ist LZ4 hier nicht nutzbar.",
     additionalContent: "Das ist ein Zusatzinhalt (ohne eboot.bin), daher ist LZ4 hier nicht nutzbar.",
     installsRuntime: (a, version) =>
       a === "pack"
@@ -699,6 +704,7 @@ const de: Messages = {
     emptyText: "Ein PS5-Spielordner oder ein Image, Paket bzw. Archiv davon.",
     accepted: "Unterstützte Quellen",
     unknownTitle: "Unbekannter Titel",
+    patch: "Patch",
     additionalContent: "Zusatzinhalt",
     reading: "Quelle wird gelesen",
     unreadable: "Quelle nicht lesbar",

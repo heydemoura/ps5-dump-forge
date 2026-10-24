@@ -61,6 +61,7 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
     let mut pfs_findings = Vec::new();
     let mut cnt_id = None;
     let mut forge_version = None;
+    let mut patch = false;
     // A NAS share or a peer: the tree only (the format facts below read a local file).
     let net = crate::net::is_network(path);
     let mut tree = if net {
@@ -68,6 +69,7 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
     } else if kind == Kind::Pkg {
         let pkg =
             FpkgSource::open(path, None).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        patch = pkg.is_patch();
         (details, cnt_id) = pkg_header(path)?;
         details.extend(pkg.details());
         Box::new(JunkFiltered::new(Box::new(pkg)))
@@ -147,6 +149,11 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
         open_source(path, kind, &AtomicBool::new(false))?
     };
     let (mut info, mut findings) = preflight::input(tree.as_mut());
+    // A patch lists only what it carries whole (eboot.bin often not): its root is no game's.
+    if patch {
+        info.additional_content = false;
+        findings.clear();
+    }
     findings.append(&mut pfs_findings);
     if info.content_id.is_none() {
         info.content_id = cnt_id;
@@ -248,7 +255,12 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
     };
     let dlcs = crate::dlc::find(tree.as_mut(), info.content_id.as_deref());
     let cover = cover(tree.as_mut());
-    let lz4 = lz4_facts(tree.as_mut(), &mut findings);
+    // A patch is never converted, so what a conversion would do to its AMPR runtime is moot.
+    let lz4 = if patch {
+        None
+    } else {
+        lz4_facts(tree.as_mut(), &mut findings)
+    };
     let files: Vec<InspectFile> = tree
         .files()
         .iter()
@@ -288,6 +300,7 @@ pub(crate) fn inspect(path: &Path, password: Option<&str>) -> anyhow::Result<Ins
             && ps5_dump_forge_patch::journal_path(path)
                 .symlink_metadata()
                 .is_ok(),
+        patch,
     })
 }
 
@@ -786,9 +799,17 @@ fn base64(bytes: &[u8]) -> String {
 
 /// The finalized-image header and the content id from the CNT header. Two bounded reads.
 fn pkg_header(path: &Path) -> anyhow::Result<(Vec<String>, Option<String>)> {
-    const CNT_MAGIC: &[u8; 4] = b"\x7FCNT";
     let mut file = PkgFile::open(path).with_context(|| format!("{}", path.display()))?;
     let head = file.read_at(0, fih::HEADER_LEN)?;
+    // A patch package: its own header says where the patched package's container is.
+    if head.starts_with(b"\x7FLIH") {
+        let le = |at: usize| u64::from_le_bytes(head[at..at + 8].try_into().unwrap());
+        let (fih_at, cnt_at) = (le(0x20), le(0x30));
+        let details = vec![format!(
+            "LIH: patch, FIH at {fih_at:#x}, CNT at {cnt_at:#x}"
+        )];
+        return Ok((details, content_id(&file.read_at(cnt_at, 0x64)?)));
+    }
     let fih = fih::parse(&head)?;
     let mut details = vec![format!(
         "FIH: {} image, format {}, PFS at {:#x} ({} bytes), CNT at {:#x}",
@@ -799,17 +820,25 @@ fn pkg_header(path: &Path) -> anyhow::Result<(Vec<String>, Option<String>)> {
         fih.cnt_offset
     )];
     let cnt = file.read_at(fih.cnt_offset, 0x64)?;
-    if &cnt[..4] != CNT_MAGIC {
+    let id = content_id(&cnt);
+    if id.is_none() && &cnt[..4] != b"\x7FCNT" {
         details.push("no CNT container at the declared offset".to_string());
-        return Ok((details, None));
+    }
+    Ok((details, id))
+}
+
+/// The content id in a container's first 0x64 bytes; `None` without the `\x7FCNT` magic or a
+/// printable id.
+fn content_id(cnt: &[u8]) -> Option<String> {
+    if &cnt[..4] != b"\x7FCNT" {
+        return None;
     }
     let id: String = cnt[0x40..0x64]
         .iter()
         .take_while(|&&b| b != 0)
         .map(|&b| b as char)
         .collect();
-    let id = (!id.is_empty() && id.chars().all(|c| c.is_ascii_graphic())).then_some(id);
-    Ok((details, id))
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_graphic())).then_some(id)
 }
 
 /// `[GAME_NAME]-[TITLE_ID]` from the source, brackets included, e.g.

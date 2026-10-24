@@ -61,6 +61,8 @@ const en = {
     lz4Backport:
       "This game's assets are LZ4 packed and its LZ4 manifest lists the backport: unpack it in the LZ4 tab first, then remove the backport here.",
     unreadable: "Can't build: this source couldn't be read (see Source).",
+    patchBlocked: "Can't build: this is a patch package, which holds only what the update changed. Open it in Edit to extract its files.",
+    openInEdit: "Open in Edit",
     noContentId: "Can't build as fpkg: this game's param.json has no content ID, which a package needs.",
     blocked: (first: string, more: number) =>
       `Can't build: ${first}${more > 0 ? ` (and ${num(more)} more, see Source)` : ""}.`,
@@ -201,6 +203,7 @@ const en = {
     open: (name: string) => `Open ${name}`,
     archiveNote: "Archives can be browsed but not edited. Convert it to a folder or an image first to change it.",
     nasNote: "Games on a NAS can be browsed and extracted but not edited. Convert it or extract it to this device first to change it.",
+    patchNote: "This is a patch package: it holds only what the update changed. The files it carries whole are listed; they can be browsed and extracted but not edited.",
     peerNote: "Games on another Forge can be browsed and extracted but not edited. Convert it or extract it to this device first to change it.",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "Add files",
@@ -525,6 +528,7 @@ const en = {
         ? "Rebuilds this image with the release runtime, then replaces it."
         : "Puts the release runtime back in this folder.",
     noAmpr: "the game doesn't use AMPR",
+    isPatch: "it's a patch package",
     noEboot: "there's no eboot.bin",
     packedFirst: "the source is LZ4 packed: unpack it first",
     damaged: "its LZ4 packs are damaged",
@@ -547,6 +551,7 @@ const en = {
       `Can't ${a}: ${first}${more > 0 ? ` (and ${num(more)} more, see Source)` : ""}.`,
     chooseGame: "Choose a game folder, image or archive first.",
     noAmprGame: "This game doesn't use AMPR, so LZ4 can't be used here.",
+    patch: "This is a patch package, so LZ4 can't be used here.",
     additionalContent: "This is additional content (no eboot.bin), so LZ4 can't be used here.",
     installsRuntime: (a: TraceAct | "pack", version: string) =>
       a === "pack"
@@ -692,6 +697,7 @@ const en = {
     emptyText: "A PS5 game folder or an image, package or archive of one.",
     accepted: "Accepted sources",
     unknownTitle: "Unknown title",
+    patch: "Patch",
     additionalContent: "Additional content",
     reading: "Reading the source",
     unreadable: "Unreadable source",
