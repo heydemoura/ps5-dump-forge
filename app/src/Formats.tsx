@@ -1,13 +1,12 @@
-// About: what the app is and (http build) how to reach the page at its own address, then
-// one comparison table of the targets and the plain folder (console speeds
+// About: the features, then one comparison of the targets and the plain folder (console speeds
 // from ShadowMountPlus 1.7's README and release notes; the LZ4 packed folder's from its
-// upstream authors, labelled as theirs), the LZ4 credits and the language selector. Nothing
-// here talks to Rust.
+// upstream authors, labelled as theirs), then the credits; the language selector sits in the
+// About card's head. Nothing here talks to Rust.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-import { APP_NAME, serverAddress, type Format } from "./api";
-import { AddressQr, CardHead, FormatPill, Modal, openOverlay, Prose } from "./common";
+import { APP_NAME, type Format } from "./api";
+import { CardHead, FormatPill, Prose } from "./common";
 import { getChoice, type Lang, LANGS, setLang, useMessages } from "./i18n";
 import { Icon, type IconName } from "./icons";
 
@@ -16,7 +15,15 @@ export type Rating = "good" | "ok" | "bad";
 /** Each rating's icon: the colour is never the only cue (its spoken prefix is a message). */
 const RATING_ICON: Record<Rating, IconName> = { good: "check", ok: "minus", bad: "x" };
 
-/** The table's rows in order, with each cell's rating; the words are messages (`rows`). */
+/** The features' icons by position (`formats.features`, the same nine in every language):
+ * Convert, Transfer, Edit / Streamed, Archives, USB and SD cards / LZ4, Storage, Safe. */
+const FEATURE_ICONS: IconName[] = [
+  "convert", "move", "pencil",
+  "stream", "archive", "sdcard",
+  "bolt", "library", "lock",
+];
+
+/** The comparison's rows in order, with each cell's rating; the words are messages (`rows`). */
 const ROWS: { kind: Format; rates: [Rating, Rating] }[] = [
   { kind: "pkg", rates: ["good", "good"] },
   { kind: "lz4", rates: ["good", "good"] },
@@ -28,113 +35,88 @@ const ROWS: { kind: Format; rates: [Rating, Rating] }[] = [
 ];
 
 export type Row = { tagline: string; cells: [string, string] };
-
-/** The header's address button: the big QR code and where to open the page, in a dialog (only
- * the http build has an address to show). */
-export function openConnect() {
-  openOverlay((close) => <Connect close={close} />);
-}
-
-function Connect({ close }: { close: () => void }) {
-  const t = useMessages().formats;
-  const address = serverAddress();
-  return (
-    <Modal close={close} className="modal card connect-modal" labelledBy="connect-title">
-      <div className="modal-head">
-        <span className="head-icon">
-          <Icon name="info" />
-        </span>
-        <h2 id="connect-title">{t.howToConnect}</h2>
-      </div>
-      <div className="connect">
-        <AddressQr size={240} />
-        <p className="connect-text">{t.connectText(<span className="path url">http://{address}</span>)}</p>
-      </div>
-      <div className="row end">
-        <button type="button" autoFocus onClick={close}>
-          {t.close}
-        </button>
-      </div>
-    </Modal>
-  );
-}
+/** The nine features (name, a few words), in `FEATURE_ICONS`' order: tsc holds every language to nine. */
+type Feature = [string, string];
+export type Features = [Feature, Feature, Feature, Feature, Feature, Feature, Feature, Feature, Feature];
 
 export function Formats() {
   const t = useMessages().formats;
-  const address = serverAddress();
   return (
     <div className="screen">
-      {/* The PS5 page: About and How to connect side by side; the app, with no address, About only. */}
-      <div className={address ? "about-row" : undefined}>
-        <section className="card" aria-labelledby="f-about">
-          <CardHead icon="info" title={t.about} id="f-about">
-            <LanguagePicker />
-          </CardHead>
-          <p className="about-text">{t.aboutText}</p>
-          <ul className="about-text features">
-            {t.features.map(([name, what]) => (
-              <li key={name}>
-                <b>{name}</b> <Prose text={what} />
-              </li>
-            ))}
-          </ul>
-        </section>
-        {address && (
-          <section className="card about-connect" aria-labelledby="f-connect">
-            <CardHead title={t.connectAny} id="f-connect" />
-            <AddressQr size={200} />
-            <p className="about-text">{t.useAddress(<span className="path url">http://{address}</span>)}</p>
-          </section>
-        )}
-      </div>
+      <section className="card" aria-labelledby="f-about">
+        <CardHead icon="info" title={t.about} id="f-about">
+          <LanguagePicker />
+        </CardHead>
+        {/* Three sets of three, told apart by order and a wider gap only (styles.css). */}
+        <ul className="feat-tiles">
+          {t.features.map(([name, what], i) => (
+            <li className="feat-tile" key={name}>
+              <span className="feat-icon">
+                <Icon name={FEATURE_ICONS[i]} />
+              </span>
+              <div>
+                <b>{name}</b>{" "}
+                <span>
+                  <Prose text={what} />
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
 
-      <section className="card formats-card" aria-labelledby="f-title">
+      <section className="card" aria-labelledby="f-title">
         <CardHead icon="table" title={t.compare} id="f-title" />
-        <div className="table-wrap" tabIndex={0} role="region" aria-label={t.compareLabel}>
-          <table className="compare">
-            <thead>
-              <tr>
-                <th scope="col">{t.format}</th>
-                {t.columns.map((c) => (
-                  <th scope="col" key={c}>
-                    {c}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {ROWS.map((r) => (
-                <tr key={r.kind}>
-                  <th scope="row">
-                    <FormatPill kind={r.kind} />
-                    <span className="tagline">{t.rows[r.kind].tagline}</span>
-                  </th>
-                  {r.rates.map((rate, i) => (
-                    <td key={i}>
-                      <span className={`chip ${rate}`}>
-                        <Icon name={RATING_ICON[rate]} />
-                        <span>
-                          <span className="visually-hidden">{t.rating[rate]}: </span>
-                          {t.rows[r.kind].cells[i]}
-                        </span>
-                      </span>
-                    </td>
-                  ))}
-                </tr>
+        {/* A table by its roles, laid out as rows edged in each format's hue. The heading row is
+            read always and shown from 760px; under it each rating shows its own label, which
+            screen readers skip (the column header names it). */}
+        <div className="fmt-table" role="table" aria-label={t.compareLabel}>
+          <div className="fmt-row fmt-head" role="row">
+            <span role="columnheader">{t.format}</span>
+            {t.columns.map((c) => (
+              <span role="columnheader" key={c}>
+                {c}
+              </span>
+            ))}
+          </div>
+          {ROWS.map((r) => (
+            <div className={`fmt-row fmt-${r.kind}`} role="row" key={r.kind}>
+              <div className="fmt-what" role="rowheader">
+                <FormatPill kind={r.kind} />
+                <span className="tagline">{t.rows[r.kind].tagline}</span>
+              </div>
+              {r.rates.map((rate, i) => (
+                <div className="fmt-rate" role="cell" key={i}>
+                  <span className="fmt-q" aria-hidden="true">
+                    {t.columns[i]}
+                  </span>
+                  <span className={`chip ${rate}`}>
+                    <Icon name={RATING_ICON[rate]} />
+                    <span>
+                      <span className="visually-hidden">{t.rating[rate]}: </span>
+                      {t.rows[r.kind].cells[i]}
+                    </span>
+                  </span>
+                </div>
               ))}
-            </tbody>
-          </table>
+            </div>
+          ))}
         </div>
-        <div className="credits">
-          <p className="muted">{t.upstream(APP_NAME)}</p>
-          <p className="muted">
-            {t.bundled} <span className="path">https://github.com/drakmor/ampr_emu</span>
-          </p>
-          <p className="muted">
-            {t.lazy} <span className="path">https://github.com/Nazky/Lazy_AMPR</span>
-          </p>
-          <p className="muted">{t.unrar}</p>
-        </div>
+      </section>
+
+      <section className="card compact" aria-labelledby="f-credits">
+        <CardHead icon="heart" title={t.credits} id="f-credits" />
+        {/* URLs as text to copy: neither the app nor the console page navigates away. */}
+        <ul className="credit-list">
+          <li>{t.upstream(APP_NAME)}</li>
+          <li>
+            {t.bundled} <span className="path" dir="ltr">https://github.com/drakmor/ampr_emu</span>
+          </li>
+          <li>
+            {t.lazy} <span className="path" dir="ltr">https://github.com/Nazky/Lazy_AMPR</span>
+          </li>
+          <li>{t.unrar}</li>
+        </ul>
       </section>
     </div>
   );
@@ -149,10 +131,15 @@ function LanguagePicker() {
   const t = useMessages().formats;
   // Local too: the store switches only once the language's file has loaded.
   const [choice, setChoice] = useState<Choice>(getChoice() ?? "system");
+  const latest = useRef(choice);
   const choose = (c: Choice) => {
+    latest.current = c;
     setChoice(c);
-    // A language file that can't load leaves the language as it was: so does the picker.
-    setLang(c === "system" ? null : c).catch(() => setChoice(getChoice() ?? "system"));
+    // A language file that can't load leaves the language as it was: so does the picker, unless
+    // a later choice has replaced this one meanwhile.
+    setLang(c === "system" ? null : c).catch(() => {
+      if (latest.current === c) setChoice(getChoice() ?? "system");
+    });
   };
   return (
     <label className="head-lang">

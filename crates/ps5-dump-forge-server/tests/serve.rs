@@ -177,6 +177,13 @@ fn session_and_headers() {
         svg.starts_with("<svg") && svg.contains("fill=\"#000\" d=\"M"),
         "{svg}"
     );
+    // `?connect=1`: the Connect tab's address (a longer text, so another code).
+    let (status, _, connect_svg) = exchange(
+        srv.addr,
+        b"GET /api/qr?connect=1 HTTP/1.1\r\nHost: x\r\n\r\n",
+    );
+    assert_eq!(status, 200);
+    assert!(connect_svg.starts_with("<svg") && connect_svg != svg);
     assert!(v.get("paired").is_none());
     assert!(head.contains("Cache-Control: no-store"), "{head}");
     for gone in [

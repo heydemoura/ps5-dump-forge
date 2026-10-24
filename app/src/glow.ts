@@ -1,6 +1,7 @@
 // The game card's glow, tinted after its cover: the cover's one or two most saturated hues,
 // dimmed until the card's brightest point keeps every text on it >= 4.5:1. Computed once per
-// cover (a 24x24 canvas) and cached for the session.
+// cover (a 24x24 canvas) and cached: the last 16 covers (a key is the whole data: URL, up to
+// ~700 KB each, so the cache can't keep every cover of a long session on the PS5).
 
 import { useEffect, useReducer, useRef, type CSSProperties } from "react";
 
@@ -14,6 +15,13 @@ const SIZE = 24;
 const BINS = 12; // hue buckets, 30 degrees each
 
 const cache = new Map<string, CSSProperties | null>();
+const CACHED = 16;
+
+function remember(cover: string, g: CSSProperties | null) {
+  cache.set(cover, g);
+  // A Map keeps insertion order: the first key is the oldest.
+  if (cache.size > CACHED) cache.delete(cache.keys().next().value as string);
+}
 
 export interface Glow {
   /** `--glow-1` / `--glow-2`; undefined: the brand colours. */
@@ -30,17 +38,19 @@ export interface Glow {
 export function useCoverGlow(cover: string | null | undefined): Glow {
   const [, bump] = useReducer((n: number) => n + 1, 0);
   const last = useRef<CSSProperties | undefined>(undefined);
+  // `hit` in the deps: a cover dropped from the cache is read again on the next render.
+  const hit = !!cover && cache.has(cover);
   useEffect(() => {
-    if (!cover || cache.has(cover)) return;
+    if (!cover || hit) return;
     let live = true;
     void coverGlow(cover).then((g) => {
-      cache.set(cover, g);
+      remember(cover, g);
       if (live) bump();
     });
     return () => {
       live = false;
     };
-  }, [cover]);
+  }, [cover, hit]);
   if (cover === undefined || (cover !== null && !cache.has(cover))) {
     return { style: last.current, ready: false };
   }

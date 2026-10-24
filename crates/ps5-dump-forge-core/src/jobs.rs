@@ -1,5 +1,7 @@
-//! Worker threads: one per job, one heavy job running at a time, the rest waiting in FIFO
-//! order. Each job has its own cancel flag.
+//! Worker threads: one per job, one heavy job and one transfer running at a time, each kind's
+//! others waiting in FIFO order. Each job has its own cancel flag. A job that would use what an
+//! unfinished job of the other kind uses (or what another device is writing here) is refused
+//! when it starts.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -15,6 +17,7 @@ use anyhow::bail;
 use crate::{ConvertRequest, Event, JobId};
 
 type Emit = Box<dyn Fn(Event) + Send + Sync>;
+type Busy = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 
 pub(crate) struct Inner {
     emit: Emit,
@@ -22,12 +25,16 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     /// Signalled when the running job finishes or a waiting one is cancelled.
     turn: Condvar,
+    /// Whether another device is writing a path here ([`crate::Jobs::set_external_busy`]).
+    busy: Mutex<Option<Busy>>,
 }
 
 #[derive(Default)]
 struct State {
-    /// Waiting and running jobs; the front one runs.
+    /// Waiting and running heavy jobs; the front one runs.
     queue: VecDeque<JobId>,
+    /// Waiting and running transfers; the front one runs.
+    transfers: VecDeque<JobId>,
     cancels: HashMap<JobId, Arc<AtomicBool>>,
     /// What each unfinished job reads or writes, which [`Inner::delete_path`] leaves alone.
     paths: HashMap<JobId, Vec<PathBuf>>,
@@ -41,7 +48,28 @@ impl Inner {
             next: AtomicU64::new(1),
             state: Mutex::new(State::default()),
             turn: Condvar::new(),
+            busy: Mutex::new(None),
         })
+    }
+
+    pub(crate) fn set_external_busy(&self, busy: Busy) {
+        *self.busy.lock().unwrap_or_else(|e| e.into_inner()) = Some(busy);
+    }
+
+    /// Asked without the job table locked: Connect's hook takes locks of its own.
+    fn externally_busy(&self, path: &Path) -> bool {
+        let busy = self.busy.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        busy.is_some_and(|busy| busy(path))
+    }
+
+    fn refuse_external_write(&self, path: &Path) -> Result<(), crate::DeleteError> {
+        if self.externally_busy(path) {
+            return Err(crate::DeleteError::Busy(format!(
+                "{} is being written by another device",
+                path.display()
+            )));
+        }
+        Ok(())
     }
 
     /// A panicking job must not wedge every later one, so a poisoned lock is still used.
@@ -65,6 +93,7 @@ impl Inner {
         path: &Path,
         protected: &[PathBuf],
     ) -> Result<(), crate::DeleteError> {
+        self.refuse_external_write(path)?;
         let state = self.state();
         crate::delete::delete(path, protected, state.paths.values().flatten())
     }
@@ -76,6 +105,8 @@ impl Inner {
         to: &Path,
         protected: &[PathBuf],
     ) -> Result<(), crate::DeleteError> {
+        self.refuse_external_write(from)?;
+        self.refuse_external_write(to)?;
         let state = self.state();
         crate::delete::move_(from, to, protected, state.paths.values().flatten())
     }
@@ -137,19 +168,40 @@ impl Inner {
 pub(crate) fn start(inner: &Arc<Inner>, request: ConvertRequest) -> JobId {
     let job = inner.next.fetch_add(1, Ordering::Relaxed);
     let cancel = Arc::new(AtomicBool::new(false));
+    let transfer = !request.transfer.is_empty();
+    let paths = used_paths(job, &request);
+    // Asked unlocked: the hook may take locks of its own (Connect's).
+    // ponytail: check, then admit; a remote write that starts between the two isn't caught
+    // (no shared reservation with Connect).
+    let written = paths.iter().find(|p| inner.externally_busy(p)).cloned();
     let mut state = inner.state();
     state.threads.retain(|t| !t.is_finished());
-    state.queue.push_back(job);
+    let refusal = match written {
+        Some(p) => Some(format!(
+            "{} is being written by another device",
+            p.display()
+        )),
+        None => conflict(&state, transfer, &paths),
+    };
+    if refusal.is_none() {
+        let queue = if transfer {
+            &mut state.transfers
+        } else {
+            &mut state.queue
+        };
+        queue.push_back(job);
+        state.paths.insert(job, paths);
+    }
     state.cancels.insert(job, cancel.clone());
-    state.paths.insert(job, used_paths(job, &request));
     let worker = inner.clone();
     let spawned = std::thread::Builder::new()
         .name(format!("forge-job-{job}"))
-        .spawn(move || worker.run(job, &request, cancel));
+        .spawn(move || worker.run(job, &request, cancel, refusal));
     match spawned {
         Ok(handle) => state.threads.push(handle),
         Err(e) => {
             state.queue.retain(|j| *j != job);
+            state.transfers.retain(|j| *j != job);
             state.cancels.remove(&job);
             state.paths.remove(&job);
             drop(state);
@@ -162,19 +214,52 @@ pub(crate) fn start(inner: &Arc<Inner>, request: ConvertRequest) -> JobId {
     job
 }
 
+/// Why a job (a transfer or not) using `paths` can't start: one of them is at, in or above
+/// what an unfinished job of the other kind uses (jobs of one kind run one after another).
+fn conflict(state: &State, transfer: bool, paths: &[PathBuf]) -> Option<String> {
+    let others: Vec<&PathBuf> = (state.paths.iter())
+        .filter(|(job, _)| state.transfers.contains(job) != transfer)
+        .flat_map(|(_, p)| p)
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    let used = paths
+        .iter()
+        .find(|p| crate::delete::in_use(p, others.iter().copied()))?;
+    Some(format!(
+        "{} is in use by another job: start this one once it ends",
+        used.display()
+    ))
+}
+
 /// The paths a job reads or writes: source, output (the source, in place), its `.part`s
 /// (`finalize::part_path`, and `Part::replace`'s `.orig.part`), an archive's later parts,
 /// profile and traces (with a lone journal's index); in place, the undo journal; for an edit,
 /// every file or folder it adds.
 fn used_paths(job: JobId, req: &ConvertRequest) -> Vec<PathBuf> {
+    // A transfer: its sources and where each lands (its temporary files are inside those).
+    if !req.transfer.is_empty() {
+        let mut paths = req.transfer.clone();
+        paths.extend(crate::transfer::targets(req));
+        return paths;
+    }
     let out = if req.lz4_in_place || !req.edits.is_empty() {
         &req.source
     } else {
         &req.output
     };
-    let part = crate::finalize::part_path(out, job);
-    let orig = part.with_extension("orig.part");
-    let mut paths = vec![req.source.clone(), out.clone(), part, orig];
+    let mut paths = vec![req.source.clone()];
+    if req.extract.is_empty() {
+        let part = crate::finalize::part_path(out, job);
+        let orig = part.with_extension("orig.part");
+        paths.extend([out.clone(), part, orig]);
+    } else {
+        // An Extract makes only `<output>/<each selection's last part>` (its temporary files
+        // inside or beside them), not the whole output folder.
+        let name = |p: &String| p.rsplit('/').next().unwrap_or(p).to_string();
+        paths.extend(req.extract.iter().map(|p| req.output.join(name(p))));
+    }
     // An archive's later parts, found by name beside it (the source is the first part).
     if crate::archive::is_archive(&req.source) {
         let folder = req.source.parent().filter(|p| !p.as_os_str().is_empty());
@@ -208,12 +293,23 @@ fn used_paths(job: JobId, req: &ConvertRequest) -> Vec<PathBuf> {
 }
 
 impl Inner {
-    fn run(&self, job: JobId, request: &ConvertRequest, shared: Arc<AtomicBool>) {
+    fn run(
+        &self,
+        job: JobId,
+        request: &ConvertRequest,
+        shared: Arc<AtomicBool>,
+        refusal: Option<String>,
+    ) {
         let cancel: &AtomicBool = &shared;
         // Dropped last: Done goes out before the next job is woken, so no event of the next
         // job can arrive before this job's Done. A panicking `emit` still dequeues.
         let _leave = Leave(self, job);
-        let result = self.wait_turn(job, cancel).and_then(|()| {
+        let transfer = !request.transfer.is_empty();
+        let admitted = match refusal {
+            Some(why) => Err(anyhow::anyhow!("preflight failed:\n  {why}")),
+            None => self.wait_turn(job, transfer, cancel),
+        };
+        let result = admitted.and_then(|()| {
             #[cfg(target_env = "ps5")]
             let _awake = PowerTick::start();
             let mut ctx = Ctx::new(job, &self.emit, cancel);
@@ -230,27 +326,44 @@ impl Inner {
                 }
             }
         });
-        let result = match result.map_err(|e| format!("{e:#}")) {
-            Ok(report) => Ok(report),
+        let result = result.map_err(|e| {
+            let msg = format!("{e:#}");
             // An edit's "cancelled; …" says what stays changed (a folder edit has no rollback).
-            Err(e) if cancel.load(Ordering::Relaxed) && !e.starts_with("cancelled; ") => {
-                Err("cancelled".to_string())
+            if !cancel.load(Ordering::Relaxed) || msg.starts_with("cancelled; ") {
+                msg
+            } else if e
+                .root_cause()
+                .to_string()
+                .to_lowercase()
+                .trim_end_matches('.')
+                .ends_with("cancelled")
+            {
+                // The cancel itself ("cancelled", "exFAT image cancelled", "Cancelled.").
+                "cancelled".to_string()
+            } else {
+                // Cancelled, but something else failed too (a restore, a replace): say what.
+                format!("cancelled; {msg}")
             }
-            Err(e) => Err(e),
-        };
+        });
         // Its files are settled (published or cleaned up): they may be deleted from now on.
         self.state().paths.remove(&job);
         (self.emit)(Event::Done { job, result });
     }
 
-    /// Blocks until `job` is at the front of the queue, or fails if it is cancelled first.
-    fn wait_turn(&self, job: JobId, cancel: &AtomicBool) -> anyhow::Result<()> {
+    /// Blocks until `job` is at the front of its queue (the transfers' or the heavy jobs'), or
+    /// fails if it is cancelled first.
+    fn wait_turn(&self, job: JobId, transfer: bool, cancel: &AtomicBool) -> anyhow::Result<()> {
         let mut state = self.state();
         loop {
             if cancel.load(Ordering::Relaxed) {
                 bail!("cancelled");
             }
-            if state.queue.front() == Some(&job) {
+            let queue = if transfer {
+                &state.transfers
+            } else {
+                &state.queue
+            };
+            if queue.front() == Some(&job) {
                 return Ok(());
             }
             state = self.turn.wait(state).unwrap_or_else(|e| e.into_inner());
@@ -266,6 +379,7 @@ impl Drop for Leave<'_> {
         {
             let mut state = self.0.state();
             state.queue.retain(|j| *j != self.1);
+            state.transfers.retain(|j| *j != self.1);
             state.cancels.remove(&self.1);
             state.paths.remove(&self.1);
         }
@@ -502,12 +616,14 @@ mod tests {
         }];
         let inner = Inner::new(Box::new(|_| {}));
         inner.state().paths.insert(1, used_paths(1, &req));
-        // The image, its journal (not there yet), an added folder, inside it and above it.
+        // The image, its journal (not there yet), an added folder, inside it (new paths too),
+        // above it.
         for used in [
             dir.join("game.exfat"),
             dir.join("game.exfat.forge-undo"),
             host.join("pack"),
             host.join("pack/../pack"),
+            host.join("pack/new/file"),
             host.clone(),
             dir.clone(),
         ] {
@@ -516,11 +632,25 @@ mod tests {
         for free in [
             dir.join("other.exfat"),
             dir.join("missing"),
+            host.join("new"),
             dir.join("out"),
         ] {
             assert!(!inner.uses(&free), "{}", free.display());
         }
         inner.state().paths.clear();
         assert!(!inner.uses(&dir.join("game.exfat")));
+
+        // An Extract: what it makes in the output folder, not the folder's other entries.
+        req.edits.clear();
+        req.extract = vec!["data/movies".into(), "eboot.bin".into()];
+        inner.state().paths.insert(2, used_paths(2, &req));
+        for used in [
+            dir.join("out/movies/a.mp4"),
+            dir.join("out/eboot.bin"),
+            dir.join("out"),
+        ] {
+            assert!(inner.uses(&used), "{}", used.display());
+        }
+        assert!(!inner.uses(&dir.join("out/other")));
     }
 }

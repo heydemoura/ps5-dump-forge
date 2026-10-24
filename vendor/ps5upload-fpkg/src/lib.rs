@@ -117,6 +117,30 @@ pub(crate) fn format_err<T>(msg: impl Into<String>) -> Result<T> {
 pub trait ReadSeek: Read + Seek + Send {}
 impl<T: Read + Seek + Send> ReadSeek for T {}
 
+/// Where [`build::write_package`] writes a package: a local file, or anything that reads back
+/// what was written to it (a file on another device). The builder seeks before every read and
+/// write, so a clone may keep a position of its own.
+pub trait PkgOut: Read + std::io::Write + Seek + Send {
+    /// Another handle on the same output: the in-place Kraken spool, the self-check's reader.
+    fn try_clone_out(&self) -> std::io::Result<Box<dyn PkgOut>>;
+    /// Its length now.
+    fn out_len(&self) -> std::io::Result<u64>;
+    /// Makes what was written durable.
+    fn sync_out(&self) -> std::io::Result<()>;
+}
+
+impl PkgOut for std::fs::File {
+    fn try_clone_out(&self) -> std::io::Result<Box<dyn PkgOut>> {
+        Ok(Box::new(self.try_clone()?))
+    }
+    fn out_len(&self) -> std::io::Result<u64> {
+        Ok(self.metadata()?.len())
+    }
+    fn sync_out(&self) -> std::io::Result<()> {
+        self.sync_all()
+    }
+}
+
 /// A package or image, read by offset.
 pub struct PkgFile {
     file: Box<dyn ReadSeek>,

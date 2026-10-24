@@ -15,6 +15,8 @@ use ps5_dump_forge_core::{
     ArchivePassword, ConvertRequest, EditCheck, Event, Format, HostTree, Inspection, JobId, Jobs,
     LibraryScan, Listing, Lz4Patch, folder_refusal,
 };
+use ps5_dump_forge_server::connect::{self, Connect};
+use ps5_dump_forge_server::payload;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 /// Emitted to the UI when a close or quit was held back because jobs are running.
@@ -36,6 +38,9 @@ struct AppState {
     quitting: Mutex<bool>,
     /// What each finished job published: the only paths `reveal` will show.
     outputs: Arc<Mutex<HashMap<JobId, PathBuf>>>,
+    /// Connect's service (FLINK 9120 + discovery on UDP 8094; no HTTP listener), started at
+    /// setup and shut down at exit; `Err` says why it isn't running.
+    connect: Result<Arc<Connect>, String>,
 }
 
 impl AppState {
@@ -44,7 +49,7 @@ impl AppState {
             let app = app.clone();
             let running = self.running.clone();
             let outputs = self.outputs.clone();
-            Jobs::new(move |event| {
+            let jobs = Jobs::new(move |event| {
                 let name = match &event {
                     Event::Stages { .. } => "job://stages",
                     Event::Progress { .. } => "job://progress",
@@ -58,7 +63,12 @@ impl AppState {
                     }
                 };
                 let _ = app.emit(name, &event);
-            })
+            });
+            // No job starts on what a peer is writing here.
+            if let Ok(connect) = &self.connect {
+                jobs.set_external_busy(connect.writing_hook());
+            }
+            jobs
         })
     }
 
@@ -303,7 +313,11 @@ async fn move_path(app: AppHandle, from: PathBuf, to: PathBuf) -> Result<(), Str
 #[tauri::command]
 async fn list_dir(app: AppHandle, path: PathBuf) -> Result<Listing, String> {
     blocking(app, move |_, _| {
-        if let Some(why) = folder_refusal(&path) {
+        // A NAS share (`smb://`, the NAS source picker) or a peer (`flink://`) has no local
+        // folder to refuse.
+        if !ps5_dump_forge_core::net::is_network(&path)
+            && let Some(why) = folder_refusal(&path)
+        {
             return Err(why);
         }
         ps5_dump_forge_core::list_dir(&path).map_err(|e| format!("{}: {e}", path.display()))
@@ -437,8 +451,7 @@ fn open_url(url: &str) -> Result<(), String> {
 }
 
 // macOS (`open -R`) and Windows (Explorer's `/select,`) select the file; Linux has no portable
-// way to, so `xdg-open` opens its folder. ponytail: the Windows and Linux branches are untested
-// on real machines.
+// way to, so `xdg-open` opens its folder.
 fn reveal_path(path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let mut cmd = {
@@ -822,6 +835,146 @@ mod webview2 {
     }
 }
 
+// ---- Connect: the same calls as the server's `/api/connect/*` (snake_case arguments) ------
+
+/// Connect's service, or why it isn't running.
+fn connect(state: &AppState) -> Result<&Connect, String> {
+    state.connect.as_deref().map_err(Clone::clone)
+}
+
+/// Runs `f` on Connect off the main thread; an error is `connect::error_text` (a refusal's
+/// code, which the UI translates, else the text).
+async fn connect_call<T: Send + 'static>(
+    app: AppHandle,
+    f: impl FnOnce(&Connect) -> std::io::Result<T> + Send + 'static,
+) -> Result<T, String> {
+    blocking(app, move |_, state| {
+        f(connect(state)?).map_err(|e| connect::error_text(&e))
+    })
+    .await
+}
+
+/// This device, saved devices and the last search.
+#[tauri::command]
+async fn connect_state(app: AppHandle) -> Result<serde_json::Value, String> {
+    connect_call(app, |c| Ok(c.snapshot())).await
+}
+
+/// Asks the device at `address` to pair; `connect_state`'s `outgoing` follows it.
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_pair(app: AppHandle, address: String) -> Result<(), String> {
+    connect_call(app, move |c| c.pair(&address)).await
+}
+
+/// What answers at `address` (Forge, SMB, NFS or FTP): Pair by address decides by it.
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_probe(
+    app: AppHandle,
+    address: String,
+) -> Result<ps5_dump_forge_server::probe::Probe, String> {
+    connect_call(app, move |c| c.probe(&address)).await
+}
+
+/// Install on PS5: elfldr at `address` (port 9021 by default) downloads v`version`'s PS5 ELF
+/// from its GitHub release and starts it.
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_payload_install(
+    app: AppHandle,
+    address: String,
+    version: String,
+) -> Result<(), String> {
+    blocking(app, move |_, _| {
+        let addr = payload::address(&address).map_err(|e| e.to_string())?;
+        payload::load_release(addr, &version).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Send a payload: the ELF file at `path` streamed to elfldr at `address`; the bytes sent.
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_payload_send(
+    app: AppHandle,
+    address: String,
+    path: PathBuf,
+) -> Result<u64, String> {
+    blocking(app, move |_, _| {
+        let addr = payload::address(&address).map_err(|e| e.to_string())?;
+        payload::send(addr, &path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn connect_pair_cancel(app: AppHandle) -> Result<(), String> {
+    connect_call(app, |c| {
+        c.pair_cancel();
+        Ok(())
+    })
+    .await
+}
+
+/// This device's user answers another device's pairing request `id` (only here, in its own
+/// window: the app has no HTTP listener).
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_approve(app: AppHandle, id: String, allow: bool) -> Result<bool, String> {
+    connect_call(app, move |c| Ok(c.approve(&id, allow))).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_forget(app: AppHandle, key_id: String) -> Result<bool, String> {
+    connect_call(app, move |c| c.forget(&key_id)).await
+}
+
+#[tauri::command]
+async fn connect_discover_start(app: AppHandle) -> Result<(), String> {
+    connect_call(app, |c| {
+        c.discover_start();
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn connect_discover_stop(app: AppHandle) -> Result<(), String> {
+    connect_call(app, |c| {
+        c.discover_stop();
+        Ok(())
+    })
+    .await
+}
+
+/// Saves a NAS (one entry per host + port, updated in place; `id`: the entry an edit
+/// changes); its id. `user`/`password` omitted keep the saved ones.
+// Tauri takes the request's fields as the command's arguments.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_nas_save(
+    app: AppHandle,
+    id: Option<String>,
+    name: String,
+    host: String,
+    port: Option<u16>,
+    protocol: Option<ps5_dump_forge_server::nas::Protocol>,
+    user: Option<String>,
+    password: Option<String>,
+) -> Result<String, String> {
+    let req = ps5_dump_forge_server::nas::NasSave {
+        id,
+        name,
+        host,
+        port,
+        protocol,
+        user,
+        password,
+    };
+    connect_call(app, move |c| c.nas_save(&req)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_nas_forget(app: AppHandle, id: String) -> Result<bool, String> {
+    connect_call(app, move |c| c.nas_forget(&id)).await
+}
+
 fn main() {
     #[cfg(windows)]
     webview2::prepare();
@@ -841,11 +994,34 @@ fn main() {
                 .ok()
                 .and_then(|exe| catch_unwind(|| ps5_dump_forge_core::DataDirs::resolve(&exe)).ok())
                 .map(|d| d.webview());
+            let connect = match app.path().app_data_dir() {
+                Ok(dir) => {
+                    let dir = dir.join("connect");
+                    let port = std::env::var("FORGE_FLINK_PORT")
+                        .ok()
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(connect::PORT);
+                    Connect::start(&dir, port)
+                        .map(Arc::new)
+                        .map_err(|e| format!("Connect couldn't start: {}: {e}", dir.display()))
+                }
+                Err(e) => Err(format!("Connect couldn't start: no app data folder: {e}")),
+            };
+            // A peer's writes never land in what this device's unfinished jobs use (none
+            // before the first job creates the runner).
+            if let Ok(connect) = &connect {
+                let handle = app.handle().clone();
+                connect.set_busy(Arc::new(move |path| {
+                    (handle.try_state::<AppState>())
+                        .is_some_and(|s| s.jobs.get().is_some_and(|jobs| jobs.uses(path)))
+                }));
+            }
             app.manage(AppState {
                 jobs: OnceLock::new(),
                 running: Arc::default(),
                 quitting: Mutex::new(false),
                 outputs: Arc::default(),
+                connect,
             });
 
             // The drag and drop handler stays on (Tauri 2's default): the Edit tab hears
@@ -901,6 +1077,18 @@ fn main() {
             update_target,
             open_update,
             quit_app,
+            connect_state,
+            connect_pair,
+            connect_probe,
+            connect_pair_cancel,
+            connect_approve,
+            connect_forget,
+            connect_discover_start,
+            connect_discover_stop,
+            connect_nas_save,
+            connect_nas_forget,
+            connect_payload_install,
+            connect_payload_send,
         ])
         .build(tauri::generate_context!());
     #[cfg(windows)]
@@ -922,6 +1110,9 @@ fn main() {
         RunEvent::Exit => {
             if let Some(state) = app.try_state::<AppState>() {
                 state.stop_jobs();
+                if let Ok(c) = &state.connect {
+                    c.shutdown();
+                }
             }
         }
         _ => {}

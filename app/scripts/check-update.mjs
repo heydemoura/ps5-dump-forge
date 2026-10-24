@@ -96,6 +96,22 @@ assert.equal(await U.checkUpdate(ps5, slowBody), null, "a body that never ends")
 globalThis.setTimeout = realSetTimeout;
 console.log("checkUpdate: GET without cookies or cache; HTTP errors, junk, offline and timeouts are null");
 
+// ---- ps5Release: this version's release when it carries the ELF, else the latest's ----
+const releases = (byUrl) => async (url) => {
+  const body = byUrl[url];
+  return body === undefined ? new Response("{}", { status: 404 }) : new Response(JSON.stringify(body));
+};
+const tag = U.tagUrl("0.3.1");
+assert.equal(tag, "https://api.github.com/repos/quer3q/ps5-dump-forge/releases/tags/v0.3.1");
+const elfOf = (v) => rel(`v${v}`, [U.assetName(v, "ps5.elf")]);
+assert.equal(await U.ps5Release("0.3.1", releases({ [tag]: elfOf("0.3.1"), [U.LATEST_URL]: elfOf("0.4.0") })), "0.3.1", "own version");
+assert.equal(await U.ps5Release("0.3.1", releases({ [U.LATEST_URL]: elfOf("0.4.0") })), "0.4.0", "unreleased: latest");
+assert.equal(await U.ps5Release("0.3.1", releases({ [tag]: rel("v0.3.1", []), [U.LATEST_URL]: elfOf("0.4.0") })), "0.4.0", "own release without the ELF");
+assert.equal(await U.ps5Release("0.3.1-pre4", async (url) => { assert.equal(url, U.LATEST_URL); return new Response(JSON.stringify(elfOf("0.3.0"))); }), "0.3.0", "a prerelease asks for the latest only");
+assert.equal(await U.ps5Release("0.3.1", releases({ [U.LATEST_URL]: rel("v0.4.0", ["x"]) })), null, "no ELF anywhere");
+assert.equal(await U.ps5Release("0.3.1", async () => { throw new TypeError("offline"); }), null, "offline");
+console.log("ps5Release: own version's ELF, else the latest release's; none or offline is null");
+
 // ---- http-client's selfUpdate: a fake server and clock ----
 const c = await import("../src/http-client.ts");
 function server({ updateStatus = 200, updateError, startAfter = 3, dropCall = false, downFor = 0, sessionMs = 0 }) {

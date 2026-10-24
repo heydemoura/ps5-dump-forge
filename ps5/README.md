@@ -67,6 +67,7 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug, GET /pro
   ~40 calls the PS5 renumbers or lacks, an `fcntl` `F_DUPFD_CLOEXEC` fallback, `getrandom`/`getentropy` over
   `arc4random_buf`, `pthread_setname_np`. Keep them byte-identical; our changes go in `entry.c`/`linker.sh`.
 - The ELF: PIE `DYN`, `NEEDED` exactly `libkernel_web.sprx`, `libSceLibcInternal.sprx`,
+  `libSceNet.sprx` (the SDK libc's `getaddrinfo`: NAS and Add a device host names),
   `libSceSystemService.sprx` (rest-mode tick) and `libSceAppInstUtil.sprx` (the tile), no `PT_INTERP`, no TLS.
   `scripts/release-ps5.sh` checks that, the entry point, that every `app/dist-http` file is embedded byte for
   byte, no debug routes, the version marker (`VERSION_MARKER` in the server) against the workspace version,
@@ -75,7 +76,8 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug, GET /pro
 ## Web server (`crates/ps5-dump-forge-server`, CLI `serve`)
 
 - Std only: hand-rolled HTTP/1.1, one request per connection, no server push; the page polls `GET
-  /api/jobs` (every 1 s while a job is unfinished, else 5 s). Binds `0.0.0.0:8095` (`--port`). Roots for the
+  /api/jobs` (every 1 s while a job is unfinished, else 5 s; unanswered, 2 s doubling to 10 s while the
+  header says "Offline, retrying…"). Binds `0.0.0.0:8095` (`--port`). Roots for the
   file browser: on the PS5 `/data`, `/mnt/shadowmnt` (while it exists: ShadowMountPlus's mount points, so a
   mounted image can be picked as a folder), `/mnt/usb0..7`, `/mnt/ext0..1` (a drive counts only while
   `statfs` names it as its own mount point with blocks: those folders exist with nothing plugged in;
@@ -97,12 +99,12 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug, GET /pro
 
 | Route | Body | Returns |
 |---|---|---|
-| `GET /api/session` | | `{app: "ps5-dump-forge", version, platform: "ps5"\|"host", instance, stopping, self_copy, separator: "/"\|"\\", url, handover: true, debug}` (`url`: the page header's host:port; `handover`: takes `quit {"if_idle": true}`; `debug`: true only in a `FORGE_DEBUG_API` PS5 build, the page then shows **Input probe**) |
-| `GET /api/qr` | | `url` as a QR code, `image/svg+xml` (the header's and About's); 404 when the server can't tell its IP |
+| `GET /api/session` | | `{app: "ps5-dump-forge", version, platform: "ps5"\|"host", instance, stopping, self_copy, separator: "/"\|"\\", url, connect_url, handover: true, debug}` (`url`: the server's host:port, the Connect tab's IP; `connect_url`: `<url>/#connect`; `handover`: takes `quit {"if_idle": true}`; `debug`: true only in a `FORGE_DEBUG_API` PS5 build, the page then shows **Input probe**) |
+| `GET /api/qr` | | `url` as a QR code, `image/svg+xml`; `?connect=1`: `connect_url` (the Connect tab's, web build); 404 when the server can't tell its IP |
 | `POST /api/inspect` | `{path}` | `Inspection` |
 | `POST /api/default_output` | `{source, format, dir}` | path |
 | `POST /api/generated_output` | `{source, format, dir, taken}` | path |
-| `POST /api/start_job` | `{request: ConvertRequest}` | job id (`lz4_in_place: true` replaces an `.exfat`/`.ffpkg` source; `output` ignored; non-empty `edits` is an edit job of the source, in place or with `edit_rebuild`, `output` and `format` ignored; non-empty `extract` copies those game paths into the folder `output`, `format` `folder`) |
+| `POST /api/start_job` | `{request: ConvertRequest}` | job id (`lz4_in_place: true` replaces an `.exfat`/`.ffpkg` source; `output` ignored; non-empty `edits` is an edit job of the source, in place or with `edit_rebuild`, `output` and `format` ignored; non-empty `extract` copies those game paths into the folder `output`, `format` `folder`; non-empty `transfer` is a transfer job: those files and folders (local, `flink://` or `smb://`) into the folder `output` (local or `flink://`), `source` and `format` ignored, run in the transfer slot beside the one heavy job; a job touching an unfinished job's paths of the other kind ends at once "in use by another job") |
 | `POST /api/cancel_job` | `{id}` | `null` (idempotent) |
 | `POST /api/stale_parts` | `{dirs}` | `string[]`, without running jobs' parts (an in-place or edit job's beside its source) or a staging folder an upload or unfinished job uses |
 | `POST /api/edit_check` | `{request: ConvertRequest}` | `EditCheck {in_place, rebuild, needed_inside, free_inside, rebuild_needs, free_beside}`: why each mode can't apply (empty = it can) and the sizes (bytes, `null` where they don't apply); reads only, except that a leftover undo journal no job uses is restored first (after the ShadowMount+ check) and the U1 probe writes and removes its file. The source and every `Add.from` must be a folder or regular file (else 400); counts as an inspection (the 2-read cap), 409 once stopping |
@@ -121,9 +123,21 @@ FORGE_DEBUG_API=1 ps5/build.sh   # bring-up only: adds POST /api/debug, GET /pro
 | `POST /api/quit` | `{}` | `{}`, then cancels every job, waits for cleanup and exits |
 | `POST /api/quit` | `{"if_idle": true}` | `{}`, then exits as above, only when idle: 409 "Dump Forge is busy: …" while a job is queued or running, a `lz4_traces` download streams or a patch, delete or move holds admission past 1 s, 409 "Dump Forge is stopping" (the handover's request) |
 | `GET /api/elfldr` | — | `{up}`: elfldr accepts a connection (1 s; connect and close, nothing sent); 404 on a computer |
+| `GET /api/connect/state` | | `{device: {key_id, name, platform, port, listen_error, ip}, devices, nas, discovery, pending, outgoing}`: this device (`ip` the default route's address or `null`), the pairing requests waiting for this device's user (`pending: [{id, name, platform, ip, check}]`), this device's own last request (`outgoing: {id, address, check, state, error, device}`, `state` asking, waiting, paired, denied, timed_out, busy, already_paired, too_many_attempts, failed or cancelled), the saved devices (≤ 9, `online`, `address`, `last_seen`), the saved NAS devices (`[{id, name, host, port, protocol, user, has_password, online, last_online}]`, `protocol` `smb`, `ftp` or `nfs`, never the password; `last_online` unix seconds since start, 0 = none) and the last Discover. Transfers are jobs (`start_job` `transfer`, `GET /api/jobs`) |
+| `POST /api/connect/pair` | `{address}` | `null`: asks that device (`ip`, `ip:port` or `host[:port]`) to pair; its user allows or denies it there within 60 s, `state.outgoing` follows it (a new request cancels a running one); 400 not a local address or a bad one |
+| `POST /api/connect/pair_cancel` | `{}` | `null`: cancels this device's waiting request |
+| `POST /api/connect/approve` | `{id, allow}` | `bool`: this device's user answers a waiting request (`pending[].id`); `false` once it no longer waits. As open as every route here (by user decision) |
+| `POST /api/connect/forget` | `{key_id}` | `bool`: the pairing removed on this side |
+| `POST /api/connect/discover_start` / `discover_stop` | `{}` | `null`: a 10 s search (Forge UDP 8094, mDNS, WS-Discovery) starts or stops; results in `state.discovery` |
+| `POST /api/connect/nas_save` | `{id?, name, host, port?, user?, password?, protocol?}` | `{id}`: a NAS saved (`protocol` `smb`, `ftp` or `nfs`: `smb` when none is named, an edit naming none keeps its own; `host` `host[:port]`, port default 445, 21 or 2049 by protocol; an NFS entry keeps no user or password; one entry per host + port, updated in place; `id` an edit's entry, moved to the new address; `user`/`password` omitted keep the saved ones, `""` clears them); 400 a bad address or one another entry has |
+| `POST /api/connect/nas_forget` | `{id}` | `bool`: the saved NAS (and its password) removed |
+| `POST /api/connect/upload?dir=&name=` | raw bytes (`Content-Length` required) | `{path}`: a phone's file as `<dir>/<name>` via a `.part` and a no-replace rename; 411 no length, 400 not a plain name, 404 `dir` not a folder, 409 taken or stopping |
+| `POST /api/connect/upload?dir=&name=&id=&offset=&size=` | one chunk's raw bytes | the web UI's parallel upload (File Transfer's **Upload to this device**, off in the console's own browser; 8 MiB chunks, 4 requests at once from a browser, where FLINK between devices uses 8 lanes; 35 MB/s to the PS5 where one request does 28): chunks of one `id` (1–32 letters/digits) land at their offsets in one `.part`; `{done: false}`, or `{path, done: true}` from the chunk that completes `size` bytes; `&cancel=1` (empty body) drops the upload and its part; a failed chunk drops the whole upload |
+| `GET /api/connect/download?path=` | | File Transfer's **Download from this device**: the file, `application/octet-stream`, `Content-Disposition: attachment`; 404 missing, 400 not a file |
 | `POST /api/self_update` | `{version}` (`X.Y.Z`, newer than this one) | `{}` once elfldr has answered (downloaded and started it); this server keeps serving until the new copy takes over when idle (below); 404 on a computer, 400 bad or not newer, 409 stopping, a job queued or running, a patch or delete holding admission past 1 s, or another update in flight, 502 elfldr refused or failed, 503 elfldr not listening |
 
-`lz4_traces` (LZ4 → Trace → Download traces): `source` (a folder or any image Forge reads; percent-encoded, else
+`lz4_traces` (LZ4 → Trace → Download traces; the button is left out in the console's own browser, which
+can't save it): `source` (a folder or any image Forge reads; percent-encoded, else
 400); streams `ampr_commands.bin` and `ampr_emu.index` from the source's root (core's `lz4_traces`: a
 folder's files opened directly, an image through its reader) as one zip at the archive root: STORED
 entries, flag bit 3 (CRC-32 computed while streaming, then a data descriptor), central directory, end
@@ -154,6 +168,47 @@ missing), not inside `from`, on the same drive (400 "can't move between drives")
 in or above an unfinished job's paths (409); an image with an undo journal beside it is refused (400: open
 it in Edit first). Same locks as `delete_path`.
 
+Connect (`connect.rs`, crate `ps5-dump-forge-flink`, `discovery.rs`, `mdns.rs`, `nas.rs`): started by `Server::new` when
+`Options.connect_dir` is set (`serve` sets it: `/data/dumpforge/connect/` on the PS5, else the OS data
+dir + `ps5-dump-forge/connect`; it holds `node.key`, `peers.json` and `nas.json`, all 0600); a failed start answers every
+`/api/connect/*` with 503 and the reason, a failed call 400 `{error}`. Ports: **TCP 9120** FLINK
+(`FORGE_FLINK_PORT` overrides; a control connection per paired device + up to 8 data lanes each for reads and writes) and **UDP 8094**
+Forge discovery (passive responder always on; replies name, platform, FLINK port and key id, never the
+code); Discover also sends mDNS to 224.0.0.251:5353 and a WS-Discovery Probe to 239.255.255.250:3702 (UDP
+multicast, answered to its ephemeral port), then one HTTP POST (WS-Transfer Get, 2 s timeouts, 64 KiB) to each
+Windows PC's port 5357 for its name. A saved NAS is online while a TCP connect to its port succeeds (each probe round). Pairing is local
+networks only (`connect::is_local`: private and link-local IPv4, 100.64/10, loopback, IPv6 ULA and
+link-local; a non-local `dial` is refused, a non-local inbound peer dropped; a NAS is not limited). FLINK frames are
+MACed with BLAKE3 but **not encrypted** (plaintext on the LAN). A paired peer reaches this console's `/`
+(the share root; a computer's is `/` too, a Windows PC's the drive holding its home folder). On the PS5 the name is the console's nickname
+(`sceRegMgrGetStr` 0x02050000). Pairing is approved on the device asked (FLINK v2: X25519 with a commitment, a six-digit check number both screens show). Session adds
+`connect_url` (`<url>/#connect`, the Connect tab's QR). A paired peer reads and writes this device's files
+as `flink://<key_id>/<path>` (`connect_fs.rs`; FLINK RPCs `stat`, `fs_list`, `read_open`/`read_close`,
+`mkdir`, `create`, `sync`, `close`, `rename`, `remove`, `free`, the bytes on data lanes in 8 MiB BLAKE3-checked
+chunks; a small file (≤ 8 MiB) is one lane round trip: `read {path}` answers its bytes with the stat after
+the read, `put {tmp, path}` creates, writes, syncs and renames it): confined to the share root, links never followed, writes only to files that session created
+(exclusive, then a no-replace rename; unrenamed ones removed when it ends), PS5 syncs as a local output
+(a retried sync fails; ponytail: no destination probe per peer write); a path at or inside `/mnt/shadowmnt`
+or one an unfinished job here uses is refused ("in use by a job on <name>"), and a
+job here refuses a path a peer is writing. Transfer jobs hold back `quit {"if_idle": true}` and a takeover
+like any job; ponytail: a peer's reads and writes served here don't, they are cut at shutdown.
+
+Saved NAS devices are game sources and outputs over SMB, FTP or NFS (core `remote.rs` through `smb.rs`,
+`ftp.rs`, `nfs.rs`; crates `ps5-dump-forge-smb`, `-ftp`, `-nfs`): `nas.json`'s SMB logins go to
+`core::smb::set_credentials`, its FTP ones to `core::ftp::set_logins`, at start and on every
+`nas_save`/`nas_forget`; NFS has no login (AUTH_SYS uid 0; NFSv4.1, else NFSv3). Paths:
+`smb://<host>[:<port>]/<share>/<path>`, `ftp://<host>[:<port>]/<path>`, `nfs://<host>[:<port>]/<server path>`
+(the port spelled only when not 445, 21 or 2049). They work in `inspect`, `library_cover`, `list_dir`
+(`smb://<host>` lists the server's disk shares, `nfs://<host>` what is above its exports; `parent` is the
+server from a share root, `null` at the server) and `start_job`: Convert, Extract and transfers read from them
+and write into them (an image as a `.part` read back to verify and renamed no-replace, a folder file by file, an
+fpkg streamed with nothing stored on this device's disk; FTP needs the `REST` rewrite probe for an fpkg or LZ4
+packs in a folder). Folders and `.exfat`/`.ffpkg`/`.ffpfs`/`.ffpfsc` there open in place; a `.pkg` or an
+archive is refused ("copy it to this device first"). Edits, `host_tree`, LZ4 patch/in place/traces,
+`delete_path` and `move_path` refuse a NAS path. `list_dir {path: null}` roots stay local; the page's picker adds each
+saved NAS's root (`smb://`, `ftp://` or `nfs://<host>[:<port>]`), for outputs too, or, while a paired
+device or saved NAS is online, gives each online one a tab beside this device's.
+
 `instance` is random per start, so the page notices a restart and rebuilds its job list. `list_dir` (core's `list_dir`) with
 `null` lists the roots; directories first, then by name; non-UTF-8 names left out; symlinks resolved
 (`link: true`, `path` the target; a dangling one as itself).
@@ -163,14 +218,15 @@ admission first (`start_job` → 409); on a computer SIGINT/SIGTERM does the sam
 Forge is taken over when that copy is idle, else "Can't close Dump Forge - some jobs are still running."
 and exit 0 (see [Updates](#updates)); by anything else, exits 1.
 
-- The URL (session `url`, the page header, the host's start notice, the PS5 serve log) uses the address of
+- The URL (session `url`, the Connect tab, the host's start notice, the PS5 serve log) uses the address of
   a UDP `connect` toward the internet (no packet sent). On the PS5 the start notification only says
   "Dump Forge is launched", in the console's language (`notice.rs`).
 - The web bundle: `npm run build:http` (Vite mode `http`) writes `app/dist-http` with `transport-http.tsx`
   in place of Tauri (`Picker.tsx` for the dialogs, `http-client.ts`'s poller for the events); `build.rs`
   embeds it, or a placeholder page with a warning (`FORGE_REQUIRE_WEB=1`, set by `ps5/build.sh`, makes that
   an error). Paths are the server's (`/`), never the viewer's. Plain-node checks: `app/scripts/`
-  (`check-paths`, `check-poller`, `check-launcher`, `smoke`).
+  (`check-paths`, `check-poller`, `check-launcher`, `check-update`, `check-upload`, `check-explorer`,
+  `check-shoulders`, `check-peers`, `smoke`).
 
 ## Tile, self copy and launch on open
 
@@ -200,7 +256,8 @@ and exit 0 (see [Updates](#updates)); by anything else, exits 1.
   http://127.0.0.1:9021/data/dumpforge/ps5-dump-forge.elf?args=serve&pipe=0` (then the old
   `/data/ps5-dump-forge/ps5-dump-forge.elf`, the link or a folder a failed migration left, then the USB
   copies) and
-  waits up to 30 s. A newer payload's manifest swaps the page in and reloads once, never mid-dialog.
+  waits up to 30 s. A newer payload's manifest swaps the page in and reloads once, never mid-launch, while a dialog is open
+  or a field has focus.
 
 ## Updates
 
@@ -213,7 +270,7 @@ and exit 0 (see [Updates](#updates)); by anything else, exits 1.
   swap in the new page. One minute in all from the request, download included; then the toast says to stop
   Dump Forge and open it again (a downloaded version that couldn't take over, such as v0.1.1 without
   handover, has saved itself: the tile starts it).
-- `self_update` (`elfldr_load` in `api.rs`): admission checked like `lz4_patch` and released before
+- `self_update` (`payload::load_release`, shared with the desktop app's Install on PS5): admission checked like `lz4_patch` and released before
   elfldr is asked (the new copy's `if_idle` needs it), one at a time (an `AtomicBool`). It never stops this
   server itself. Connects to `Options.elfldr` (`127.0.0.1:9021`) within 3 s and sends exactly
   `GET /?uri=<percent-encoded U> HTTP/1.1`, `Host`, `Connection: close`, with U =
@@ -234,8 +291,7 @@ and exit 0 (see [Updates](#updates)); by anything else, exits 1.
   close Dump Forge - some jobs are still running." and exits 0; no answer or a port still taken after 30 s
   notifies "Dump Forge v<new> could not take over from v<old>" and fails. Both notices are in the
   console's language (`notice.rs`).
-- Open risks (unverified on hardware; `ponytail:` in `api.rs`): elfldr's sceHttp has to follow GitHub's
-  302 to its asset host and GitHub to ignore the extra query; elfldr ignores certificate errors and nothing
+- Known limits (`ponytail:` in `api.rs`): elfldr ignores certificate errors and nothing
   checks a signature (whoever can intercept the console's traffic can serve an ELF); it reads the body once
   without checking its length, so a short read could start a cut ELF.
 

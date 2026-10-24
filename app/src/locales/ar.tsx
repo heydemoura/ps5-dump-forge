@@ -33,17 +33,24 @@ const FILES_GEN: Noun = { ...FILES, two: "ملفين" };
 const CHECKS: Noun = { one: "اختبار واحد", two: "اختباران", few: "اختبارات", many: "اختبارًا", other: "اختبار" };
 const FOLDERS: Noun = { one: "مجلد واحد", two: "مجلدان", few: "مجلدات", many: "مجلدًا", other: "مجلد" };
 const ITEMS: Noun = { one: "عنصر واحد", two: "عنصران", few: "عناصر", many: "عنصرًا", other: "عنصر" };
+const DEVICES: Noun = { one: "جهاز واحد", two: "جهازان", few: "أجهزة", many: "جهازًا", other: "جهاز" };
+/** After منذ ("ago"), in the genitive. */
+const MINUTES: Noun = { one: "دقيقة", two: "دقيقتين", few: "دقائق", many: "دقيقةً", other: "دقيقة" };
+const HOURS: Noun = { one: "ساعة", two: "ساعتين", few: "ساعات", many: "ساعةً", other: "ساعة" };
+const DAYS: Noun = { one: "يوم", two: "يومين", few: "أيام", many: "يومًا", other: "يوم" };
 const RESULTS: Noun = { one: "نتيجة واحدة", two: "نتيجتان", few: "نتائج", many: "نتيجةً", other: "نتيجة" };
 
 const ar: Messages = {
   // App.tsx
   app: {
-    address: (url) => `العنوان: ${iso(url)}. عرض طريقة الاتصال مع رمز QR`,
     screens: "الأقسام",
     convert: "تحويل",
     active: (n) => `، النشطة: ${num(n)}`,
     edit: "تحرير",
     storage: "التخزين",
+    connect: "الاتصال",
+    disconnected: "غير متصل",
+    connected: (n: number) => `متصل (${count(n, DEVICES)})`,
     about: "حول",
     prevTab: "التبويب السابق (⁦L2⁩)",
     nextTab: "التبويب التالي (⁦R2⁩)",
@@ -71,6 +78,7 @@ const ar: Messages = {
     stopAndQuit: (n) => (n === 1 ? "إيقاف المهمة والخروج" : "إيقاف المهام والخروج"),
     stoppingJobs: "جارٍ إيقاف المهام والتنظيف…",
     stoppingForge: "جارٍ إيقاف Dump Forge…",
+    quitting: "جارٍ إنهاء PS5 Dump Forge…",
     couldntStop: "تعذّر إيقاف Dump Forge",
     close: "إغلاق",
     tryAgain: "إعادة المحاولة",
@@ -159,28 +167,20 @@ const ar: Messages = {
     },
     features: [
       ["تحويل", "بين المجلد و ffpkg و exfat و ffpfs و ffpfsc و fpkg، في الاتجاهين."],
+      ["نقل", "إرسال الملفات وتحويل الألعاب بين PS5 وأجهزة الكمبيوتر و NAS عبر SMB أو FTP أو NFS."],
       ["تحرير", "ملفات اللعبة كأنها مجلد، واطّلع على غلافها والبرنامج الثابت والباكبورت والمحتوى الإضافي ومشكلات أسماء الملفات قبل البناء."],
-      ["حذف", "لعبة من القرص بعد تأكيدك."],
-      ["LZ4", "تتبّع لعبة تستخدم AMPR ثم حزم أصولها مع إصلاح ذكي (تجريبي)."],
       ["بالتدفّق", "من أي مصدر إلى أي وجهة: بلا نسخة مؤقتة، حتى للصورة داخل ffpfsc أو اللعبة داخل أرشيف."],
       ["الأرشيفات", "ملف ⁦.zip⁩ أو ⁦.7z⁩ أو ⁦.rar⁩ يضم لعبة يُتصفَّح ويُحوَّل ويُحزَم كأنه مجلد."],
+      ["USB وبطاقات SD", "يُكتب على الذاكرات والبطاقات المهيأة بنظام exFAT أو FAT32."],
+      ["LZ4", "تتبّع لعبة تستخدم AMPR ثم حزم أصولها مع إصلاح ذكي (تجريبي)."],
       ["التخزين", "مكتبة لألعابك ومستكشف الملفات لإعادة التسمية والنقل والحذف."],
       ["آمن", "لا تتغير لعبتك أبدًا ما لم تطلب ذلك؛ تُتجاوز الملفات غير المفيدة وتُبلَّغ أسماء الملفات السيئة مسبقًا."],
-      ["USB وبطاقات SD", "يُكتب على الذاكرات والبطاقات المهيأة بنظام exFAT أو FAT32."],
-      ["في مكانه أو بإعادة بناء", "تدخل التعديلات مباشرة في الصورة إن كانت تتسع، وإلا في صورة جديدة تحل محلها بعد التحقق."],
     ],
-    howToConnect: "طريقة الاتصال",
-    connectText: (url) => (
-      <>افتح {url} في متصفح على أي جهاز في شبكتك المحلية، أو امسح هذا الرمز.</>
-    ),
-    close: "إغلاق",
     about: "حول",
-    aboutText: "تحوّل هذه الأداة اللعبة من أي صيغة إلى أي صيغة أخرى، على أي منصة، بما فيها PS5.",
-    connectAny: "طريقة الاتصال من أي جهاز",
-    useAddress: (url) => <>استخدم {url} أو امسح هذا الرمز.</>,
     compare: "مقارنة الصيغ",
     compareLabel: "مقارنة الصيغ",
     format: "الصيغة",
+    credits: "شكر وتقدير",
     upstream: (app) =>
       `أرقام المطوّرين الأصليين: ما يذكره مؤلفو ampr_emu و Lazy_AMPR، ولم يقِسها ${app}؛ وهي تختلف من لعبة إلى أخرى. ampr_emu 0.4.2.1 إصدار تجريبي من المطوّرين الأصليين؛ مشكلة معروفة: تتعطّل بعض الألعاب عند الحفظ.`,
     bundled: "تعمل المجلدات المحزومة بـ LZ4 على ampr_emu 0.4.2.1 من تطوير drakmor (⁦GPL-3.0⁩)، مضمّنًا دون تعديل. الشيفرة المصدرية:",
@@ -193,7 +193,7 @@ const ar: Messages = {
   // Edit.tsx
   edit: {
     details: "التفاصيل",
-    deleting: "جارٍ حذف المصدر…",
+    deleting: "جارٍ حذف المصدر",
     delete: "حذف المصدر",
     deleted: "تم الحذف:",
     filter: "تصفية حسب المسار",
@@ -223,7 +223,7 @@ const ar: Messages = {
     howTitle: "كيف يعمل هذا",
     /** The empty state's paragraphs. */
     how: (app) => [
-      "افتح **مجلد لعبة** أو **صورتها**، ثم عدّلها كما تعدّل مجلدًا على ذاكرة USB: **أضف الملفات واستبدلها** (اسحبها إلى هنا أو استخدم «إضافة»)، **وأعد التسمية، واحذف**، وأنشئ مجلدات.",
+      "افتح **مجلد لعبة** أو **صورتها**، ثم عدّلها كما تعدّل مجلدًا على ذاكرة USB: **أضف الملفات واستبدلها** (اسحبها إلى هنا أو استخدم «إضافة»)، **وأعد التسمية واحذف**.",
       `لا يتغير شيء **حتى تضغط «تطبيق»**: تتراكم تغييراتك هنا، ثم يكتبها ${app} مباشرةً في الصورة أو المجلد دفعة واحدة ويتحقق من النتيجة. **هذا ليس قرصًا مُركّبًا**: ${app} يسجّل تغييراتك ويطبّقها بنفسه.`,
       `حين تتسع الصورة للتغييرات **تُكتب فيها مباشرةً**؛ وحين لا تتسع (لا مساحة متبقية بداخلها، أو صيغة لا تقبلها)، يبني ${app} بجانبها صورة جديدة بتغييراتك ويضعها مكانها بعد التأكد من سلامتها. وفي الحالتين، إن فشل شيء تبقى الصورة كما كانت.`,
       "يمكن تصفّح الأرشيفات لكن لا يمكن تحريرها.",
@@ -234,31 +234,35 @@ const ar: Messages = {
     upTip: "الصعود مجلدًا واحدًا",
     name: "الاسم",
     size: "الحجم",
+    actions: "الإجراءات",
     items: (n) => count(n, ITEMS),
     inFolder: (dirs, files) => `${count(dirs, FOLDERS)}، ${count(files, FILES)}`,
     matches: (n) => count(n, RESULTS),
     emptyFolder: "هذا المجلد فارغ.",
     open: (name) => `فتح ${iso(name)}`,
     archiveNote: "يمكن تصفّح الأرشيفات لكن لا يمكن تحريرها. حوّله أولًا إلى مجلد أو صورة لتعديله.",
+    nasNote: "يمكن تصفح الألعاب الموجودة على NAS واستخراجها، لكن لا يمكن تعديلها. لتغييرها، حوّلها أو استخرجها إلى هذا الجهاز أولًا.",
+    peerNote: "يمكن تصفح الألعاب الموجودة على Forge آخر واستخراجها، لكن لا يمكن تعديلها. لتغييرها، حوّلها أو استخرجها إلى هذا الجهاز أولًا.",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "إضافة ملفات",
     addFolder: "إضافة مجلد",
     pickAddFiles: "اختر ملفات لإضافتها",
     pickAddFolder: "اختر مجلدًا لإضافته",
-    nameLabel: "الاسم",
+    peerRoot: "لا يمكن إضافة جهاز كامل: اختر مجلدًا داخله.",
     renameItem: (name) => `إعادة تسمية ${iso(name)}`,
     removeItem: (name) => `حذف ${iso(name)}`,
     renameTip: "إعادة التسمية (F2)",
     removeTip: "حذف (مفتاح Delete)",
+    removeTipMac: "حذف (fn+Delete)",
     /** Extract: copy files or folders out of the source into a folder chosen on this machine. */
-    extract: "استخراج",
     extractItem: (name: string) => `استخراج ${iso(name)}`,
     extractTip: "نسخه إلى مجلد تختاره",
     extractFolder: "استخراج المجلد",
     extractFolderTip: "نسخ المجلد المعروض إلى مجلد تختاره",
     extractGameTip: "نسخ اللعبة كاملة إلى مجلد تختاره",
+    extractNotOnDisk: "هذا المجلد موجود في تغييراتك المعلّقة فقط: طبّقها لاستخراجه.",
     pickExtract: "اختر مكان الاستخراج",
-    extractPending: "يستخرج الملفات كما هي الآن، دون تغييراتك المعلّقة",
+    extractPending: "يستخرج الملفات كما هي الآن، دون تغييراتك المعلّقة.",
     nameEmpty: "اكتب اسمًا.",
     nameBad: `لا يمكن أن يحتوي الاسم على ${iso("/")} أو ${iso("\\")}، ولا أن يكون ${iso(".")} أو ${iso("..")}`,
     nameTaken: (name) => `${iso(name)} موجود هنا بالفعل.`,
@@ -268,6 +272,7 @@ const ar: Messages = {
     wasAt: (path) => `كان في ${iso(path)}`,
     sizeLater: "أكثر مما أمكن سرده: يُقرأ الباقي عند تطبيق التغييرات",
     dropInto: (folder) => `أفلِت للإضافة إلى ${iso(folder)}`,
+    droppedGone: (path) => `${iso(path)}: الملف المسحوب لم يعد موجودًا`,
     pending: (n) =>
       plural(n, {
         zero: `${num(n)} تغييرات لم تُطبَّق بعد`,
@@ -278,7 +283,7 @@ const ar: Messages = {
         other: `${num(n)} تغيير لم يُطبَّق بعد`,
       }),
     undo: "تراجع",
-    undoTip: "التراجع عن آخر تغيير",
+    undoTip: "التراجع عن آخر إجراء بكل تغييراته",
     discard: "تجاهل الكل",
     discardTip: "نسيان كل تغيير لم يُطبَّق بعد",
     discardTitle: (n) =>
@@ -325,6 +330,7 @@ const ar: Messages = {
     /** How the changes go in (the pending bar), from core's check before Apply. */
     modeLabel: "طريقة التطبيق",
     checking: "جارٍ التحقق من طريقة تطبيق التغييرات",
+    nothingToChange: "لا شيء لتغييره: تبقى اللعبة كما هي.",
     checkFailed: "تعذّر التحقق من التغييرات:",
     checkAgain: "التحقق مجددًا",
     inPlace: "في مكانها",
@@ -368,6 +374,7 @@ const ar: Messages = {
     closeImage: "إن كانت اللعبة تعمل من هذه الصورة، فأغلقها أولًا.",
     closeFolder: "إن كانت اللعبة تعمل من هذا المجلد، فأغلقها أولًا.",
     applyRestores: "انقطع تحرير سابق لهذه الصورة: تُعاد الصورة أولًا إلى ما كانت عليه.",
+    uploadingFile: (i: number, n: number) => `جارٍ رفع الملف ${num(i)} من ${num(n)}`,
     uploading: (i: number, n: number, sent: string, total: string) =>
       `جارٍ رفع الملف ${num(i)} من ${num(n)}: ${iso(sent)} من ${iso(total)}`,
     uploadLabel: "الرفع",
@@ -435,6 +442,7 @@ const ar: Messages = {
     /** An Edit tab job's tag: changes written into the source, or a rebuilt image swapped in. */
     edit: "تحرير",
     editRebuild: "تحرير · إعادة بناء",
+    transfer: "نقل",
     extract: "استخراج",
     job: (id) => `المهمة ${id}`,
     done: "اكتملت",
@@ -445,7 +453,7 @@ const ar: Messages = {
     dismiss: "إخفاء",
     stopJob: "إيقاف المهمة؟",
     cancel: "إلغاء",
-    stopHint: "انقر «إيقاف المهمة؟» مرة أخرى خلال 4 ثوانٍ لإيقافها.",
+    stopHint: "اضغط «إيقاف المهمة؟» مرة أخرى خلال 4 ثوانٍ لإيقافها.",
     from: "من ",
     left: (d) => `المتبقي ${d}`,
     inStep: (time) => `${time} في هذه الخطوة`,
@@ -468,6 +476,7 @@ const ar: Messages = {
     cantBuild: "تعذّر بناء هذه اللعبة:",
     cantEdit: "تعذّر تطبيق التغييرات:",
     cantExtract: "تعذّر الاستخراج:",
+    cantTransfer: "تعذّر النقل:",
     cantBuildAs: (f) => (
       <>
         تعذّر بناء هذه اللعبة بصيغة <b>{f}</b>:
@@ -493,9 +502,8 @@ const ar: Messages = {
     noRoots: "لا توجد مجلدات متاحة للمسح.",
     none: "لم يُعثر على ألعاب. يبحث الفحص حتى ستة مستويات من العمق ويتخطى مجلدات النظام. لا يزال بإمكانك اختيار مصادر أخرى في «تحرير» أو «تحويل».",
     skipped: "المواقع والملفات التي تم تخطيها",
-    stays: "تبقى النتائج هنا حتى تضغط «تحديث». تظهر النواتج الجديدة بعد التحديث.",
     library: "المكتبة",
-    storageTip: "المساحة الحرة في التخزين الداخلي لجهاز PS5 (⁦/data⁩)، وقت آخر مسح",
+    storageTip: "المساحة الحرة في التخزين الداخلي لجهاز PS5 (⁦/data⁩)",
     free: (free, total) => (
       <>
         متاح <b>{iso(free)}</b> من {iso(total)}
@@ -505,11 +513,20 @@ const ar: Messages = {
     cards: "عرض البطاقات",
     list: "عرض القائمة",
     games: "الألعاب",
-    edit: (n) => `تحرير ${n}`,
-    convert: (n) => `تحويل ${n}`,
-    remove: (n) => `حذف ${n}`,
+    edit: (n) => `تحرير ${iso(n)}`,
+    convert: (n) => `تحويل ${iso(n)}`,
+    remove: (n) => `حذف ${iso(n)}`,
+    deleting: (n) => `جارٍ حذف ${iso(n)}`,
     lz4Tip: "محزومة بـ LZ4: حزم أصول ampr_emu",
-    lz4Packed: " محزومة",
+    showAs: "طريقة العرض",
+    kinds: "عرض النوع",
+    all: "الكل",
+    lz4Chip: "محزومة بـ LZ4",
+    countIn: (n, path) => (
+      <>
+        {n === 1 ? <b>لعبة واحدة</b> : n === 2 ? <b>لعبتان</b> : <><b>{num(n)}</b> {plural(n, { zero: "ألعاب", few: "ألعاب", many: "لعبةً", other: "لعبة" })}</>} في {path}
+      </>
+    ),
   },
   // Storage.tsx, Files.tsx: the Storage tab (Library | File explorer)
   storage: {
@@ -522,6 +539,7 @@ const ar: Messages = {
     choose: "اختيار مجلد",
     roots: "محركات الأقراص",
     location: "الموقع",
+    folders: "المجلدات",
     up: "أعلى",
     upTip: "الصعود مجلدًا واحدًا",
     refresh: "تحديث",
@@ -538,9 +556,10 @@ const ar: Messages = {
     noRoots: "لا توجد محركات أقراص متاحة للتصفّح.",
     cantList: "تعذّر فتح هذا المجلد:",
     link: "رابط",
-    linkTip: "رابط: يمكن فتحه، لكنه لا يُغيَّر هنا أبدًا",
+    linkTip: "رابط: يمكن فتحه، لكن لا يمكن إعادة تسميته أو نقله أو حذفه هنا",
     mounted: "مُركَّب",
     mountedTip: `مُركَّب بواسطة ${iso("ShadowMount+")}: أوقف اللعبة وأوقف تشغيل ${iso("ShadowMount+")} لحذفه أو إعادة تسميته أو نقله`,
+    mountedNote: `الصور التي تحمل وسم «مُركَّب» يستخدمها ${iso("ShadowMount+")}: أوقف اللعبة وأوقف تشغيل ${iso("ShadowMount+")} لحذفها أو إعادة تسميتها أو نقلها.`,
     open: (n) => `فتح ${iso(n)}`,
     more: (n) => `إجراءات أخرى لـ ${iso(n)}`,
     rename: (n) => `إعادة تسمية ${iso(n)}`,
@@ -550,6 +569,7 @@ const ar: Messages = {
     moveTitle: (n) => `نقل ${iso(n)} إلى`,
     remove: (n) => `حذف ${iso(n)}`,
     removeTip: "حذف (مفتاح Delete)",
+    removeTipMac: "حذف (fn+Delete)",
     cantDelete: "تعذّر الحذف:",
     cantRename: "تعذّرت إعادة التسمية:",
     cantMove: "تعذّر النقل:",
@@ -557,7 +577,6 @@ const ar: Messages = {
     deleted: (path) => `تم حذف ${iso(path)}`,
     renamed: (path) => `تمت إعادة التسمية إلى ${iso(path)}`,
     moved: (path) => `تم النقل إلى ${iso(path)}`,
-    atOnce: "يتم الحذف وإعادة التسمية والنقل فورًا، دون تراجع. أغلق اللعبة قبل تغيير ملفاتها.",
   },
   // Lz4.tsx
   lz4: {
@@ -583,6 +602,8 @@ const ar: Messages = {
     packedFirst: "المصدر محزوم بـ LZ4: فُكّ حزمه أولًا",
     damaged: "حزم LZ4 الخاصة به تالفة",
     archive: "لا يمكن تتبّع أرشيف: حوّله أولًا",
+    nas: "لا يمكن تتبّع لعبة على NAS: حوّلها أولًا",
+    peer: "لا يمكن تتبّع لعبة على جهاز آخر: حوّلها أولًا",
     chooseFirst: "اختر مصدرًا أولًا",
     notRead: "لم تتم قراءة المصدر بعد",
     pickProfile: "ملف تعريف LZ4",
@@ -602,7 +623,7 @@ const ar: Messages = {
       if (a === "pack") return `لا يمكن الحزم: ${iso(first)}${rest}.`;
       return `لا يمكن فك الحزم: ${iso(first)}${rest}.`;
     },
-    chooseGame: "اختر مجلد لعبة أو صورة أولًا.",
+    chooseGame: "اختر مجلد لعبة أو صورة أو أرشيفًا أولًا.",
     noAmprGame: "هذه اللعبة لا تستخدم AMPR، لذا لا يمكن استخدام LZ4 هنا.",
     additionalContent: "هذا محتوى إضافي (بلا ⁦eboot.bin⁩)، لذا لا يمكن استخدام LZ4 هنا.",
     installsRuntime: (a, version) =>
@@ -614,11 +635,12 @@ const ar: Messages = {
     freshIndex: (state, a) =>
       `${state === "stale" ? "لا يطابق ⁦ampr_emu.index⁩ ملفات هذه اللعبة" : state === "damaged" ? "تتعذّر قراءة ⁦ampr_emu.index⁩" : "لا يوجد ⁦ampr_emu.index⁩ في هذه اللعبة"}: سيكتب ${a === "pack" ? "الحزم" : a === "patch" ? "الترقيع" : "إلغاء الترقيع"} فهرسًا جديدًا.`,
     unavailable: (items) => `غير متاح لهذا المصدر: ${items.join("؛ ")}.`,
+    unavailableItem: (name, why) => `${name} (${why})`,
+    optionWhy: (why) => `، ${why}`,
     readOnly: (kind) => <>
       صيغة <b>{kind}</b> للقراءة فقط على جهاز PS5، لذا لا يمكن تتبّعها. حوّلها إلى <b>ffpkg</b> أو <b>exfat</b> أولًا.
     </>,
     action: "الإجراء",
-    traceAction: "إجراء التتبّع",
     changes: (a, image) => a === "patch"
       ? image
         ? "يغيّر هذه الصورة: تحل بيئة تشغيل التتبّع محل ⁦fakelib/libSceAmpr.sprx⁩، دون نسخة احتياطية."
@@ -646,9 +668,7 @@ const ar: Messages = {
     choose: "اختيار",
     profileHint: "ملف TOML بقواعد الحزم، يُستخدم بدلًا من بيانات التتبّع.",
     target: "الهدف",
-    packInto: "الحزم إلى",
     direct: "يحزم مباشرة إلى الصورة؛ تُقرأ ملفات اللعبة مرتين.",
-    targetFormat: "الصيغة الهدف",
     unpackFolder: "مجلد لعبة جديد تُعاد فيه كتابة الحزم كملفات عادية.",
     unpackHint: (n) =>
       n === null
@@ -689,7 +709,7 @@ const ar: Messages = {
     optionalTraces: "بيانات التتبّع (اختياري)",
     unlock: "إلغاء القفل لاختيار بيانات تتبّع أخرى",
     loaded: "بيانات التتبّع محمّلة بالفعل من هذا المصدر",
-    lockedHint: (bytes) => `بيانات تتبّع هذا المصدر نفسه (${iso(bytes)}). انقر القفل لاختيار غيرها.`,
+    lockedHint: (bytes) => `⁦ampr_commands.bin⁩ (${iso(bytes)}). استخدم القفل لاختيار غيرها.`,
     clear: "إزالة",
     zip: "Zip",
     folder: "مجلد",
@@ -738,6 +758,9 @@ const ar: Messages = {
   },
   // Picker.tsx
   picker: {
+    devices: "الأجهزة",
+    thisDevice: "هذا الجهاز",
+    systemDialog: "مربع حوار النظام",
     drives: "محركات الأقراص",
     location: "الموقع",
     parent: "المجلد الأعلى",
@@ -756,8 +779,9 @@ const ar: Messages = {
     noFolders: "لا توجد مجلدات هنا.",
     noImages: "لا توجد هنا مجلدات أو صور PS5 أو أرشيفات.",
     noFiles: (ext) => `لا توجد هنا مجلدات أو ملفات ${dotted(ext, " أو ")}.`,
-    chooseFiles: (n) => `اختيار ${count(n, FILES_GEN)}`,
+    chooseFiles: (n) => (n === 0 ? "اختيار ملفات" : `اختيار ${count(n, FILES_GEN)}`),
     nothing: "لا توجد هنا مجلدات أو ملفات.",
+    cantList: "تعذّر فتح هذا المجلد:",
     cancel: "إلغاء",
     chooseFolder: "اختيار هذا المجلد",
   },
@@ -850,7 +874,7 @@ const ar: Messages = {
     text: (folder) =>
       folder
         ? "سيُحذف المجلد وكل ما فيه نهائيًا: لا سلة مهملات ولا تراجع. إذا توقف الحذف في منتصفه، فقد يكون جزء منه قد حُذف بالفعل."
-        : "سيُحذف ملف الصورة نهائيًا: لا سلة مهملات ولا تراجع. إذا توقف الحذف في منتصفه، فقد يكون جزء منه قد حُذف بالفعل.",
+        : "سيُحذف ملف الصورة نهائيًا: لا سلة مهملات ولا تراجع.",
     no: "لا",
     yes: "نعم، احذف",
     archiveTitle: "حذف هذا الأرشيف؟",
@@ -892,6 +916,7 @@ const ar: Messages = {
       quitUnreachable: "تعذّر الوصول إلى Dump Forge لإيقافه.",
       stillAnswering: "لا يزال Dump Forge يستجيب بعد دقيقتين؛ تحقق من جهاز PS5.",
       gone: "لم يعد Dump Forge يُبلغ عنها (أُزيلت من سجل مهامه قبل ظهور نتيجتها)",
+      uploadIncomplete: "لم يكتمل الرفع.",
     },
   },
   // target.tsx
@@ -988,12 +1013,152 @@ const ar: Messages = {
     update: "تحديث",
     later: "لاحقًا",
     updating: "جارٍ التحديث…",
-    updatingNote: "يجري تنزيل الإصدار الجديد، وسيُعاد تشغيل التطبيق تلقائيًا.",
+    updatingNote: "يجري تنزيل الإصدار الجديد. سيُعاد تحميل هذه الصفحة بالإصدار الجديد تلقائيًا.",
     downloading: "يجري التنزيل في متصفحك: فُكّ ضغط الأرشيف واستبدل به هذه النسخة.",
     failed: (v) => `تعذّر التحديث إلى ${iso(`v${v}`)}`,
     timeout: (v) => `لم يبدأ الإصدار ${iso(`v${v}`)} خلال دقيقة. إذا اكتمل تنزيله، فأوقف Dump Forge وافتحه من جديد لإكمال التحديث.`,
     retry: "إعادة المحاولة",
     close: "إغلاق",
+  },
+  // Connect.tsx, ConnectHelp.tsx: pairing, Autodiscovery, saved devices
+  connect: {
+    thisDevice: "هذا الجهاز",
+    howItWorks: "كيفية الاتصال",
+    ipAddress: "عنوان IP",
+    seen: (n: number, unit: "now" | "m" | "h" | "d") =>
+      unit === "m"
+        ? `آخر ظهور: منذ ${count(n, MINUTES)}`
+        : unit === "h"
+          ? `آخر ظهور: منذ ${count(n, HOURS)}`
+          : unit === "d"
+            ? `آخر ظهور: منذ ${count(n, DAYS)}`
+            : "آخر ظهور: الآن",
+    listenError: (e) => `لا تستطيع الأجهزة الأخرى الوصول إلى هذا الجهاز: ${iso(e)}`,
+    unavailable: (e) => `الاتصال غير متاح: ${iso(e)}`,
+    loading: "جارٍ التحميل",
+    discover: "الاكتشاف التلقائي",
+    stop: "إيقاف",
+    fileTransfer: "نقل الملفات",
+    devices: "الأجهزة",
+    show: "عرض",
+    all: "الكل",
+    onlineOf: (n, total) => `${num(n)} من ${num(total)} متصل`,
+    sendFilesTo: (name) => `إرسال ملفات إلى ${iso(name)}`,
+    details: (name) => `تفاصيل ${iso(name)}`,
+    userIs: (user) => `المستخدم ${iso(user)}`,
+    nearby: "بالقرب منك",
+    nearbyNone: "لم يُعثر على أجهزة جديدة",
+    addDevice: "إضافة جهاز",
+    addressExample: "192.168.1.20 أو nas.local",
+    addByProtocol: "أو أضف حسب البروتوكول:",
+    savedEmpty: "لا توجد أجهزة محفوظة بعد",
+    savedEmptyHint:
+      "يعثر «الاكتشاف التلقائي» على Forge والتخزين الشبكي في هذه الشبكة. أقرِن جهازًا واسمح بالإقران عليه، أو احفظ NAS.",
+    online: "متصل",
+    offline: "غير متصل",
+    computer: "كمبيوتر",
+    address: "العنوان",
+    keyId: "معرّف المفتاح",
+    lastSeen: "آخر ظهور",
+    status: "الحالة",
+    never: "أبدًا",
+    unknown: "غير معروف",
+    forget: "نسيان",
+    forgetNote: "يزيل «نسيان» الإقران من هذا الجهاز فقط. لاستخدامه مرة أخرى، أقرِنه من جديد.",
+    close: "إغلاق",
+    cancel: "إلغاء",
+    pairTitle: "إقران جهاز",
+    pair: "إقران",
+    connectTo: "اتصال",
+    probing: (address) => `جارٍ التحقق من ${iso(address)}`,
+    pairing: "جارٍ الإقران",
+    waitingFor: (address) => `في انتظار أن يسمح ${iso(address)} بالإقران`,
+    checkNumber: "رقم التحقق",
+    checkHint: "يجب أن يطابق الرقم الذي يعرضه الجهاز الآخر.",
+    denied: "رفض الجهاز الآخر الإقران.",
+    timedOut: "لم يسمح أحد بالإقران على الجهاز الآخر في الوقت المحدد.",
+    pairBusy: "لدى الجهاز الآخر طلبات إقران أخرى في الانتظار. أعد المحاولة بعد دقيقة.",
+    alreadyPaired: "ذلك الجهاز حفظ هذا الجهاز من قبل. انسَه هناك أولًا، ثم أقرِنه من جديد.",
+    tooManyAttempts: "طلبات مرفوضة كثيرة جدًا. أعد المحاولة بعد 10 دقائق.",
+    pairPromptTitle: (name) => `هل تريد الإقران مع ${iso(name)}؟`,
+    pairPromptBody: (name, platform, ip) =>
+      `يريد ${iso(name)} (${iso(platform)}، ${iso(ip)}) الإقران مع هذا الجهاز. يستطيع الجهاز المقترن قراءة ملفات هذا الجهاز وإضافة ملفات جديدة.`,
+    pairPromptCheck: (name) => `لا تسمح بذلك إلا إذا عرض ${iso(name)} رقم التحقق نفسه.`,
+    allow: "سماح",
+    deny: "رفض",
+    notPaired: "لم يعد الجهاز الآخر يعرف هذا الجهاز. أقرِنه من جديد.",
+    searching: "جارٍ البحث في هذه الشبكة",
+    forge: "Forge",
+    save: "حفظ",
+    kindNas: "NAS",
+    nasAddTitle: (protocol) => `إضافة NAS عبر ${protocol}`,
+    nasEditTitle: (protocol) => `تعديل NAS عبر ${protocol}`,
+    nasName: "الاسم",
+    nasAddressHint: "عنوان IP أو اسم المضيف؛ أضف :المنفذ إن لم يكن 445",
+    nasUser: "اسم المستخدم",
+    nasUserHint: "اتركه فارغًا للدخول كضيف",
+    ftpAddressHint: "عنوان IP أو اسم المضيف؛ أضف :المنفذ إن لم يكن 21",
+    nfsAddressHint: "عنوان IP أو اسم المضيف؛ أضف :المنفذ إن لم يكن 2049",
+    ftpUserHint: "اتركه فارغًا للدخول دون اسم",
+    ftpNote: "لا يُشفَّر FTP، ولا بيانات الدخول كذلك.",
+    nfsNote: "لا يحتاج NFS إلى تسجيل دخول: يتصل Forge بصلاحيات الجذر (NFSv4.1، وإلا NFSv3)، لذا يجب أن يسمح التصدير على الخادم لهذا الجهاز. لا يُشفَّر NFS.",
+    nasPassword: "كلمة المرور",
+    nasPasswordKeep: "اتركها فارغة للإبقاء على كلمة المرور المحفوظة",
+    guest: "ضيف",
+    passwordSaved: "محفوظة",
+    passwordNone: "لا توجد",
+    edit: "تعديل",
+    nasForgetNote: "يزيل «نسيان» هذا الـ NAS وكلمة مروره المحفوظة من هذا الجهاز.",
+    pickSendFiles: "الملفات المراد إرسالها",
+    pickSendFolder: "المجلد المراد إرساله",
+    pickSaveTo: "مكان الحفظ",
+    thisBrowser: "هذا المتصفح",
+    browserHint: "تذهب الملفات من هذا الهاتف أو الكمبيوتر إلى مجلد على هذا الجهاز، ويحفظ هذا المتصفح ملفًا من هذا الجهاز.",
+    uploadTo: "المجلد المراد الرفع إليه",
+    uploadPick: "اختيار ملفات للرفع",
+    uploading: (name, i, n) => `جارٍ رفع ${iso(name)} (${num(i)} من ${num(n)})`,
+    uploaded: "اكتمل الرفع",
+    uploadedBefore: (done, n) => `الملفات المرفوعة: ${num(done)} من ${num(n)}. تبقى على هذا الجهاز.`,
+    cantStart: "تعذّر بدء النقل:",
+    cantUpload: "تعذّر الرفع:",
+    pickDownload: "الملف المراد تنزيله",
+    transferIntro: "أرسل ملفات أو مجلدًا من أي جهاز إلى مجلد هنا أو على جهاز مقترن أو على NAS. يُنفَّذ النقل كمهمة في قائمة المهام.",
+    send: "إرسال",
+    sendWhat: "ما المراد إرساله",
+    sendTo: "الإرسال إلى",
+    sendNeedsDevice: "اتصل بجهاز آخر أولًا: أقرِن Forge أو أضِف NAS.",
+    nothingChosen: "لم يُختر شيء بعد",
+    chooseFiles: "اختيار ملفات",
+    chooseFolder: "اختيار مجلد",
+    startTransfer: "بدء",
+    uploadHere: "الرفع إلى هذا الجهاز",
+    downloadHere: "التنزيل من هذا الجهاز",
+    consoleNoFiles: "لا يستطيع متصفح PS5 اختيار الملفات: افتح هذه الصفحة على هاتف أو كمبيوتر.",
+    wholeRoot: "لا يمكن إرسال جهاز أو مشاركة أو محرك أقراص بالكامل: اختر مجلدًا داخله.",
+    helpPhone: "امسح رمز QR لفتح هذه الصفحة على هاتف. هناك، ينقل «الرفع إلى هذا الجهاز» و«التنزيل من هذا الجهاز» في «نقل الملفات» ملفات الهاتف.",
+    /** How to connect: short paragraphs, in order (no headings). */
+    help: [
+      "يربط «الاتصال» نسخ Dump Forge على جهاز PS5 وأجهزة الكمبيوتر لديك في الشبكة نفسها.",
+      "للإقران، شغّل «الاكتشاف التلقائي» واختر «إقران» في «بالقرب منك»، أو اكتب عنوانًا في «إضافة جهاز»، ثم اسمح بذلك على الجهاز الآخر. لا تسمح إلا إذا عرضت الشاشتان رقم التحقق نفسه.",
+      "يُضاف NAS (SMB وFTP وNFS) بالطريقة نفسها. الأجهزة المقترنة وأجهزة NAS مصادر للألعاب ووجهات للإخراج معًا، ولا تُعدَّل ألعابها هناك.",
+      "ينسخ «نقل الملفات» الملفات والمجلدات بين أي منها. ويُرفض أي اسم موجود بالفعل في الوجهة.",
+    ],
+    helpSecurity: "لا شيء مما يُرسَل بين الأجهزة مشفّر: يمكن لأي شخص على شبكتك قراءته. وتُحفَظ كلمة مرور NAS على هذا الجهاز دون تشفير. استخدم «الاتصال» على شبكتك المنزلية فقط.",
+    installTitle: "Dump Forge على PS5",
+    ps5Address: "عنوان PS5",
+    install: "التثبيت على PS5",
+    installHint: "يتطلب مُحمِّل ELF على الجهاز يستمع على الشبكة (المنفذ 9021).",
+    findingRelease: "جارٍ البحث عن الإصدار على GitHub",
+    installing: (v, host) => `جارٍ تثبيت Dump Forge ${v} على ${iso(host)}`,
+    installed: (v, host) => `يبدأ Dump Forge ${v} على ${iso(host)}. اقرنه من «إضافة جهاز» بعد تشغيله.`,
+    noRelease: "تعذّر العثور على إصدار Dump Forge لـ PS5 على GitHub. تحقّق من اتصال هذا الكمبيوتر بالإنترنت، ثم أعد المحاولة.",
+    otherPayload: "أي حمولة ELF أخرى:",
+    sendPayload: "إرسال حمولة",
+    pickPayload: "اختر حمولة ELF",
+    sendingPayload: (name, host) => `جارٍ إرسال ${iso(name)} إلى ${iso(host)}`,
+    sentPayload: (name, size, host) => `أُرسلت ${iso(name)} ‏(${size}) إلى ${iso(host)}.`,
+    helpInstallTitle: "ثبّت Dump Forge على PS5 بنقرة واحدة",
+    helpInstallText: "استخدم بطاقة تثبيت Dump Forge لإرسال الحمولة إلى الجهاز. يُنزّل الإصدار المطابق من GitHub (أو الأحدث) ويشغّله.",
   },
   duration: { s: (s) => `${s} ث`, ms: (m, s) => `${m} د ${s} ث`, hm: (h, m) => `${h} س ${m} د` },
 };

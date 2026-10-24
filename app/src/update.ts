@@ -41,28 +41,52 @@ export function assetName(version: string, asset: string): string {
  * version newer than ours and its assets list our file by its exact name, uploaded and not
  * empty (so the download can't 404 or come back empty). */
 export function offer(release: unknown, target: Target): string | null {
-  const r = release as { tag_name?: unknown; assets?: unknown } | null;
-  const v = tagVersion(r?.tag_name);
-  if (!v || !isNewer(v, target.version) || !Array.isArray(r?.assets)) return null;
-  const want = assetName(v, target.asset);
-  const ok = (a: unknown) => {
-    const f = a as { name?: unknown; state?: unknown; size?: unknown } | null;
-    return f?.name === want && f.state === "uploaded" && typeof f.size === "number" && f.size > 0;
-  };
-  return r.assets.some(ok) ? v : null;
+  const v = tagVersion((release as { tag_name?: unknown } | null)?.tag_name);
+  return v && isNewer(v, target.version) && carries(release, assetName(v, target.asset)) ? v : null;
 }
 
-/** Ask GitHub (no cookies, no cache, `CHECK_TIMEOUT_MS` for the whole answer): the version to
- * offer, or null on anything else. Never rejects. */
-export async function checkUpdate(target: Target, f: typeof fetch = (i, o) => fetch(i, o)): Promise<string | null> {
+/** Whether a release body lists the file `name`, uploaded and not empty. */
+function carries(release: unknown, name: string): boolean {
+  const assets = (release as { assets?: unknown } | null)?.assets;
+  const ok = (a: unknown) => {
+    const f = a as { name?: unknown; state?: unknown; size?: unknown } | null;
+    return f?.name === name && f.state === "uploaded" && typeof f.size === "number" && f.size > 0;
+  };
+  return Array.isArray(assets) && assets.some(ok);
+}
+
+/** A release by its tag. */
+export const tagUrl = (version: string) => `https://api.github.com/repos/quer3q/ps5-dump-forge/releases/tags/v${version}`;
+
+/** GET `url` as JSON within `CHECK_TIMEOUT_MS` (no cookies, no cache); null on anything else. */
+async function ask(url: string, f: typeof fetch): Promise<unknown> {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), CHECK_TIMEOUT_MS);
   try {
-    const res = await f(LATEST_URL, { cache: "no-store", credentials: "omit", signal: abort.signal });
-    return res.ok ? offer(await res.json(), target) : null;
+    const res = await f(url, { cache: "no-store", credentials: "omit", signal: abort.signal });
+    return res.ok ? await res.json() : null;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** The release whose PS5 ELF Install on PS5 loads (Connect, desktop app): `current`'s own when
+ * it is a plain X.Y.Z released with that file, else the latest release's; null when neither
+ * carries it or GitHub doesn't answer. Never rejects. */
+export async function ps5Release(current: string, f: typeof fetch = (i, o) => fetch(i, o)): Promise<string | null> {
+  const urls = /^\d+\.\d+\.\d+$/.test(current) ? [tagUrl(current), LATEST_URL] : [LATEST_URL];
+  for (const url of urls) {
+    const r = await ask(url, f);
+    const v = tagVersion((r as { tag_name?: unknown } | null)?.tag_name);
+    if (v && carries(r, assetName(v, "ps5.elf"))) return v;
+  }
+  return null;
+}
+
+/** Ask GitHub (no cookies, no cache, `CHECK_TIMEOUT_MS` for the whole answer): the version to
+ * offer, or null on anything else. Never rejects. */
+export async function checkUpdate(target: Target, f: typeof fetch = (i, o) => fetch(i, o)): Promise<string | null> {
+  return offer(await ask(LATEST_URL, f), target);
 }

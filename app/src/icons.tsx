@@ -44,6 +44,14 @@ const PATHS = {
   dots: "M5.5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM18.5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
   // A folder with an arrow going in: Move to another folder.
   move: "M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5zM8 13h7M12.5 10.5 15 13l-2.5 2.5",
+  plus: "M12 5v14M5 12h14",
+  // An arrow pointing on (mirrored in RTL by its CSS): File Transfer, from what to where.
+  arrow: "M5 12h14M13 6l6 6-6 6",
+  // Lines running on with arrows: streamed, nothing staged (About's features).
+  stream: "M4 7h11M4 12h16M4 17h11M15 4l3 3-3 3M15 14l3 3-3 3",
+  // A memory card, its contacts on top: USB sticks and SD cards.
+  sdcard: "M7 3h9l3 3v13.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19.5v-15A1.5 1.5 0 0 1 6.5 3zM9 3v4M12 3v4M15 3v4",
+  heart: "M12 20s-7.5-4.6-7.5-10A4.5 4.5 0 0 1 12 7.4 4.5 4.5 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z",
   "file-plus": "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M12 11.5v5M9.5 14h5",
 } as const;
 

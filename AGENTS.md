@@ -12,8 +12,10 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
 ## Layout
 - `crates/ps5-dump-forge-core`: everything a job does. Own folder scanner (no symlink follow,
   exact names), preflight (names, special files, space, FAT32, depth, name limits), jobs (a worker thread
-  per job, one heavy job at a time in FIFO order, cancel flag, `catch_unwind`), `.part` + atomic no-replace
-  rename (`finalize.rs`; macOS exFAT has none: check, then rename; FreeBSD: hard link where the folder has
+  per job, one heavy job and one transfer at a time, each slot FIFO, conflicts refused at start, cancel
+  flag (a cancelled job's error is `cancelled`, or `cancelled; ` + what else failed or stays when that is
+  more than the cancel), `catch_unwind`), `.part` + atomic no-replace
+  rename (`finalize.rs`; macOS exFAT, Linux NFS and FUSE have none: check, then rename; FreeBSD: hard link where the folder has
   them, U3), BLAKE3 verification (`verify.rs`: 8 MiB slice hashes on a pool of up to 8 threads, fast sample
   or full), `inspect.rs` (cover, firmware, backport firmware from executables, embedded DLC; default and
   generated output names), `prefetch.rs` (read-ahead thread), `delete.rs` (Edit's and Storage's delete,
@@ -24,7 +26,25 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   the undo journal, verify, commit or roll back; the rebuild dispatch and `edit_check`'s two halves),
   `edit_folder.rs` (a folder edit job, applied directly), `host_tree.rs` (`host_tree`: a host file or
   folder as `Edited` will scan it, for the UI's preview), `extract_paths.rs` (an Extract job: chosen
-  files and folders of any source copied out). FreeBSD/PS5 only: `dest.rs` (destination probe, U1), `durable.rs`
+  files and folders of any source copied out), `remote.rs` (every path on another device: the `Remote`
+  trait (stat, list, read_at, read_checked, put_new, mkdir, create, write_at, sync, close,
+  rename_no_replace, remove, free_space), `Scheme` `Flink`/`Ftp`/`Smb`/`Nfs` (`flink://<key_id>`,
+  `ftp://`, `smb://`, `nfs://<host[:port]>`; `prefix`, `default_port` 21/445/2049, `authority`,
+  `host_port`), `get_for` (a paired peer: the `Remote` Connect registers (`set`); a server: its core
+  adapter), `FlinkPath` (any scheme; `within`: scheme, device, ASCII case-folded on SMB), `is_remote`,
+  `is_nas` (smb + nfs), `RemoteReader`/`RemoteTree` sources, outputs through
+  `RemoteFile`/`RemotePart`/`RemotePkgOut`/`RemoteDir`/`RemotePacks`), the server adapters, each a thin
+  `Remote` over its crate (session cache per server, uploads by handle, one reconnect on a connection
+  error): `ftp.rs` (`ftp://`; `set_logins`, `can_rewrite` the `REST` probe an fpkg or LZ4 packs need;
+  `Ftp::with`: a cached session that died (reset, EOF, vsftpd's `421` to an idle one) is dropped and the
+  call runs once more on a fresh login, cached only if it didn't die too; a timeout drops the session
+  without a retry; ponytail: a mutation whose reply was lost is sent again, and calls finding no session
+  at once each log in),
+  `smb.rs` (`smb://<host>/<share>/<path>`; `set_credentials`, guest without one; `smb://host` lists the
+  disk shares), `nfs.rs` (`nfs://<host>/<server path>`, the server's absolute path; no login;
+  `nfs://host` lists above the exports), `net.rs` (the one place for another device: dispatch to
+  `remote`, refusals (`refuse`: NAS wording for `is_nas`), `exists`), `transfer.rs` (a transfer job:
+  files and folders copied into a folder here, on a peer or on a NAS), `lib.rs`'s `out` (exclusive create, syncs, free space; for the peer side). FreeBSD/PS5 only: `dest.rs` (destination probe, U1), `durable.rs`
   (`sync_retry`, `SyncEvery`, drive-removal check; U4/U5/U7). `lib.rs` is the public API the CLI, the app
   and the server build against.
 - `crates/ps5-dump-forge-exfat`: forward-only exFAT writer (512 B sectors, 64 KiB clusters), ported
@@ -56,6 +76,32 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   over `sevenz-rust2` (decode only), `rar.rs` our FFI wrapper over `unrar_sys` (bundles UnRAR's C++; every target,
   the PS5 payload included), `parts.rs` multi-part naming, `stream.rs` the `Reader`. Glue: `core/src/archive.rs` (`ArchiveTree`), `inspect.rs`,
   `library::archive_game_root`. Licence: `vendor/LICENSE-UnRAR.txt`, `vendor/LICENSE-UnRAR-exception.md` (copied into every release).
+- `crates/ps5-dump-forge-smb`: own blocking SMB2 client (2.0.2/2.1; the `smb` crate was rejected: ~180
+  crates and its guest login fails on Samba 4.23): `ntlm.rs` (raw NTLMSSP NTLMv2, in-house MD4; an empty user
+  is a guest login), `wire.rs` (framing, credits, 1 MiB reads, HMAC-SHA256 signing when required),
+  `rpc.rs` (srvsvc NetShareEnumAll: disk shares), `lib.rs` (`Session::connect`, `shares`, `list`, `stat`,
+  `open` → `File::read_at`; writes (by user decision: a share is an output too): `create_file` (exclusive),
+  `mkdir`, `rename` (never replaces), `remove` (files), `free_space`, `File::write_at`/`flush`).
+  Glue: `core/src/smb.rs`. ponytail: no SMB 3.x, encryption, DFS, reconnect or
+  pipelining, response signatures not verified, no NTLM MIC.
+- `crates/ps5-dump-forge-ftp`: own blocking plain-FTP client (RFC 959 + FEAT, MLSD/SIZE/MDTM/REST, EPSV;
+  passive, binary; user + password or anonymous): `Session` (list, stat, reads, mkdir, rename (check, then
+  `RNTO`), remove, `can_rewrite` (a `REST` + `STOR` probe)), `Writer` (any offset, `REST` to go back);
+  `fake.rs` (feature `fake`) a test server (`kick` closes every control connection, as an idle timeout
+  does). A `421` reply is `ConnectionAborted` (the server is closing); a `550` to `MLST` is `NotFound` unless it
+  says it was refused. Glue: `core/src/ftp.rs`. ponytail:
+  no FTPS, no active mode, no reconnect here (core retries); without MLST a file's change shows by its
+  size only.
+- `crates/ps5-dump-forge-nfs`: own blocking NFS client, std only (+ `libc` on unix for the privileged
+  source port), NFSv4.1 and NFSv3 (by user decision both; `Session::connect(host, port)` tries v4.1, then
+  v3; `version()`): `rpc.rs` (ONC RPC over TCP, record marking, XDR by hand, AUTH_SYS uid 0, a source
+  port from 1023 down, else any), `v3.rs` (portmapper unless a port is given, MOUNT, READDIR(PLUS),
+  WRITE UNSTABLE + COMMIT with the verifier checked, CREATE GUARDED), `v4.rs` (EXCHANGE_ID,
+  CREATE_SESSION with one slot, SEQUENCE in every COMPOUND, OPEN/CLOSE, the server's granted sizes and
+  ops honoured), `lib.rs` (`Session`: `exports`, `stat`, `list`, `read_at`, `mkdir`, `create` →
+  `File::write_at`/`sync` (never replaces), `rename_no_replace`, `remove` (files only), `free_space`;
+  absolute server paths). Glue: `core/src/nfs.rs`. ponytail: one connection per session, requests
+  serialized, no reconnect; cached handles live 3 s; an idle v4.1 session may expire (dropped, reconnected).
 - `crates/ps5-dump-forge-cli`: binary `ps5-dump-forge` (`inspect`, `convert`, `lz4-patch`, `lz4-unpatch`, `serve`), JSON-lines events.
 - `crates/ps5-dump-forge-ps5`: the payload's global allocator (`Pool`, installed by the CLI only for
   the PS5): freed blocks of 64 B..4 MiB kept in power-of-two classes, since the PS5 libc serializes
@@ -63,8 +109,16 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
 - `crates/ps5-dump-forge-server`: `serve`, std-only HTTP/1.1 (`http.rs`), routes mirroring the Tauri commands
   (`api.rs`), job table for polling (`table.rs`), roots (`paths.rs`), PS5 tile (`tile.rs`), self copy
   (`self_copy.rs`), `debug.rs` (PS5 only, with `FORGE_DEBUG_API`). `build.rs` embeds `app/dist-http` and the
-  self copy. `POST /api/edit_upload` is the one route whose body is streamed (no 1 MiB cap; `BodyReader`
-  in `http.rs`).
+  self copy. `POST /api/edit_upload` and `POST /api/connect/upload` are the routes whose body is streamed
+  (no 1 MiB cap; `BodyReader` in `http.rs`). Connect: the `ps5-dump-forge-flink` crate (below),
+  `connect.rs` (`Connect`: identity (`node.key`),
+  approvals (`Approvals`, `Outgoing`), `peers.json`, the TCP 9120 listener, pair/forget/devices, liveness, `snapshot`;
+  also used by the Tauri app), `connect_fs.rs` (a peer's files over FLINK: the peer side's RPCs and lanes,
+  `ConnectRemote`, core's `Remote` on this side; the busy hooks both ways), `discovery.rs` (Forge on UDP 8094), `probe.rs` (Add a device: what answers at an address), `payload.rs` (elfldr on port 9021: `load_release`, a release it downloads itself, for self-update and Install on PS5; `send`, a local ELF streamed to it), `mdns.rs` (NAS: smb/ftp/nfs; `merge`), `wsd.rs` (Windows PCs by WS-Discovery),
+  `nas.rs` (saved NAS devices: `nas.json`, one entry per host + port, `protocol` smb/ftp/nfs, credentials;
+  `publish` hands SMB logins to `core::smb::set_credentials`, FTP ones to `core::ftp::set_logins`).
+- `crates/ps5-dump-forge-flink`: FLINK v2, Connect's protocol (one `lib.rs`: 16 B frames with CRC-32,
+  BLAKE3 MACs, the Hello/Pair handshake, RPC, data lanes, `tune_buffers`); std + blake3 + crc32fast + serde_json + x25519-dalek + getrandom.
 - `ps5/`: the payload's Docker harness: `Dockerfile`, `build.sh`, `linker.sh`, `entry.c` (launch modes,
   logs, `ps5_notify`), `compat.c` (statfs symvers; `cpuset_getaffinity` answered per thread, so std sees the 5 CPUs
   a payload may use, not 16), `launcher.c` (tile registration), `icon0.png`,
@@ -76,12 +130,20 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   replaces `transport-tauri.tsx`, `Picker.tsx` the native dialogs, `main-http.tsx` runs `launcher.ts`
   (start the payload via elfldr) and `appcache.ts` first.
   Edit tab: `Edit.tsx` (card, explorer, row actions, drops), `EditChanges.tsx` (pending bar, conflict
-  question), `EditApply.tsx` (mode, `edit_check`, confirm, uploads), `explorer.ts` (pure: the tree, the
-  pending changes' fold, a port of core's `Edited` rules, `toEdits`, `checkable`).
+  and Discard questions, what an add brings: `fromHost`, `dropped`), `EditApply.tsx` (mode, `edit_check`,
+  confirm, uploads), `explorer.ts` (pure: the tree, the pending changes' fold, a port of core's `Edited`
+  rules, `planAdds` (clashes), `pendingReducer` (batches), `toEdits`, `checkable`, `stagingNames`).
   Storage tab: `Storage.tsx` (view switch), `Library.tsx`, `Files.tsx` (the File explorer).
+  Connect tab: `Connect.tsx` (a device hub: left This device with the QR and Add a device; right the
+  Devices list (peers and NAS) with its filter and Nearby (Autodiscovery's finds); device and NAS
+  details, the pairing wait, Add SMB / FTP / NFS), `ConnectHelp.tsx` (How to connect), `Transfer.tsx` (File
+  Transfer: Send as a transfer job, the browser's upload and download), `useConnectState.ts` (polls
+  `connect_state`; the online count). `Picker.tsx`: the tabbed picker (a tab per online device);
+  `JobList.tsx` the job list (`JobsCard`; `App.tsx` renders one per tab, that tab's jobs).
   `app/scripts/*.mjs`: plain-node checks (`check-paths`, `check-poller`, `check-launcher`, `check-update`,
   `check-upload` (the upload URL's encoding against the server's decoder, `upload` over a mocked XHR),
-  `check-explorer` (`explorer.ts`: the fold mirrors core's `edit.rs` tests), `check-shoulders` (`shoulders.ts`: L2/R2 keys, tab order), `smoke`).
+  `check-explorer` (`explorer.ts`: the fold mirrors core's `edit.rs` tests), `check-shoulders` (`shoulders.ts`: L2/R2 keys, tab order), `check-peers` (`peers.ts`: saved
+  devices' names in paths and backend text), `smoke`).
 - `vendor/ps5upload-{fpkg,pkg}`: ps5upload v7.0.22 crates (readers, FPKG builder, verify) plus a
   local patch series in `vendor/patches/`; see `vendor/README.md`. Edition 2021 on purpose.
   `vendor/lzma-rust2`: crates.io 0.22.0 + patch 0021 (bounded multithreaded LZMA2 decode, which
@@ -89,6 +151,15 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   from the workspace.
 - `scripts/`: checks and releases (see Commands); `check-versions.sh` also matches the tag on a tag build.
   `fuzz/`: cargo-fuzz targets, its own workspace.
+- `tests/`: the Connect smoke suite against a real console: `README.md` there, every script in
+  `tests/scripts/` (`smoke.mjs`, 26 cases over both Forges' HTTP APIs; by user decision at most 30, only
+  critical ones, 10–15 minutes on a console; `gen-game.mjs` a fake game ≤ 1 GiB; `dry-run.sh` two local
+  Forges instead). Its servers run in Docker only (by user decision: setup refuses an address that isn't
+  this computer + the container's published port, so a real NAS is never written): `nas.sh` a Samba guest
+  share (1445, writable `out`), `ftp.sh` vsftpd (2121, `forge`/`forge`, idle sessions closed after 20 s for
+  the stale-session case), `nfs.sh` unfs3 NFSv3 (12049) and NFS-Ganesha NFSv4.1 (12050, its
+  `/share` a Docker volume). The SMB and NFS crates' and core's live tests use the same containers
+  (`FORGE_SMB_TEST`, `FORGE_NFS_TEST`; FTP's run against the crate's `fake` server); see `tests/README.md`.
 - `DESIGN.md`: the UI design system (tokens, components, colour/contrast rules, the cover glow);
   `app/src/styles.css` holds the values. Read it before changing the UI.
   `app/src/locales/`: the UI text, one file per language (see Key decisions).
@@ -152,7 +223,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   (`Lz4Facts.runtime_action`: install, replace, keep with the version; `convert.amprRuntime`) and the index (a
   non-ok one written afresh, `amprIndex`, an ok one counted stale while Remove backport is on; for an fpkg target always `amprPkgIndex`: the builder writes it). The Edit tab's
   LZ4 tile (its Game facts fold) names install/replace (keep only for an `other` build with a version) and a non-ok index, and shows for
-  an AMPR game a conversion installs the runtime into. Job rows: an LZ4 tab job has a yellow edge and an
+  an AMPR game a conversion installs the runtime into. Job rows: an LZ4 tab job has an
   `LZ4 pack|unpack|trace|unpatch` tag; an `unpatch` without `lz4_in_place` (a server API request; Convert sends
   none) is tagged `AMPR runtime`.
 - Every conversion repairs an AMPR title (`eboot.bin` imports libSceAmpr; by user decision): any target, Convert,
@@ -176,8 +247,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   Into a `.pkg` no index is built here: the old one (an AMPR title's), the journal and logs are left out and the
   builder writes it after its SDK filtering (below), so leftovers it drops can't fail preflight. A packed source
   gets the runtime action and keeps its index, manifest, journal and logs byte for byte; a replaced runtime then
-  differs from the manifest's loose record, which `reader::unpack` lets pass for `RUNTIME` only (ponytail:
-  unverified on the console). `Lz4Facts.index` (`ok`/`stale`/`damaged`/`missing`; `None` when packed, when the
+  differs from the manifest's loose record, which `reader::unpack` lets pass for `RUNTIME` only. `Lz4Facts.index` (`ok`/`stale`/`damaged`/`missing`; `None` when packed, when the
   action is `Untouched`, or for an archive's index over 16 MiB) is that comparison; Edit's game facts, Convert, the LZ4
   tab and the CLI say a conversion refreshes it.
 - The recommended trace path is a traced `.ffpkg` mounted `image_rw=`, then **Download traces** (http build
@@ -274,15 +344,19 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
      journal, or rebuilt beside and renamed over it (`edit_rebuild`), as exception 2 replaces an image.
 - Edit tab (after Convert; it replaced Inspect, by user decision; `app/src/Edit.tsx`): left a compact game card
   (`SourceCard compact`, smaller than the other tabs' by user decision: columns 1fr:2fr from 1100px, 56px
-  cover, title ID and version tiles, findings; folds Game facts, param.json, Details; Leftovers; Delete),
+  cover, title ID and version tiles, findings; folds Game facts, param.json, Details; Delete in its head,
+  none for a NAS or peer source; under it a Leftovers card only when `.part`s were found),
   right an explorer of the source (`role="grid"`, crumbs, Up, a filter over
   everything below the folder shown, folders first in natural order, at most 2,000 rows shown; arrows,
-  Home/End, PageUp/PageDown, Enter, Backspace or Alt+Up, F2 rename, Delete), "How this works" before a
-  source. Archives are browsed and extracted from, never edited (by user decision). Changes: rename, delete,
-  Add files / Add folder (the transport's pickers; the web picker browses the server and multi-selects within
-  one folder) and drag and drop onto a folder row or the folder shown (Tauri `onDragDropEvent` gives paths,
-  a browser `File`s); no New folder button (by user decision: a `Mkdir` comes only from a dropped or added
-  empty folder). They stack in the UI and nothing is written until **Apply** (by user decision);
+  Home/End, PageUp/PageDown (10 rows), Enter or a double-click, Backspace or Alt+Up, F2 rename, Delete),
+  "How this works" before a source, a Reading card while one is read. Archives are browsed and extracted
+  from, never edited (by user decision). Changes: rename, delete,
+  Add files / Add folder (the tabbed picker: this device or a paired peer, never a NAS; the web picker browses
+  the server and multi-selects within one folder; from a peer `Add.from` is its `flink://` path, read over
+  FLINK, each file stamped by size + mtime and re-checked on every read; a peer's root is refused,
+  `edit.peerRoot`) and drag and drop onto a folder row, elsewhere on the card the folder shown (the count
+  line says "Drop to add to <folder>"; Tauri `onDragDropEvent` gives paths, a browser `File`s); no New
+  folder button (by user decision: a `Mkdir` comes only from a dropped or added empty folder). They stack in the UI and nothing is written until **Apply** (by user decision);
   **Undo** takes back the last batch (one drop is one batch), **Discard all** clears them (asks above one
   change); no per-change removal (ruling). The pending list folds as core will (`explorer.ts`, a port of
   `Edited`'s rules; a host folder listed through `host_tree`, so it folds file by file) with badges New
@@ -297,13 +371,20 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     that mode works; `needed_inside`/`free_inside` from the `.exfat`/`.ffpkg` editor's `plan_sized`;
     `rebuild_needs` = the image + 64 MiB (`.ffpfsc` its every-block-raw worst case, `.pkg` the builder's
     estimate + 1% + 64 MiB) and `free_beside`; fields that don't apply `null`; a job using the image gives
-    "a job is using <image>" in both lists). In place refused shows **Rebuild needed** with the reason,
+    "a job is using <image>" in both lists). In place refused shows **Rebuild needed** with the reason
+    (`.ffpfsc`/`.pkg`: "always rebuilt"),
     both refused **Can't apply** with core's findings, both possible a radio choice (by user decision In
-    place green, Rebuild red, chosen or not; the single-mode tags the same, Can't apply red). Apply confirms (no
-    undo; close the game first) and starts the job; while the Apply or its job runs, the changes, the
-    source pickers, Delete and a Library hand-off are locked; otherwise opening a source (another, the same
+    place green, Rebuild red, chosen or not; the single-mode tags the same, Can't apply red, Changed
+    directly blue); a failed check says so with **Check again**; changes that leave the source as it is
+    show "Nothing to change" (no mode; Apply refuses an empty list). Apply is off while a change won't
+    apply ("N changes won't apply"). Apply confirms (no
+    undo; close the game first; an interrupted edit is restored first) and starts the job; while the Apply
+    or its job runs, the changes, the source pickers, Delete, Extract and a Library hand-off are locked (a
+    pick or hand-off isn't opened, a note says so); otherwise opening a source (another, the same
     again, a Library hand-off) drops the pending changes without asking. Done Ok: the source is read again and the
-    changes cleared; a failure keeps them with the error. Job rows: a plain `.tag` **Edit** or **Edit ·
+    changes cleared; a failure or cancel keeps them with the error (a folder is read again: part may be
+    in). An edit job of the source not started here (a reload, another viewer) or an LZ4 in-place job:
+    the source is read again when it ends, the changes kept. Job rows: `.tag.edit` **Edit** or **Edit ·
     rebuild**, the error box led by "Can't apply the changes:"; a cancelled job's error that starts
     "cancelled; " (what stays changed) is kept and shown as cancelled. No CLI subcommand for edits (ruling).
   - **Room** (by user decision, as ps5upload): no growing an image and no FAT reserve; what an in-place
@@ -332,7 +413,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     beside the image is a preflight finding (`undo journal:`).
   - **Refused** (preflight findings, nothing written; every offender listed): any LZ4 option,
     `remove_backport`, an archive, an LZ4-packed game ("unpack it first"), a bad game path (relative,
-    `/`-separated, no empty/`.`/`..` part, no `\`), an op that doesn't apply, an `Add.from` that is missing,
+    `/`-separated, no empty/`.`/`..` part, no `\`), a source on a NAS or a peer (browsed and extracted from
+    only), an op that doesn't apply, an `Add.from` on a NAS or that is missing,
     a link, not a file or folder, the image itself or inside the source folder (by identity), names the
     format can't hold (the conversion's checks run on the edited tree: `preflight::input`, depth, the
     writer's layout), the editor's own findings, and on the PS5 (by user decision, as ps5upload) an image
@@ -379,11 +461,12 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     the source and each `Add.from` first, so a FIFO is 400), `edit_upload`, `edit_discard`; an edit job
     starts through `start_job`. `host_tree` → `HostTree {kind, size, files, empty_dirs, truncated}`: a
     link refused, a folder through `ScannedFolder::scan` (junk, links, special files, hard links, names as
-    `Edited` sees them), `truncated` past 200,000 entries or 15 s (ponytail: a truncated listing skips the
+    `Edited` sees them; a `flink://` one through the peer's listings, `peer_tree`), `truncated` past 200,000 entries or 15 s (ponytail: a truncated listing skips the
     scanner's hard-link and unreadable-file checks; the job's scan runs them).
   - **Extract** (user request, MVP; `extract_paths.rs`): a row's Extract (file or folder on disk, not a
     pending one) and the toolbar's **Extract folder** (the folder shown; at the root every top-level
-    entry, the whole game) ask for a destination folder on this machine and start a job with
+    entry, the whole game; off, its title saying why, for a folder only the pending changes hold) ask for
+    a destination folder on this device, a paired peer or a saved NAS and start a job with
     `ConvertRequest.extract` (game paths), `format` folder, `output` that folder, no edits; any source
     `open_source` opens (folder, every image, `.pkg`, archives), no game-root checks. Each selection lands
     under its last component (`data/movies` → `<output>/movies/…`). Refused before a byte is written: a
@@ -394,8 +477,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     each file streamed in 8 MiB reads through an exclusive temporary name beside it, synced, renamed
     without replacing; BLAKE3 while writing; verify checks sizes (full: re-reads and re-hashes). No
     rollback (ponytail): a failure or cancel deletes this job's temporary files and says "N of M files were
-    extracted before it and stay". It reads the source as it is on disk; with changes pending a muted line
-    says so. Job row tag **Extract**, error box "Can't extract:". Server and Tauri: nothing new (`start_job`).
+    extracted before it and stay" (none finished: "<folder> was created and stays"). It reads the source as it is on disk; with changes pending a muted line
+    says so. Job row: tag **Extract**, error box "Can't extract:". Server and Tauri: nothing new (`start_job`).
   - **Additional content** (by user decision): a source with no `eboot.bin` at its root and a
     `sce_sys/param.json` that parses to a title ID (a DLC, an update or another package) is a source class,
     not a finding (`GameInfo`/`Inspection`/`LibraryEntry.additional_content`; without param.json or a
@@ -406,20 +489,23 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     (else `preflight::ADDITIONAL_CONTENT_TARGET`; Convert offers only Folder and fpkg, default fpkg), its
     param.json category not checked; the LZ4 tab shows a note and no actions. The `.pkg` builder no longer
     refuses it (vendor patch 0023; `content_class` gives 0x21 when param.json has neither
-    `applicationCategoryType` nor `applicationDrmType`, else the game classes 0x20/0x26; package.rs notes "packaged as additional content (DLC) or an update"). Unverified on the console.
-- Storage (the tab after LZ4, `app/src/Storage.tsx`; it replaced the Library tab, by user request): a view
-  switch at the end of its own row over the view (`.seg.view-switch`, `role="radiogroup"`, smaller than the
-  screen tabs so it never reads as a second navbar): **[disc] Library** | **[folder] File
-  explorer** (the default, by user decision); the view and, on a computer, one chosen folder shared by both live in memory only; both views
-  stay mounted.
+    `applicationCategoryType` nor `applicationDrmType`, else the game classes 0x20/0x26; package.rs notes "packaged as additional content (DLC) or an update").
+- Storage (the tab after LZ4, `app/src/Storage.tsx`; it replaced the Library tab, by user request): one card
+  (by user decision, design "D"), its head the view switch (`.seg.view-switch`, `role="radiogroup"`, smaller
+  than the screen tabs so it never reads as a second navbar): **[disc] Library** | **[folder] File
+  explorer** (the default, by user decision; under 400px the labels are visually hidden, still the radios'
+  names), then the view's actions; each view owns its card and head, a copy of the switch in each; the
+  view and, on a computer, one chosen folder shared by both live in memory only; both views stay mounted.
 - Library (the Storage tab's first view, `app/src/Library.tsx`): the game dumps on this computer or console, scanned
   on demand; no database, no index, no persisted state. Core `scan_library(roots)` (PS5 server roots only;
   elsewhere it errors) / `scan_library_folder(root)` (a chosen folder) / `library_cover(path)`; Tauri
   `library_scan {root}` (`root` required) / `library_cover`; server `POST /api/library_scan` `{}` (`"root"`
   string: scan that folder on any platform, a non-string is 400; without it the PS5 scans its roots and a
   computer answers 400 "choose a folder to scan"; on the PS5 the reply adds `storage` `{free, total}`
-  (bytes, `statfs` of `/data`; absent when `statfs` fails), shown in the header as "Free 312 GB of 825 GB"
-  (decimal GB, whole numbers, one decimal under 10 GB)) and `POST /api/library_cover` `{path}` (409 while
+  (bytes, `statfs` of `/data`; absent when `statfs` fails), shown first in the head's actions, before Refresh,
+  as "Free 312 GB of 825 GB" (decimal GB, whole numbers, one decimal under 10 GB; the File explorer shows the same,
+  from `POST /api/storage` → `{free, total}` or `null` (a computer, or `statfs` failing), renewed with each listing;
+  the PS5 only, by user request; no game count line there: the kind chips count)) and `POST /api/library_cover` `{path}` (409 while
   stopping, 429 when the shared cap of 2 concurrent source reads (inspections, naming, covers, scans, `host_tree`, `edit_check`) stays full for
   30 s: a read waits for a slot first, at most 4 waiting; 409 once stopping).
   A chosen folder may be on any filesystem, a network share included; mounts nested inside it are walked,
@@ -450,31 +536,50 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     name), version, `has_cover` (a regular `icon0.png` of 1 B..512 KiB by metadata; discovery reads no
     icon), `lz4_packed` (`reader::detect`'s rule: a root `ampr_assets.index` starting with `AMPRPAK4`; the
     UI's LZ4 badge), `additional_content` (its label). Sorted by title, ID, version, path. `library_cover` reads `sce_sys/icon0.png`
-    (≤ 512 KiB) lazily, one at a time in list order, only for an entry the page lists.
+    (≤ 512 KiB) lazily, one at a time in list order (the chosen kind chip's entries first), only for an
+    entry the page lists; failed ones are tried again after 3 s, at most 5 rounds per scan.
   - **Semantics**: `runtimePlatform()` (`GET /api/session` `platform`) decides. On a computer (`host`)
     nothing scans until the user chooses a folder (**Choose folder**; **Refresh** rescans it). A refused
     or failed newly chosen folder is an error screen with core's message and drops the previous folder and
     list; a failed Refresh keeps the list. On the PS5 the first open scans the server's roots, **Refresh**
     rescans; no picker. Everything lives in memory until the app closes. Cards and rows show the title ID.
+    While a scan runs Refresh and Choose folder are `aria-disabled` (they keep focus); no games found is
+    an empty panel (on a computer with **Choose another folder**); "Loading" until the platform is known.
+    A folder chosen in the File explorer is scanned once the Library shows, as if chosen here.
+  - **Kind chips** (under the head and the count): All, then only the kinds present (Folder, ffpkg, exfat,
+    ffpfs, ffpfsc, fpkg), LZ4 packed and Additional content, each with its count; one chosen
+    (`aria-pressed`), in its format hue; a chosen kind that is gone shows All. Cards or List (compact rows).
   - **Actions**: Edit and Convert hand the entry to `App` as a `SourceSelection {id, path, kind}` (one per
     tab; the tab switches and loads it; Edit refuses it while changes are being applied); Delete uses the
     same `confirmDelete` (`app/src/delete.tsx`), `delete_path` and refusals as Edit, then `notifyDeleted`,
-    which Edit, Convert, LZ4, the Library and the File explorer all hear.
+    which Edit, Convert, LZ4, the Library and the File explorer all hear. While a delete runs every other
+    trash button is off and the entry's Edit and Convert too; its own trash reads "Deleting <name>".
 - File explorer (the Storage tab's second view, `app/src/Files.tsx`): Edit's explorer (classes, crumbs, Up,
-  filter, `role="grid"`, the same keys, at most 2,000 rows) with no pending list and no Apply: every action
-  happens at once, a destructive one after the question. Root: on a computer the chosen folder (Up stops
+  filter, `role="grid"`, the same keys, at most 2,000 rows) with no pending list, no Apply and no note: every action
+  happens at once, a destructive one after the question. From 880px two panes (by user decision): a folder
+  tree ("Folders") beside the list, the chain from the root to the folder shown, each folder on it with its
+  subfolders (`list_dir`, lazily, one folder at a time from the root down; kept while the view shows and
+  listed again, still shown until the answer, on Refresh, on showing again and after a move or a change
+  outside the folder shown; dropped only for a new root, folders off the chain pruned), the current one
+  `aria-current`, any opened by a click (focus stays in the tree; one tab stop, arrows/Home/End move); the
+  crumbs hide there (Up stays). Below 880px no tree. Root: on a computer the chosen folder (Up stops
   there), before one is chosen the home folder (the app: Tauri `home_folder` → `Option<PathBuf>`, not
   shared with the Library, so it never scans home by itself) or the server's roots (the http build); with
   neither (no home, or the start fails to list) the choose-a-folder panel; on the PS5 the server's browse
   roots (`list_dir` `null`; nothing to change there). Row actions: Rename (pencil; inline `NameInput`, F2),
-  Move to (the folder picker from the folder shown; `<picked>/<name>`), Delete (`confirmDelete`, its
-  plain-file variant too; Delete key), a ⋯ menu (`ChooseMenu` with `buttonLabel`) of Edit and Convert for a
+  Move to (the folder picker from the folder shown; `<picked>/<name>`; its own folder refused), Delete
+  (`confirmDelete`, its file, image and archive variants by extension; Delete key, "fn+Delete" in a Mac's
+  tip), a ⋯ menu (`ChooseMenu` with `buttonLabel`) of Edit and Convert for a
   folder or an image/archive by extension (the Library's `SourceSelection` hand-off), open a folder. A rename or move also
   `notifyDeleted(from)`. Links: a **Link** tag, opened when they point at a folder, never changed (core gives
   a link's resolved target as its `path`; the row keeps its own path, the target as `target`, which only
-  opening uses). Listed again after each action, when the view shows and on
-  others' deletes. Core `list_dir(path) -> Listing {path, parent, entries: [{name, path, dir, size,
-  link, mounted}], truncated}` (`listing.rs`, at most 10,000 entries; links resolved, a dangling one as itself);
+  opening uses). One action at a time: its row keeps focus (`aria-disabled`, "Deleting <name>" for a
+  delete), can't be opened and its ⋯ is off; every other row's actions are locked. Listed again after each
+  action (a failed one too), when the view shows and on others' deletes (one heard during this view's own
+  action waits for its end; a folder on the chain that went is left). The grid stays mounted while a folder
+  lists (a spinner only past 150 ms); Refresh is `aria-disabled` + `aria-busy` until its answer.
+  Core `list_dir(path) -> Listing {path, parent, entries: [{name, path, dir, size, link, mounted}],
+  truncated}` (`listing.rs`, at most 10,000 entries; links resolved, a dangling one as itself);
   server `POST /api/list_dir` `{path}` (`null` lists the roots; `parent` `null` at a root); Tauri
   `list_dir {path}` (`parent` is the filesystem's: the UI stops Up at its root), `move_path` and
   `delete_path` refuse (`from` and `to`) what the Library refuses as a chosen folder (core `folder_refusal`,
@@ -484,7 +589,215 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   The explorer sends `explorer: true` (the Picker doesn't: LZ4 traces need `/mnt/shadowmnt`): the server's
   roots are `Roots::library()` and core's `list_explorer` lists; on the PS5 it hides ShadowMount+'s mount
   folder (a path in it is 400, entries resolving into it left out) and marks `mounted` images (a
-  **Mounted** tag; Edit/Convert only). Elsewhere it is `list_dir` (Tauri ignores the flag).
+  **Mounted** tag, and once above the list a note saying why; Edit/Convert only). Elsewhere it is `list_dir` (Tauri ignores the flag).
+- Connect (the tab after Storage, `app/src/Connect.tsx`; server `connect.rs`, also run by the Tauri app at
+  setup: FLINK and UDP only, no HTTP listener): Forge ↔ Forge pairing, a peer's files read and written
+  over FLINK, transfer jobs, plus a LAN Discover. **FLINK** v2 (crate `ps5-dump-forge-flink`, our own protocol modelled on ps5upload's AVA1, ideas only; std +
+  blake3 + serde_json + x25519-dalek, by user decision) on TCP 9120: authenticated by BLAKE3 MACs (per-direction keys,
+  counters never reused) but **not encrypted** (by user decision; plaintext on the LAN, How to connect says
+  so). **Pairing is approved on the other device** (by user decision; it replaced the magic code): the
+  requester commits to an X25519 key, the target sends its key, the requester reveals (checked against the
+  commitment), and both show one six-digit check number (a man in the middle gets one 1-in-a-million guess);
+  the target's user sees "<name> (<platform>, <ip>) wants to pair" with that number and Allow / Deny
+  (`PairPrompt`, over any screen and dialog, focus on Deny, a fresh dialog per request; closing it
+  denies), the requester "Waiting for <address>" with the number and
+  Cancel, 60 s at most (`flink::PAIR_WAIT`, pings keep it alive). Refused unasked: a key id already paired
+  here (`already_paired`: a claimed id is never proved, so forget it first), more than 4 waiting or a second
+  from one address or key id (`busy`, not counted), 5 denied or unanswered per address per 10 min
+  (`too_many_attempts`). `/api/connect/approve` is as open as the rest of the HTTP API (by user decision); the
+  app answers only in its own window. **Pairing persists** (by
+  user decision, the one saved state beside `forge.lang`): `node.key` + `peers.json` in the data dir (PS5
+  `/data/dumpforge/connect/`); Forget removes it on this side, closes its inbound control sessions
+  and lanes, and refuses further use of outgoing cached sessions. A saved device is keyed by its key id,
+  never its address: every handshake (in or out) and discovery reply updates its address in place, so a
+  new IP or port never makes a duplicate, and pairing again updates the one entry. Saved devices: at most
+  9, online = a handshake within 12 s. At start (by user request), with any device saved, the first probe
+  round runs at once and one Discover search runs, so a device on a new address is found; the search runs
+  at every start, saved devices or not, in the desktop app and on the PS5 alike (by user request; its finds wait
+  under Nearby). Discover, labelled **Autodiscovery** in the UI (by user decision, every language) (10 s): Forge (UDP 8094; name, platform, port, key id,
+  never the code) and NAS via mDNS (smb/ftp/nfs, trusted as announced; AFP dropped: no client; each result tagged SMB / FTP / NFS as the Devices list tags them, its **Save** opens that protocol's Add
+  dialog prefilled with its name and `host[:port]`, by user decision; a Forge keeps Pair) and Windows PCs via WS-Discovery (`wsd.rs`:
+  Probe to 239.255.255.250:3702 for `wsdp:Device`, matches typed `pub:Computer`, Resolve when no XAddrs, the name
+  from one WS-Transfer Get to port 5357, else the IP). Every NAS or PC host found is probed meanwhile
+  (`Lan::confirm_hosts`, 4 hosts at a time, `probe::serves`: SMB 445, NFS 2049, FTP 21, each confirmed by its
+  protocol as Add a device checks it; a protocol mDNS announced on that host isn't checked again); a new
+  batch starts at most 3 s past the 10 s (`PROBE_GRACE`; up to 64 mDNS + 64 WSD hosts can't stretch a search to
+  minutes), so a search ends at most ~6 s late, a host still unprobed then shown as mDNS announced it (a WSD PC
+  not at all). The mDNS list is republished whenever it changes (a later SRV or A record corrects an address
+  or port). `mdns::merge` lists one entry per host +
+  protocol + port under the host's mDNS (else WSD) name, a WSD host only once something answered. No subnet sweep
+  (by user decision: only hosts that announce themselves). DLNA was removed
+  (by user decision: it can't list or transfer games; don't re-add it). Pairing works on local networks
+  only (by user decision; `connect::is_local`: private/link-local IPv4, 100.64/10 (Tailscale), loopback,
+  IPv6 ULA + link-local): `dial` refuses another address, `accept_loop` drops it; a NAS is not limited.
+  **Add a device probes first** (by user request; `probe.rs`, `Connect::probe`; server `POST /api/connect/probe`
+  `{address}` → `{kind: forge|smb|nfs|ftp, host, port, name}`, Tauri `connect_probe {address}`): `host`, `host:port`
+  or `[v6]:port` (`nas::parse_host`), the name looked up once (IPv4 preferred, within 1.5 s), then every check at
+  once, each confirmed by its protocol, never by an open port: a Forge by a FLINK Hello (`flink::introduce`:
+  Hellos swapped, nothing paired, asked or counted; local addresses only) on the port its reply to Discover's
+  query sent unicast to UDP 8094 names (1 s; `discovery::ask`), else on 9120 or the typed port, SMB by an SMB2 NEGOTIATE reply (any status), NFS by an RPC NULL to program
+  100003 v3 (PROG_MISMATCH counts), FTP by a `220` greeting. No port: Forge > SMB 445 > NFS 2049 > FTP 21; a
+  port: FTP > NFS > SMB > Forge there. Each check gets 1.5 s to connect and 1.5 s for its exchange, then its
+  socket is shut down (a server dripping bytes can't hold it): about 3 s, 4 s for a local Forge; replies are
+  buffered as bytes arrive. A Forge off the local network (its discovery reply alone) yields to a NAS answering
+  there, else pairing's not-local error; nothing: "nothing to connect to at <address>". A Forge's `host` is the
+  address checked (a typed IP as typed, an IPv6 scope kept), a NAS's the typed name.
+  The UI then pairs with the Forge at `host:port` or opens that protocol's Add dialog prefilled (Nearby's Pair
+  sends the request directly, no probe). ponytail: one pick when several answer; a name is probed at one address; a NAS is not
+  logged into before Add opens; a stalled name lookup's thread is left running.
+  **Saved NAS devices** (by user decision): SMB, FTP or NFS (`protocol`, fixed by
+  Add a device's SMB / FTP / NFS button or the probe, no radio; an edit keeps it; by user decision NFS too, and no WebDAV), saved from Autodiscovery (any result's
+  **Save** opens Add NAS prefilled with its name, `host[:port]` and protocol) or added by address
+  (`host[:port]`, the protocol's port by default: 445, 21, 2049) with an optional user + password (SMB: none
+  is a guest login; FTP: anonymous; NFS: no login at all, the fields hidden and a save drops them),
+  `nas.json` beside `peers.json` (0600; ponytail: the password plaintext at rest), never logged, never in
+  a reply (`has_password`); one entry per host + port, whatever the protocol (a save there updates name,
+  protocol and the credentials it names; an edit by `id` moves the one entry), Forget; an offline entry
+  saved by IP moves to the one host a search finds with its protocol and a similar name (same letters
+  and digits, any case; none saved there yet; `NasList::migrate`, run as every search ends, the one at
+  start included), keeping its login; online = a TCP
+  connect to its port each probe round (ponytail: an NFSv3 server reached only through its portmapper reads
+  offline unless its nfsd port is saved). The Devices list shows online devices first, peers before NAS devices, at most 9 in
+  all, each with a kind tag (Forge, SMB, FTP, NFS), its facts (a peer's platform and address, a NAS's
+  `host[:port]` and user or Guest, none for NFS) and **Online**, else "Offline · seen: 5 hours ago"
+  (relative, the largest whole unit; a peer's `last_seen`, a NAS's `last_online`, memory
+  only, cleared when its address changes);
+  routes `nas_save {id?, name, host, port?, user?, password?, protocol?}` → `{id}`, `nas_forget {id}`, the
+  snapshot's `nas`. **Games on a NAS, and outputs onto it** (SMB by user choice over WebDAV; writes by user
+  decision): a saved NAS is a game source and an output, served like a peer's files (core `remote.rs`
+  through `smb.rs`, `ftp.rs`, `nfs.rs`; streamed, never copied first): `smb://<host>[:<port>]/<share>/<path>`,
+  `ftp://<host>[:<port>]/<path>`, `nfs://<host>[:<port>]/<server path>` (the port only when not the
+  protocol's). Read in Convert, Edit (browse and Extract only, muted `edit.nasNote`, no Delete), inspect,
+  covers, transfers and `list_dir` (`smb://<host>` lists its disk shares, `nfs://<host>` what is above its
+  exports); folders and `.exfat`/`.ffpkg`/`.ffpfs`/`.ffpfsc` read in place (each read re-checks the file's
+  size + mtime, the `SourceStamp`; no identity: ponytail). Written by Convert (an image as a `.part`
+  there, read back over the network to verify, renamed no-replace; a folder or LZ4 pack folder file by file
+  through exclusive temporary names; an fpkg streamed as a `.part`), Extract and transfers (no rollback, as
+  onto a peer); names going into any remote folder are checked as case-folding (a case-sensitive server
+  refuses `A/x` beside `a/y` too: the safe direction). An FTP output that an fpkg or LZ4 packs in a folder need must pass `ftp::can_rewrite` (a
+  `REST` + `STOR` probe in the output folder; else "this FTP server can't rewrite part of a file");
+  ponytail: FTP has no sync and tells no free space (a full disk fails the upload), its rename is check,
+  then `RNTO`. `nas.rs` `NasList::publish` hands SMB logins to `core::smb::set_credentials` and FTP ones to
+  `core::ftp::set_logins` (at start, on save and forget), never logged; NFS calls as AUTH_SYS uid 0
+  (ponytail: a `root_squash` export maps it to the anonymous user). Refused there: a `.pkg` or an archive
+  as a source ("copy it to this device first"), an output beside a game there (choose an output folder),
+  edits, `host_tree`, Edit's Add and `host_tree` from a NAS (SMB, NFS and FTP: only a `flink://` path
+  is added from another device; the UI's Add lists peers only), LZ4 patch/in place/traces, delete and move ("a NAS share is read only here"; FTP: "on another
+  device"). The File explorer and the Library list no NAS and no peer. Test servers: Docker only (above,
+  `tests/`), core `tests/smb.rs`/`tests/nfs.rs` gated by `FORGE_SMB_TEST`/`FORGE_NFS_TEST`, `tests/ftp.rs`
+  on the crate's fake server.
+  **Pickers** (by user decision; `Picker.tsx`, every source and output picker but the Library's, the File
+  explorer's and LZ4 profile/traces): while a paired peer or saved NAS is online, one modal with a tab per
+  device, this device first, then each online peer (`flink://<key_id>`) and each online saved NAS
+  (`smb://`, `ftp://`, `nfs://<host>[:port]`, `nasRoot`), for sources and outputs alike; Edit's Add lists
+  peers only (`peersOnly`). The desktop's local tab
+  is the custom picker over Tauri `list_dir` (home and mounted volumes, plus a **System dialog** button on
+  that tab only). Rows: at most 2,000 shown, one Tab stop, arrows move; multi-select's button reads
+  "Choose N files"; a picker starts where the last browse ended (kept until the page closes).
+  Nothing online: today's pickers exactly (native dialogs; the web Picker, with each saved NAS as a root,
+  outputs too (ponytail: an offline one included); the desktop app has no NAS source button (removed by user
+  request): a NAS game is picked on its tab while the NAS is online).
+  **A peer's files** (by user decision: streamed, never copied first): `flink://<key_id>/<path>`, relative to the
+  peer's share root (`/`; a Windows PC its home folder's drive, by user request), read in place like a NAS (core `remote.rs`, `net.rs`;
+  `connect_fs::ConnectRemote` registered with `core::remote::set` by `Connect::start`, server and Tauri alike):
+  Convert, inspect, covers, `list_dir` (`flink://<key_id>` is the share root), Edit's browse, Extract and
+  Add, transfers. Outputs may be on a peer too: an image as a `.part` there (`RemotePart`), verified by reading
+  it back over FLINK, renamed no-replace; a folder (Convert, LZ4 pack, Extract, a transfer) written in place
+  on the peer, each file through an exclusive temporary name (ponytail: no rollback, the error says what
+  stays); an fpkg as a `.part` there too (by user decision, streamed: vendor patch 0025's `PkgOut`, core
+  `RemotePkgOut`; the same onto a NAS; its clones read ahead for the self-check's and verify's small reads:
+  up to 4 windows per clone, 256 KiB doubling to 4 MiB as a read continues one, least recently used
+  dropped, every window dropped by any write, a read over 4 MiB served and not kept; over FTP each read is
+  a data connection, and a 10k-file package's verify took ~500 s without them; ponytail: windows per clone,
+  one lane at a time). Nothing of it is stored on this device's disk (by user decision):
+  the builder's Kraken spool is the output itself (`KrakenSpool::InPlace`; a production request ignores the
+  spool-folder variable), and vendor patch 0026 digests each compressed block (SHA3 + CRC32C) in memory as
+  it is written, so no byte is read back before the self-check; then the builder's self-check (fast:
+  samples; full: the block sweep and the `playgo-chunk.crc` pass, each a whole read; ponytail: one fused pass
+  would be a vendor patch) and the job's verify read it over the network (pinned by core's
+  `an_fpkg_on_a_peer_keeps_nothing_here_and_is_read_back_only_to_check_it`).
+  Refused for a peer path: `.pkg`/archive
+  sources ("copy it to this device first"), editing a peer's game, LZ4 patch/in place/traces, delete and
+  move. Peer side (`connect_fs.rs`): RPCs `stat`, `fs_list`, `read_open`/`read_close`, `mkdir`, `create`,
+  `sync`, `close`, `rename`, `remove`, `free`, every path confined to the share root (`join_checked`, the
+  parent canonicalized inside it, links never followed, special files and non-UTF-8 names marked so the
+  reader refuses them); writes only to files this session created (exclusive, then a no-replace rename),
+  unrenamed ones removed when the session ends; a path its own unfinished jobs use is refused ("in use by a
+  job on <name>"; `Connect::set_busy(jobs.uses_hook())`), so is (PS5) one at or inside `/mnt/shadowmnt`
+  (`core::out::refusal`; ponytail: no destination probe per peer write), and its jobs refuse a path a peer is writing
+  (`Jobs::set_external_busy(connect.writing_hook())`); Delete and Move refuse that path too (a move's
+  source and destination). This side keeps one control session per device and
+  up to 8 data lanes each for reads and writes (8 MiB chunks, each BLAKE3-checked; a write sends 64 MiB, a
+  sequential read fetches 64 MiB ahead (`RemoteReader`, `RemoteTree`), each dealt to the lanes; one session
+  and lane retry). Each read re-checks size + mtime (no identity: ponytail). Small files (≤ 8 MiB, `PUT_MAX`)
+  take one lane round trip each way: `Remote::read_checked` (a lane `read {path}`, the stat after the read in
+  `DataHead.stat`) and `Remote::put_new` (a lane `put {tmp, path}`: created, written, synced, renamed; the
+  writer holds a file in memory until it passes 8 MiB); a 10k-file game moved ~2.3x faster on the console.
+  The peer's RPCs are answered as soon as they finish (no polling).
+  **File Transfer** (by user decision, a modal; a device's **Send** opens it with the destination picker
+  at that device's root): **What to send** picks sources (Choose files / Choose a folder, any device: this
+  one, a peer or a NAS; a whole device, share or drive refused) and **Send to** a destination folder (this
+  device, a peer or a NAS; its button is off, with `connect.sendNeedsDevice`, while no peer or NAS is
+  online), each side with a device switch while one is online (switching drops that side's choice, so
+  does its device going offline), and Start queues a **transfer job** (the dialog closes)
+  (`ConvertRequest.transfer`, core `transfer.rs`; peer to peer relayed through this device; stages scan,
+  preflight, write, verify as Extract; a nameless root refused; no rollback: "N of M files were copied before
+  it and stay", or, with none finished, "<folder> was created and stays"; a peer's link is never read). Transfers run in a second slot beside the one heavy job (convert, edit, LZ4, extract): at
+  most one of each, each FIFO; a job whose paths are at, in or above an unfinished job's of the other kind
+  is refused at start ("<path> is in use by another job", or "is being written by another device"). The
+  old send/fetch/transfers/cancel/remote_list (routes, Tauri commands, the list) are gone (by user
+  decision). Chunks of 8 MiB dealt round robin to 8 lanes on every platform (by user decision, as
+  ps5upload; one big file uses them all), the PS5's sockets (FLINK and HTTP) at the largest buffers its
+  kernel takes (`flink::tune_buffers`); no resume (ponytail). Phones: the Connect tab's QR opens
+  `<url>/#connect`; the web build's **Upload to this device** / **Download from this device** move the
+  browser's files (disabled in the PS5's own browser, which can't pick files): files one at a time into a
+  folder picked on this device (progress, Cancel; Close, Escape and a click outside don't cut it; a failure
+  or Cancel says "N of M files were uploaded and stay on this device"), a file of this device saved by the
+  browser. Uploads go in 8 MiB chunks, 4 requests at once in a browser (by user decision; FLINK between devices keeps its 8 lanes; a browser runs about 6 per host and the page's polls need room; `connectUpload` in
+  `http-client.ts`, `id=&offset=&size=` on `POST /api/connect/upload`, assembled by offset in one `.part`):
+  35 MB/s to the PS5 where one request does 28. Both phone upload modes refuse a destination at or
+  inside `/mnt/shadowmnt` (aliases resolved) before reading the body or creating a file. Over plain
+  HTTP, not FLINK (a browser can't open TCP).
+- Connect UI (by user decision, the "Device hub" redesign): two columns
+  from 980px. Left: the This device card (name, platform, the page's 220px QR code in the web build, no
+  caption (hidden under 600px), the IP tile: the session `url`'s host on the
+  web, `ThisDevice.ip` in the app, else "Unknown"; no notes (by user request); a
+  plain `.small` **How to connect** in its head, as How LZ4 works and Convert's Compare formats), then (by user
+  request, the desktop app only; not the PS5's page) **Dump Forge on PS5** (a plain card, no pitch): a PS5
+  address (a saved PS5's IP prefilled, port 9021 by default) and **Install on PS5**, one click: `update.ts`
+  `ps5Release` asks GitHub for this app's version's release carrying `ps5-dump-forge-<v>-ps5.elf`, else the latest
+  release's, and Tauri `connect_payload_install {address, version}` has the console's elfldr download and start it
+  (`payload::load_release`, as self-update: `?uri=` with `args=serve`; the console needs the internet, the PC only
+  GitHub's API); **Send a payload** picks any ELF on this computer (ELF magic, at most 64 MiB) and streams it to
+  the same address (`connect_payload_send {address, path}`, `payload::send`; elfldr answers nothing, so a payload
+  that fails to start isn't seen). Needs an elfldr that listens on the network (the webkit autoloader's is
+  loopback-only). How to connect opens with a highlighted box: its title and a short paragraph on the GitHub download. Then Add a device (one address box + Connect: it probes the address
+  first, `connect.probe`, "Checking <address>" meanwhile, a Forge pairs and the waiting dialog shows the
+  check number, a NAS opens its Add dialog prefilled; a request that fails keeps the typed address; then
+  "Or add by protocol:" SMB / FTP / NFS). Right: Devices (in its head File Transfer, primary while a
+  device is saved, and then Autodiscovery too; an All / Forge / NAS filter while both kinds are saved,
+  "N of M online"; rows with Send for an online device and ⋯ for its details; empty: a panel with a
+  primary Autodiscovery) and Nearby under it (Autodiscovery inline, no dialog: the finds not saved yet
+  with Pair or Save, "Searching this network" and Stop while it runs; "No new devices found"). Details:
+  a Forge's address, key ID, last seen and status with File Transfer (online only), Forget and Close; a
+  NAS's address, user and password saved or not (not NFS) and status with Edit, Forget and Close; either
+  closes once the device is forgotten elsewhere. "Loading" until the service first answers; a failed poll
+  keeps the last good state (the pairing prompt too, at most its 60 s); with none, "Connect isn't
+  available: <error>". The header's indicator, on every
+  platform (it replaced the address button and the How to connect modal): grey **Disconnected** or green
+  **Connected (N devices)** (online peers + online saved NAS); a click opens the Connect tab.
+  Other devices by name (by user request): a source card and the Output label carry a green tag with the
+  device (paired Forge, or a NAS's saved name) when it isn't this one (Output says **This device** while
+  any device is saved), and every `flink://<key_id>` (and `smb://`, `ftp://`, `nfs://` address of a saved
+  NAS) the UI shows, paths and backend text alike (errors, job errors, checks, logs: `peers.ts` `readable`;
+  `nasName` for the tags), reads "<device name>: /<path>".
+- Jobs in the UI (by user decision): Convert, Edit, LZ4 and Connect each list only their own jobs
+  (`JobsCard`, inside the tab's panel, kept mounted; not Storage or About), by type (`jobType`: transfer (Connect), edit for edits and Extract,
+  lz4 for the LZ4 tab's, else convert). A row is a tile in the app's black for every type (`--inset`, by user decision; no
+  edge ring) and its type's tag: Edit blue (`--edit-*`), LZ4 yellow, Transfer green (`--transfer-*`,
+  "Can't transfer:"). Each of those tabs counts its type's unfinished (queued + running) jobs in its label,
+  after the name (`.count`, white on every tab, by user decision, hidden from screen readers, which read
+  "N active"; Connect counts transfers).
 - Names are never renamed: bad names (non-NFC, exFAT/PFS case collisions, forbidden chars, non-ASCII
   in PFS) fail preflight with every offender listed.
 - `.pkg` is built with `BuildRequest::production` only (plaintext `PPRPLAIN-NOAUTH!`, Kraken);
@@ -499,9 +812,13 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `common.tsx`), and in running text in bold (`Prose`); paths and file names keep the extension. The debug
   FPKG is labelled `fpkg`; its files, the `Format`/`Kind` id and the CLI flag stay `pkg`. Format copy and
   the About tab's formats table (`app/src/Formats.tsx`) follow ShadowMountPlus 1.7's README and release notes.
-  About's feature list (`formats.features`: bold name + a few words) is the user's text (by user decision):
-  Convert, Edit, Delete, LZ4 "with smart healing", Streamed, Archives, Storage (Library + File explorer), Safe, USB and SD cards, In
-  place or rebuilt; sized so the card matches the QR card's height at 1200px; every language translates it.
+  About (by user decision): the About card (the language select in its head, no introduction line) holds
+  the feature list (`formats.features`: bold name + a few words, the user's text) as one grid of nine
+  tiles in three sets: Convert, Transfer, Edit / Streamed, Archives, USB and SD cards / LZ4 "with smart
+  healing", Storage (Library + File explorer), Safe; `Formats.tsx` maps the icons by position, so every
+  language keeps the nine in that order (typed as nine, `Features`: tsc holds every language to it). Then
+  Compare formats (a row per format in its hue: fpkg, LZ4 packed folder, ffpkg, exfat, ffpfs, ffpfsc,
+  folder; each rating a `.chip` with an icon, never colour alone), then Credits on a card of its own. The page's QR code lives on the Connect tab (web build).
 - UI languages: English (the fallback), Russian, Simplified Chinese (`zh`), German, Spanish, French,
   Japanese, Brazilian Portuguese (`pt`), Italian, Korean and Arabic; UI text only (`app/src/i18n.ts`). Backend text
   (errors, findings, job logs, checks, `describe`), the CLI, `entry.c`'s notices, format ids, file names, product
@@ -509,9 +826,10 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `app/src/locales/<lang>.tsx`, one file per language, grouped by the file that shows them
   (`lz4`, `convert`, ...): `en.tsx` is the source and defines `Messages`, every other one is typed
   `Messages` (tsc fails on a missing key). A new language: copy `en.tsx`, translate, add one line to
-  `LANGUAGES` in `i18n.ts`. Each language is its own Vite chunk inside the bundle (embedded in the
+  `LANGUAGES` in `i18n.ts` (`tag` where `<html lang>` needs more: `zh-Hans`, `pt-BR`). Each language is its own Vite chunk inside the bundle (embedded in the
   `.elf`, listed in the AppCache manifest; nothing is downloaded), loaded by `initLang` before the
-  first render (both entries) and by `setLang` before a switch shows it. Components use
+  first render (both entries) and by `setLang` before a switch shows it (one that fails to load leaves
+  the language, and the selector, as they were). Components use
   `useMessages().<group>`, other code `msg().<group>` at call time (never at module load); plurals via
   `plural`, numbers via `num`; a sentence is one message per language, never spliced from fragments;
   code compares ids, not displayed text. `http-client.ts`/`launcher.ts` stay free of runtime imports
@@ -528,8 +846,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   language (`duration`). The server's PS5 notifications (started, port in use, stopped, can't
   close (jobs running), not taken over; `crates/ps5-dump-forge-server/src/notice.rs`) follow the console's language
   (`sceSystemServiceParamGetInt` LANG, mapped to the UI's languages, else English); English elsewhere.
-- No settings and no config file: the UI keeps choices in memory until it closes, except the UI
-  language, which `localStorage` keeps (`forge.lang`; by user decision; unreadable storage falls back to
+- No settings and no config file: the UI keeps choices in memory until it closes (Connect's pairings,
+  above, are the service's own state), except the UI language, which `localStorage` keeps (`forge.lang`; by user decision; unreadable storage falls back to
   the system languages). Defaults: Convert's target
   fpkg (`.pkg`), exfat for a `.pkg` source (by user decision; picker order Folder, fpkg, exfat, ffpkg, ffpfsc,
   ffpfs), ffpkg inside a `.ffpfsc` (by user decision), at zlib
@@ -557,7 +875,9 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   its release) and the release lists this build's exact asset (`ps5-dump-forge-<v>-<asset>`, `state`
   `uploaded`, `size` > 0). The toast shows only after a successful check that found an installable update; any
   failure (offline, DNS, HTTP, JSON, timeout) is silent: no toast, no error, no offline state. `UpdateToast.tsx`
-  (bottom-right, `role="status"`, once per start). Transport `updateTarget()` (`{version, asset}`, null = no
+  (bottom-right, bottom-left in RTL, full width under 600px; a hidden always-mounted `role="status"` holds
+  its title; once per start; Later / Update; a failed update says why with Close / Retry; the app's, once
+  the browser opens the download, says so with Close). Transport `updateTarget()` (`{version, asset}`, null = no
   updates) and `startUpdate(v)`. Desktop: Tauri `update_target` (asset by OS/arch, `-webview2` when a `WebView2`
   folder sits beside the exe) and `open_update {version}` (plain `X.Y.Z`; opens the release archive's URL in the
   browser via `open_url`, no self-replace; CSP `connect-src` has `https://api.github.com`). PS5 (`ps5.elf`, only
@@ -573,7 +893,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `--cfg libc_unstable_freebsd_version="11"` (the env var is ignored by libc ≥ 0.2.187) and struct-size
   asserts in the CLI. `panic=abort`.
 - The server has **no protections** by user decision: no pairing, token, Host/Origin/CSRF checks or path
-  confinement. Don't re-add them. Its delete and move routes (`delete_path`, Edit's and Storage's;
+  confinement. Don't re-add them (Connect's pairing guards FLINK on 9120 only, not the HTTP routes,
+  `/api/connect/*` included). Its delete and move routes (`delete_path`, Edit's and Storage's;
   `move_path`, the File explorer's; by user decision) refuse only what exception 3 lists (`edit_discard` removes a staging folder by the same rules); the
   page's question is UI, not authentication. `edit_upload` writes only under a source's staging folder.
 - The PS5 version is named "Dump Forge" (tile, notices, server texts, the web build's UI: `APP_NAME` in
@@ -587,11 +908,10 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `/data/dumpforge/ps5-dump-forge.elf`. Launch on open: the AppCache'd page asks elfldr
   (`GET :9021/<elf>?args=serve`; that copy, then the old path, then USB) only from the console's own
   browser at load.
-  On the PS5 the start notice only says "Dump Forge is launched" (no URL; the serve log has it); the page header
-  shows the server's host:port from `GET /api/session` `url`, never the viewer's `location`, then its QR
-  code (`GET /api/qr`: an SVG drawn by the server with the `qrcode` crate; 404 when the server can't tell
-  its IP). The address + QR is one button that opens "How to connect"; About names the address. The
-  desktop app shows no QR.
+  On the PS5 the start notice only says "Dump Forge is launched" (no URL; the serve log has it); the Connect
+  tab shows the server's host from `GET /api/session` `url`, never the viewer's `location`, and its QR
+  code (`GET /api/qr?connect=1`, `<url>/#connect`: an SVG drawn by the server with the `qrcode` crate; 404
+  when the server can't tell its IP). The desktop app shows no QR.
   L2 / R2 (PS5 only, session `platform` `ps5`): badges beside the tab bar and the pad's triggers
   step through the tabs, wrapping, from any focus, not under a dialog (`shoulders.ts`). The PS5
   browser keeps L1/R1 (back/forward), has no Gamepad API for pages and sends L2/R2 as `F7`/`F8`
@@ -657,7 +977,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     writer's order (folders first, then files, by lower-cased name) and the path tables rehashed; an
     emptied collision resolver is kept at size 0 (uroot keeps its inode; `PfsSource` accepts it); a rename
     that makes the first hash collision creates the resolver in a freed inode or a spare inode-table slot
-    (ponytail: a layout neither the writer nor MkPFS makes; unverified on the console).
+    (a layout neither the writer nor MkPFS makes).
   - `.ffpfsc` and `.pkg`: rebuild only (read-only on the console; no editor).
 - FPKG: outer PFS plaintext with the `PPRPLAIN-NOAUTH!` marker (native AES-XTS fails the console's auth),
   inner image Kraken-compressed (zlib metadata is rejected by the console, never offer it).
@@ -705,6 +1025,3 @@ FORGE_DEBUG_API=1 ps5/build.sh                 # bring-up build with POST /api/d
   the ceiling of a deliberate shortcut).
 - Changes to `vendor/` go into a new numbered patch in `vendor/patches/` and `vendor/README.md`.
   Don't replace `vendor/` with our own code unless asked.
-- Before release: hardware smoke test per format (SMP 1.7 mounts and boots `.exfat`/`.ffpkg`/`.ffpfs` and
-  `.ffpfsc` with each inner format; `.pkg` installs and boots), and the PS5 payload (page loads, a conversion
-  on `/data`, Stop).

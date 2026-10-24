@@ -43,6 +43,7 @@ for (const [source, path] of cases) {
 
 // upload() over a mocked XHR.
 let last = null;
+const all = [];
 globalThis.XMLHttpRequest = class {
   upload = {};
   status = 0;
@@ -58,6 +59,7 @@ globalThis.XMLHttpRequest = class {
   send(body) {
     this.body = body;
     last = this;
+    all.push(this);
   }
   abort() {
     this.onabort?.();
@@ -94,5 +96,39 @@ await assert.rejects(p, (e) => e === "aborted");
 const pre = new AbortController();
 pre.abort();
 await assert.rejects(c.upload("/g.exfat", "x", file, undefined, pre.signal), (e) => e === "aborted");
+
+// connectUpload(): 8 MiB chunks, all in flight at once (up to 4), finished by whichever ends last.
+const reply = (x, status, body) => {
+  x.status = status;
+  x.responseText = JSON.stringify(body);
+  x.onload();
+};
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const big = new Blob([new Uint8Array(20 << 20)]);
+all.length = 0;
+sent = [];
+p = c.connectUpload("/data/In", "a b+.bin", big, (s, t) => sent.push([s, t]));
+await tick();
+assert.equal(all.length, 3);
+const ids = new Set(all.map((x) => serverQuery(x.url, "id")));
+assert.equal(ids.size, 1);
+assert.deepEqual(all.map((x) => serverQuery(x.url, "offset")), ["0", "8388608", "16777216"]);
+assert.ok(all.every((x) => serverQuery(x.url, "size") === String(20 << 20) && serverQuery(x.url, "name") === "a b+.bin"));
+assert.deepEqual(all.map((x) => x.body.size), [8 << 20, 8 << 20, 4 << 20]);
+all[1].upload.onprogress({ loaded: 1000, total: 8 << 20, lengthComputable: true });
+assert.deepEqual(sent.at(-1), [1000, 20 << 20]);
+reply(all[2], 200, { done: false });
+reply(all[1], 200, { done: false });
+reply(all[0], 200, { path: "/data/In/a b+.bin", done: true });
+assert.equal(await p, "/data/In/a b+.bin");
+assert.deepEqual(sent.at(-1), [20 << 20, 20 << 20]);
+
+// A failed chunk: the others are aborted, the server told to drop the part.
+all.length = 0;
+p = c.connectUpload("/data/In", "x.bin", big);
+await tick();
+reply(all[0], 409, { error: "/data/In/x.bin: already exists" });
+await assert.rejects(p, (e) => e === "/data/In/x.bin: already exists");
+assert.ok(all.some((x) => serverQuery(x.url, "cancel") === "1"));
 
 console.log("upload: ok");

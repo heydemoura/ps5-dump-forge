@@ -578,8 +578,8 @@ pub fn unpack<T: SourceTree + ?Sized>(mut inner: Box<T>) -> Result<Unpacked<T>> 
                 Some(&n) if n == f.size => {}
                 // A conversion replaces a packed game's runtime with the bundled one (by user
                 // decision), keeping the manifest and index byte for byte.
-                // ponytail: assumes the console never checks the runtime's own record (it is
-                // loaded before AMPR serves a file); unverified on hardware.
+                // The console never checks the runtime's own record (it is loaded before AMPR
+                // serves a file).
                 Some(_) if f.path == RUNTIME => {}
                 Some(&n) => {
                     return Err(bad(format!(

@@ -27,6 +27,20 @@ export interface PickOptions {
   folderToo?: boolean;
   /** The folder to open at (else where the last browse ended). */
   start?: string;
+  /** A source picker (http build): the saved NAS devices are roots too; with `devices`, each
+   * online saved NAS is a tab. */
+  nas?: boolean;
+  /** Offer the other devices: while a paired Forge or a saved NAS is online, the custom picker
+   * opens with a tab per online device (This device first) in both builds; a pick there is a
+   * `flink://`, `smb://`, `ftp://` or `nfs://` path. With none online it is as without. */
+  devices?: boolean;
+  /** With `devices`: the paired Forges only, no NAS (Edit's Add: core adds no file from a NAS). */
+  peersOnly?: boolean;
+  /** With `devices`, no `start`: open on this device, not where the last browse ended (File
+   * Transfer's switch set to This device). */
+  local?: boolean;
+  /** File mode, on a saved NAS: the extensions offered there instead of `extensions`. */
+  nasExtensions?: string[];
 }
 
 /** One thing dropped on the window: a file or a folder. The app gives its host path; the http
@@ -108,4 +122,19 @@ export interface Transport {
   ): Promise<string>;
   /** http build: remove `source`'s staging folder (nothing if there is none). The app: nothing. */
   discardStaged(source: string): Promise<void>;
+  /** A Connect command (api.ts `connect`): Tauri `connect_<cmd>`, or `/api/connect/<cmd>`
+   * (`state` is a GET). Arguments are the same snake_case keys both ways; `nas_save` resolves
+   * with its bare id. Rejects with the service's error string. */
+  connect<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  /** http build: a browser file into the server's folder `dir` as `name` (Connect's phone
+   * upload); resolves with its path. The app rejects. */
+  connectUpload(
+    dir: string,
+    name: string,
+    file: File,
+    onProgress?: (sent: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<string>;
+  /** http build: the URL that downloads the server's file `path`; the app: null. */
+  connectDownloadUrl(path: string): string | null;
 }

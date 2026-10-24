@@ -21,19 +21,20 @@ import en, { type Messages } from "./locales/en";
 
 /** `numbers`: the Intl locale for digits when it isn't the tag itself (Arabic keeps Latin
  * digits, like the paths, versions and title IDs around them). */
-type Info = { name: string; load: () => Promise<{ default: Messages }>; rtl?: boolean; numbers?: string };
+type Info = { name: string; load: () => Promise<{ default: Messages }>; rtl?: boolean; numbers?: string; tag?: string };
 
 /** Each language in its own words (the selector, in this order), its messages, and `rtl` for a
- * right-to-left script (the page gets `dir="rtl"`; styles.css flips what doesn't flip itself). */
+ * right-to-left script (the page gets `dir="rtl"`; styles.css flips what doesn't flip itself), and
+ * `tag` where `<html lang>` needs more than the key (CJK glyphs and speech voices follow it). */
 const LANGUAGES = {
   en: { name: "English", load: async () => ({ default: en }) },
   ru: { name: "Русский", load: () => import("./locales/ru") },
-  zh: { name: "简体中文", load: () => import("./locales/zh") },
+  zh: { name: "简体中文", load: () => import("./locales/zh"), tag: "zh-Hans" },
   de: { name: "Deutsch", load: () => import("./locales/de") },
   es: { name: "Español", load: () => import("./locales/es") },
   fr: { name: "Français", load: () => import("./locales/fr") },
   ja: { name: "日本語", load: () => import("./locales/ja") },
-  pt: { name: "Português (Brasil)", load: () => import("./locales/pt") },
+  pt: { name: "Português (Brasil)", load: () => import("./locales/pt"), tag: "pt-BR" },
   it: { name: "Italiano", load: () => import("./locales/it") },
   ko: { name: "한국어", load: () => import("./locales/ko") },
   ar: { name: "العربية", load: () => import("./locales/ar"), rtl: true, numbers: "ar-u-nu-latn" },
@@ -100,8 +101,8 @@ async function load(l: Lang): Promise<Messages> {
 
 function apply() {
   if (typeof document === "undefined") return;
-  document.documentElement.lang = lang;
   const info: Info = LANGUAGES[lang];
+  document.documentElement.lang = info.tag ?? lang;
   document.documentElement.dir = info.rtl ? "rtl" : "ltr";
 }
 

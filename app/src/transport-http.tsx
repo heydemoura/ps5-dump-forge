@@ -7,6 +7,9 @@ import { useSyncExternalStore } from "react";
 import { reloadForUpdate } from "./appcache";
 import {
   call,
+  connectCall,
+  connectDownloadUrl,
+  connectUpload,
   getStatus,
   listen,
   selfUpdate,
@@ -18,8 +21,13 @@ import {
   watchStatus,
 } from "./http-client";
 import { setServerSeparator } from "./paths";
-import { pick, pickFiles } from "./Picker";
+import { picker, type SavedDevices } from "./Picker";
 import type { DropEvent, DropItem, Transport, Unlisten } from "./transport";
+
+const { pick, pickFiles } = picker({
+  list: (path) => call("list_dir", { path }),
+  saved: () => connectCall<SavedDevices>("state"),
+});
 
 // Paths are the server's: `/` until its session says otherwise (main-http.tsx asks it before
 // the app renders), never the viewer's OS. The poller starts from main-http.tsx too.
@@ -96,4 +104,7 @@ export const transport: Transport = {
   onDrop,
   stage: upload,
   discardStaged: (source) => call<null>("edit_discard", { source }).then(() => undefined),
+  connect: connectCall,
+  connectUpload,
+  connectDownloadUrl,
 };

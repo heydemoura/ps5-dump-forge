@@ -41,6 +41,16 @@ pub struct ListEntry {
 // ponytail: a truncated listing is the first 10,000 the folder yields, sorted, not the first
 // 10,000 by name.
 pub fn list_dir(path: &Path) -> io::Result<Listing> {
+    // A NAS share (`smb://host/share/...`; `smb://host` lists its shares) or a peer
+    // (`flink://<key_id>` lists its share root).
+    if crate::net::is_network(path) {
+        return crate::net::list_dir(path).map_err(|e| {
+            let kind = e
+                .downcast_ref::<io::Error>()
+                .map_or(io::ErrorKind::Other, io::Error::kind);
+            io::Error::new(kind, format!("{e:#}"))
+        });
+    }
     // dunce: Windows paths come back as `C:\x`, not `\\?\C:\x` (a network share keeps its
     // verbatim `\\?\UNC\` spelling).
     let dir = dunce::canonicalize(path)?;
@@ -110,7 +120,6 @@ pub fn list_explorer(path: &Path) -> io::Result<Listing> {
 
 /// Whether `path` is ShadowMount+'s mount folder or inside it, as typed (components) or
 /// resolved.
-#[cfg(any(target_os = "freebsd", test))]
 pub(crate) fn smp_hidden(path: &Path) -> bool {
     use crate::library_roots::shadowmnt;
     shadowmnt(&path.components().collect::<PathBuf>())

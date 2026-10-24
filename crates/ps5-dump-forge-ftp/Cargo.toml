@@ -1,0 +1,13 @@
+[package]
+name = "ps5-dump-forge-ftp"
+description = "A small blocking plain-FTP client: passive mode, std only"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[features]
+# The in-process FTP server the tests use (`fake::start`).
+fake = []
+
+[dependencies]

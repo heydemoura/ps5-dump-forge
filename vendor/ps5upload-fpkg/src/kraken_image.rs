@@ -13,7 +13,6 @@
 //! the outer image's geometry depends on its final length.
 
 use std::borrow::Cow;
-use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -66,6 +65,9 @@ pub struct KrakenImage {
     /// Where each file's first byte is stored, by afid.
     pub file_stored_at: Vec<u64>,
     pub mount_size: u64,
+    /// Each stored 64 KiB block's `(SHA3, CRC32C)`, taken as it was written, when [`compress`]
+    /// was asked for them: a plaintext image spooled in place needs nothing else of its bytes.
+    pub block_digests: Option<Vec<([u8; 32], u32)>>,
     /// The logical end of the data.
     pub data_end: u64,
     pub meta_base: u64,
@@ -247,16 +249,106 @@ fn hash_files(
     digests
 }
 
+/// Blocks of the stored image queued for [`BlockDigests`]' threads: at most 16 × 64 KiB.
+const DIGEST_DEPTH: usize = 16;
+
+/// Each stored 64 KiB block's SHA3 and CRC32C, from the compressed bytes as they are written,
+/// on threads of their own (one per 8 compressing threads: the stored image is a fraction of
+/// the source, and SHA3 runs far faster than the encoder).
+struct BlockDigests {
+    block: Vec<u8>,
+    sent: u64,
+    tx: Option<std::sync::mpsc::SyncSender<(u64, Vec<u8>)>>,
+    workers: Vec<std::thread::JoinHandle<Digested>>,
+}
+
+/// One digest thread's blocks: `(index, SHA3, CRC32C)`.
+type Digested = Vec<(u64, [u8; 32], u32)>;
+
+impl BlockDigests {
+    fn start(threads: usize) -> Result<Self> {
+        use std::sync::{Arc, Mutex};
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(DIGEST_DEPTH);
+        let rx = Arc::new(Mutex::new(rx));
+        let mut workers = Vec::new();
+        for _ in 0..threads.div_ceil(8).max(1) {
+            let rx = Arc::clone(&rx);
+            workers.push(
+                std::thread::Builder::new()
+                    .name("block-sha3".into())
+                    .spawn(move || {
+                        let mut done = Vec::new();
+                        while let Ok(Ok((i, block))) = rx.lock().map(|rx| rx.recv()) {
+                            done.push((
+                                i,
+                                crate::crypto::sha3(&block),
+                                crate::crypto::crc32c(&block),
+                            ));
+                        }
+                        done
+                    })?,
+            );
+        }
+        Ok(Self {
+            block: Vec::with_capacity(crate::BLOCK as usize),
+            sent: 0,
+            tx: Some(tx),
+            workers,
+        })
+    }
+
+    /// The next bytes of the stored image.
+    fn feed(&mut self, mut bytes: &[u8]) -> Result<()> {
+        while !bytes.is_empty() {
+            let take = (crate::BLOCK as usize - self.block.len()).min(bytes.len());
+            self.block.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.block.len() == crate::BLOCK as usize {
+                let full =
+                    std::mem::replace(&mut self.block, Vec::with_capacity(crate::BLOCK as usize));
+                let tx = self.tx.as_ref().expect("fed after finish");
+                tx.send((self.sent, full))
+                    .map_err(|_| crate::Error::Format("the block hasher stopped".into()))?;
+                self.sent += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Every block's digests, in image order; the image fed must end on a block boundary.
+    fn finish(mut self) -> Result<Vec<([u8; 32], u32)>> {
+        drop(self.tx.take());
+        let mut all = vec![([0u8; 32], 0u32); self.sent as usize];
+        let mut seen = 0u64;
+        for worker in self.workers.drain(..) {
+            let done = worker
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            seen += done.len() as u64;
+            for (i, digest, crc) in done {
+                all[i as usize] = (digest, crc);
+            }
+        }
+        if !self.block.is_empty() || seen != self.sent {
+            return format_err("the stored image's block digests are incomplete");
+        }
+        Ok(all)
+    }
+}
+
 /// Compress the image described by `plan` into `spool` from byte `base` on. `read` fetches a byte range of a source
 /// file, `metadata` is the metadata region's logical bytes and `keystone` the generated one.
+/// With `digest_blocks`, each stored 64 KiB block is digested as it is written
+/// ([`KrakenImage::block_digests`]), so nothing reads the spool back for them.
 #[allow(clippy::too_many_arguments)]
 pub fn compress(
     plan: &Plan,
     metadata: &[u8],
     keystone: &[u8],
     read: SourceRead<'_>,
-    spool: File,
+    spool: impl Write + Seek,
     base: u64,
+    digest_blocks: bool,
     threads: usize,
     level: kraken::Level,
     cancel: &AtomicBool,
@@ -285,6 +377,11 @@ pub fn compress(
     let hasher = std::thread::Builder::new()
         .name("file-sha3".into())
         .spawn(move || hash_files(hashed, files))?;
+    let mut block_digests = if digest_blocks {
+        Some(BlockDigests::start(threads)?)
+    } else {
+        None
+    };
     let piped = pipeline_local(
         threads.max(1),
         || {
@@ -366,6 +463,9 @@ pub fn compress(
             for (k, h) in halves.iter().enumerate() {
                 let b = h.bytes();
                 out.write_all(b)?;
+                if let Some(d) = block_digests.as_mut() {
+                    d.feed(b)?;
+                }
                 cursor += b.len() as u64;
                 parts.push((b.len() as u32, h.is_lz()));
                 delta[k] = h.is_delta();
@@ -400,21 +500,35 @@ pub fn compress(
         }
     }
     let image_len = cursor.next_multiple_of(crate::BLOCK).max(crate::BLOCK);
-    out.write_all(&vec![0u8; (image_len - cursor) as usize])?;
+    let pad = vec![0u8; (image_len - cursor) as usize];
+    out.write_all(&pad)?;
     out.flush()?;
+    let block_digests = match block_digests {
+        Some(mut d) => {
+            d.feed(&pad)?;
+            Some(d.finish()?)
+        }
+        None => None,
+    };
     Ok(KrakenImage {
         blocks,
         image_len,
         file_digests,
         file_stored_at,
         mount_size: mount,
+        block_digests,
         data_end,
         meta_base: plan.meta_base,
     })
 }
 
 /// Read the spooled image back one 64 KiB block at a time; it starts at byte `base`.
-pub fn spool_block(spool: &mut File, base: u64, index: u64, buf: &mut [u8]) -> Result<()> {
+pub fn spool_block(
+    spool: &mut (impl Read + Seek + ?Sized),
+    base: u64,
+    index: u64,
+    buf: &mut [u8],
+) -> Result<()> {
     spool.seek(SeekFrom::Start(base + index * crate::BLOCK))?;
     spool.read_exact(buf)?;
     Ok(())
@@ -867,6 +981,7 @@ mod tests {
             file_digests: Vec::new(),
             file_stored_at: Vec::new(),
             mount_size: mount,
+            block_digests: None,
             data_end,
             meta_base,
         }
@@ -1264,19 +1379,18 @@ mod tests {
             .collect();
         let plan = plan::build(&files).unwrap();
         let data = |path: &str, size: u64| -> Vec<u8> {
+            // Scrambled, so the stored image spans many blocks.
             let salt = path.len() as u64;
-            (0..size).map(|i| ((i * 7 + salt) % 251) as u8).collect()
+            (0..size)
+                .map(|i| {
+                    let x = (i ^ salt << 40).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                    ((x ^ x >> 29).wrapping_mul(0xBF58_476D_1CE4_E5B9) >> 56) as u8
+                })
+                .collect()
         };
         let keystone: Vec<u8> = (0..plan::KEYSTONE_LEN).map(|i| i as u8).collect();
         let metadata = vec![0u8; (plan.ndblock * crate::BLOCK - plan.meta_base) as usize];
-        let path = std::env::temp_dir().join(format!("kraken-digests-{}", std::process::id()));
-        let spool = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .unwrap();
+        let mut spool = std::io::Cursor::new(Vec::new());
         let mut read = |p: &str, off: u64, len: usize| -> Result<Vec<u8>> {
             let size = sizes.iter().find(|(q, _)| *q == p).unwrap().1;
             Ok(data(p, size)[off as usize..off as usize + len].to_vec())
@@ -1287,15 +1401,25 @@ mod tests {
             &metadata,
             &keystone,
             &mut read,
-            spool,
-            0,
+            &mut spool,
+            crate::BLOCK,
+            true,
             3,
             kraken::Level::Fast,
             &cancel,
             &mut |_, _| {},
         );
-        std::fs::remove_file(&path).ok();
         let image = image.unwrap();
+        // The stored blocks' digests, taken as they were written, are those of the spool's
+        // blocks from `base` on.
+        let spooled = spool.into_inner();
+        assert_eq!(spooled.len() as u64, crate::BLOCK + image.image_len);
+        let expected: Vec<([u8; 32], u32)> = spooled[crate::BLOCK as usize..]
+            .chunks(crate::BLOCK as usize)
+            .map(|b| (crate::crypto::sha3(b), crate::crypto::crc32c(b)))
+            .collect();
+        assert!(expected.len() > 1);
+        assert!(image.block_digests.as_ref() == Some(&expected));
         for (afid, &fi) in plan.afid_order.iter().enumerate() {
             let f = &plan.files[fi];
             let bytes = if f.generated {

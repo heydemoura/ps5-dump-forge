@@ -1,5 +1,6 @@
 //! Extract (a request with [`ConvertRequest::extract`]): files and folders of any source
-//! copied into an existing folder on this computer, each under its own last component. Every
+//! copied into an existing folder on this computer or a paired one (`flink://`), each under
+//! its own last component. Every
 //! check runs before the first byte is written; nothing there is ever replaced. Each file goes
 //! through an exclusive temporary name beside its target, synced, then renamed without
 //! replacing; a selected folder is created exclusively first. BLAKE3 while writing; verify
@@ -10,7 +11,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -21,28 +22,29 @@ use crate::finalize::{fsync_dir, make_dir_open};
 use crate::jobs::Ctx;
 use crate::lz4_patch::write_temp_new;
 use crate::preflight;
+use crate::remote::RemoteDir;
 use crate::{ConvertRequest, Format, JobReport, VerifyMode, VerifySummary};
 
 /// The stages an extract reports, in order.
 pub(crate) const STAGES: [&str; 4] = ["scan", "preflight", "write", "verify"];
 /// One read of a copy or of the check.
-const CHUNK: u64 = 8 << 20;
+pub(crate) const CHUNK: u64 = 8 << 20;
 /// Room beyond the copied bytes the destination must have.
 const MARGIN: u64 = 1 << 20;
 
 /// One selected path, resolved against the source's listing.
 #[derive(Debug, PartialEq)]
-struct Selection {
+pub(crate) struct Selection {
     /// The game path as selected.
-    path: String,
+    pub(crate) path: String,
     /// Its last component: the name it gets in the destination.
-    name: String,
+    pub(crate) name: String,
     /// A folder (else one file, `files[0]`).
-    dir: bool,
+    pub(crate) dir: bool,
     /// The files to copy, by game path.
-    files: Vec<SourceFile>,
+    pub(crate) files: Vec<SourceFile>,
     /// Folders inside a selected folder, relative to it, parents first.
-    dirs: Vec<String>,
+    pub(crate) dirs: Vec<String>,
 }
 
 impl Selection {
@@ -72,7 +74,7 @@ fn bad_path(path: &str) -> Option<&'static str> {
 
 /// Resolves `paths` against the source's `files` and `empty_dirs`: every unknown or malformed
 /// path, two selections with one name, and a selection inside another are findings.
-fn select(
+pub(crate) fn select(
     files: &[SourceFile],
     empty_dirs: &[String],
     paths: &[String],
@@ -168,6 +170,16 @@ fn request_findings(req: &ConvertRequest) -> Vec<String> {
     // Into a mounted game, written through the mount while the game may run.
     #[cfg(target_os = "freebsd")]
     findings.extend(crate::edit_job::smp_inside(&req.output).map(|why| format!("extract: {why}")));
+    if crate::remote::is_remote(&req.output) {
+        if let Err(e) = RemoteDir::open(&req.output) {
+            findings.push(format!("extract: {e:#}"));
+        }
+        return findings;
+    }
+    if let Some(why) = crate::net::output_refusal(&req.output) {
+        findings.push(format!("extract: {why}"));
+        return findings;
+    }
     match std::fs::metadata(&req.output) {
         Ok(meta) if meta.is_dir() => {}
         Ok(_) => findings.push(format!("extract: {} is not a folder", req.output.display())),
@@ -186,20 +198,42 @@ fn destination_findings(
     ctx: &Ctx,
 ) -> Vec<String> {
     let mut findings = Vec::new();
-    if kind == Kind::Folder
-        && let Ok(source) = dunce::canonicalize(&req.source)
-        && root.starts_with(&source)
-    {
+    // A device's paths compare as spelled (normalized, an SMB share's case folded: the device
+    // resolves them), local ones canonical.
+    let inside = if crate::remote::is_remote(root) || crate::remote::is_remote(&req.source) {
+        use crate::remote::FlinkPath;
+        match (FlinkPath::parse(root), FlinkPath::parse(&req.source)) {
+            (Ok(root), Ok(source)) => root.within(&source),
+            _ => false,
+        }
+    } else {
+        dunce::canonicalize(&req.source).is_ok_and(|source| root.starts_with(source))
+    };
+    if kind == Kind::Folder && inside {
         findings.push(format!(
             "extract: the destination {} is inside the game folder",
             root.display()
         ));
     }
+    findings.extend(target_findings("extract", root, selections, ctx));
+    findings
+}
+
+/// The destination folder `root`'s checks (`what` leads each finding): nothing at any
+/// selection's name, the names it can hold, free space.
+pub(crate) fn target_findings(
+    what: &str,
+    root: &Path,
+    selections: &[Selection],
+    ctx: &Ctx,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    let peer = crate::remote::is_remote(root);
     for s in selections {
         let target = root.join(&s.name);
-        if target.symlink_metadata().is_ok() {
+        if crate::net::exists(&target) {
             findings.push(format!(
-                "extract: {} already exists (never replaced)",
+                "{what}: {} already exists (never replaced)",
                 target.display()
             ));
         }
@@ -218,7 +252,11 @@ fn destination_findings(
         .fold((0u64, 0u64), |(sum, max), f| {
             (sum.saturating_add(f.size), max.max(f.size))
         });
-    let checked = preflight::destination(root, total.saturating_add(MARGIN), largest, ctx.cancel);
+    let checked = if peer {
+        crate::remote::destination(root, total.saturating_add(MARGIN))
+    } else {
+        preflight::destination(root, total.saturating_add(MARGIN), largest, ctx.cancel)
+    };
     findings.extend(checked.findings);
     for note in checked.notes {
         ctx.log(note);
@@ -227,7 +265,8 @@ fn destination_findings(
     findings.extend(crate::extract::extraction_findings(
         &files,
         &dirs,
-        crate::extract::CASE_INSENSITIVE,
+        // Another device's folding is unknown: as if it folds (an SMB share does).
+        crate::extract::CASE_INSENSITIVE || peer,
     ));
     // U2: names as the folder's filesystem folds them; with no probe, as if it folds.
     #[cfg(target_os = "freebsd")]
@@ -239,7 +278,7 @@ fn destination_findings(
     findings
 }
 
-fn preflight_failed(findings: Vec<String>) -> anyhow::Error {
+pub(crate) fn preflight_failed(findings: Vec<String>) -> anyhow::Error {
     anyhow::anyhow!("preflight failed:\n  {}", findings.join("\n  "))
 }
 
@@ -265,8 +304,17 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
     ctx.progress("preflight", 0, 1);
     let selections =
         select(tree.files(), tree.empty_dirs(), &req.extract).map_err(preflight_failed)?;
-    let root = dunce::canonicalize(&req.output)
-        .with_context(|| format!("opening {}", req.output.display()))?;
+    // On a peer: the folder there, its path spelled as `FlinkPath` normalizes it.
+    let mut peer = if crate::remote::is_remote(&req.output) {
+        Some(RemoteDir::open(&req.output)?)
+    } else {
+        None
+    };
+    let root = match &peer {
+        Some(dir) => dir.path().to_path_buf(),
+        None => dunce::canonicalize(&req.output)
+            .with_context(|| format!("opening {}", req.output.display()))?,
+    };
     let findings = destination_findings(req, kind, &root, &selections, ctx);
     ctx.check()?;
     if !findings.is_empty() {
@@ -275,7 +323,9 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
     #[cfg(target_os = "freebsd")]
     {
         ctx.watch(&req.source);
-        ctx.watch(&root);
+        if peer.is_none() {
+            ctx.watch(&root);
+        }
     }
     let total =
         (selections.iter().flat_map(|s| &s.files)).fold(0u64, |n, f| n.saturating_add(f.size));
@@ -288,14 +338,17 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
         total
     });
     let mut written: Vec<(PathBuf, u64, blake3::Hash)> = Vec::with_capacity(count);
+    let mut made = Vec::new();
     let mut done = 0u64;
     let outcome = write(
         tree.as_mut(),
         &root,
+        peer.as_mut(),
         &selections,
         total,
         &mut done,
         &mut written,
+        &mut made,
         ctx,
     )
     .and_then(|()| {
@@ -307,10 +360,10 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
         verify(&written, req.full_verify, ctx)
     });
     // A failure (or cancel) after some files were finished: they stay, and the log says so
-    // too, since a cancelled job's error is only "cancelled".
+    // too, since a cancelled job's error may be only "cancelled".
     let checked = match (outcome, written.len()) {
         (Ok(checked), _) => checked,
-        (Err(e), 0) => return Err(e),
+        (Err(e), 0) => return Err(made_note(e, &made, "extract", ctx)),
         (Err(e), n) => {
             let kept = format!("{n} of {count} files were extracted before it and stay");
             ctx.log(format!("extract: {kept}"));
@@ -349,15 +402,19 @@ fn make_dir(path: &Path) -> anyhow::Result<()> {
     make_dir_open(path).with_context(|| format!("opening up {}", path.display()))
 }
 
-/// Copies every selection into `root`; `written` gets each finished file (its path, size and
-/// BLAKE3), `done` the bytes copied.
-fn write(
+/// Copies every selection into `root` (through `peer` when it is on one); `written` gets each
+/// finished file (its path, size and BLAKE3), `made` each selection folder made, `done` the
+/// bytes copied.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write(
     tree: &mut dyn SourceTree,
     root: &Path,
+    mut peer: Option<&mut RemoteDir>,
     selections: &[Selection],
     total: u64,
     done: &mut u64,
     written: &mut Vec<(PathBuf, u64, blake3::Hash)>,
+    made: &mut Vec<PathBuf>,
     ctx: &Ctx,
 ) -> anyhow::Result<()> {
     for s in selections {
@@ -371,9 +428,29 @@ fn write(
             s.files.len(),
             bytes
         ));
+        if let Some(dir) = peer.as_deref_mut() {
+            // Each folder made exclusively; the peer syncs each folder a file is renamed into.
+            if s.dir {
+                dir.dir(&s.name)?;
+                made.push(target.clone());
+                for d in &s.dirs {
+                    dir.dir(&format!("{}/{d}", s.name))?;
+                }
+            }
+            for file in &s.files {
+                let rel = s.target(&file.path);
+                let mut hasher = blake3::Hasher::new();
+                dir.write_new(&rel, &mut |out| {
+                    copy(tree, file, out, &mut hasher, total, done, ctx)
+                })?;
+                written.push((root.join(&rel), file.size, hasher.finalize()));
+            }
+            continue;
+        }
         let mut synced = vec![root.to_path_buf()];
         if s.dir {
             make_dir(&target)?;
+            made.push(target.clone());
             for dir in &s.dirs {
                 make_dir(&target.join(dir))?;
             }
@@ -398,11 +475,26 @@ fn write(
     Ok(())
 }
 
+/// A failure before any file was finished: the folders `write` made stay (a retry finds them
+/// taken), so the error (and the log) names them.
+pub(crate) fn made_note(e: anyhow::Error, made: &[PathBuf], job: &str, ctx: &Ctx) -> anyhow::Error {
+    let note = match made {
+        [] => return e,
+        [one] => format!("{} was created and stays", one.display()),
+        _ => {
+            let all: Vec<String> = made.iter().map(|p| p.display().to_string()).collect();
+            format!("{} were created and stay", all.join(", "))
+        }
+    };
+    ctx.log(format!("{job}: {note}"));
+    anyhow::anyhow!("{e:#}; {note}")
+}
+
 /// Streams `file` of `tree` into `out` in chunks, hashing it, checking cancel between chunks.
 fn copy(
     tree: &mut dyn SourceTree,
     file: &SourceFile,
-    out: &mut File,
+    out: &mut dyn Write,
     hasher: &mut blake3::Hasher,
     total: u64,
     done: &mut u64,
@@ -435,7 +527,11 @@ fn copy(
 
 /// Each written file's size; with `full`, its bytes re-read and re-hashed too. Returns the
 /// bytes read back.
-fn verify(written: &[(PathBuf, u64, blake3::Hash)], full: bool, ctx: &Ctx) -> anyhow::Result<u64> {
+pub(crate) fn verify(
+    written: &[(PathBuf, u64, blake3::Hash)],
+    full: bool,
+    ctx: &Ctx,
+) -> anyhow::Result<u64> {
     let total = if full {
         written
             .iter()
@@ -444,10 +540,16 @@ fn verify(written: &[(PathBuf, u64, blake3::Hash)], full: bool, ctx: &Ctx) -> an
         0
     };
     let mut done = 0u64;
+    let mut buf = Vec::new();
     for (path, size, hash) in written {
         ctx.check()?;
         let shown = || path.display().to_string();
-        let len = std::fs::symlink_metadata(path).with_context(shown)?.len();
+        let peer = crate::remote::is_remote(path);
+        let len = if peer {
+            crate::remote::reader(path)?.len()
+        } else {
+            std::fs::symlink_metadata(path).with_context(shown)?.len()
+        };
         if len != *size {
             bail!(
                 "verify: {} holds {len} bytes, {size} were written",
@@ -457,9 +559,13 @@ fn verify(written: &[(PathBuf, u64, blake3::Hash)], full: bool, ctx: &Ctx) -> an
         if !full {
             continue;
         }
-        let mut file = File::open(path).with_context(shown)?;
+        let mut file: Box<dyn Read> = if peer {
+            Box::new(crate::remote::reader(path)?)
+        } else {
+            Box::new(File::open(path).with_context(shown)?)
+        };
         let mut hasher = blake3::Hasher::new();
-        let mut buf = vec![0u8; CHUNK as usize];
+        buf.resize(CHUNK as usize, 0);
         loop {
             ctx.check()?;
             let n = file.read(&mut buf).with_context(shown)?;

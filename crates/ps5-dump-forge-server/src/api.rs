@@ -2,8 +2,8 @@
 //! call on the paths as given and the same `format!("{e:#}")` error text. The server adds
 //! only limits: on jobs, concurrent inspections and listing sizes.
 
-use std::collections::{BTreeSet, HashSet};
-use std::io::{Read, Write};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::{Read, Seek, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -72,6 +72,9 @@ pub(crate) struct Server {
     /// discard of a staging folder with one in flight.
     uploads: Mutex<HashSet<PathBuf>>,
     cores: usize,
+    /// Connect's service (FLINK, discovery, remote files), started with the server and shut down
+    /// in `finish`; `Err` names why it isn't running (no data folder, unreadable peers file).
+    connect: Result<Arc<crate::connect::Connect>, String>,
     /// Tests widen the gap between `Jobs::start` returning and the table admitting the job.
     #[cfg(test)]
     admit_pause: std::time::Duration,
@@ -235,6 +238,43 @@ impl Drop for Uploading<'_> {
 /// Makes each upload's temporary name unique within this process.
 static UPLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// A phone upload sent in chunks on parallel requests (`id=&offset=&size=`), by the client's id:
+/// one `.part` all chunks write into at their offsets, renamed into place once `size` bytes came.
+/// One idle for `CHUNK_IDLE` (a phone gone mid-way) is dropped with its `.part` when the next
+/// chunk of any upload comes. ponytail: a server exit mid-upload leaves its `.part` behind.
+struct Chunked {
+    part: PathBuf,
+    target: PathBuf,
+    size: u64,
+    offsets: HashSet<u64>,
+    got: u64,
+    touched: Instant,
+}
+
+static CHUNKED: std::sync::LazyLock<Mutex<HashMap<String, Chunked>>> =
+    std::sync::LazyLock::new(Mutex::default);
+/// Ids of uploads dropped (cancelled, failed, idle), so a chunk still in flight doesn't start a
+/// new `.part` for one. ponytail: the last 256 only.
+static CHUNK_ENDED: Mutex<std::collections::VecDeque<String>> =
+    Mutex::new(std::collections::VecDeque::new());
+/// The web build's chunk size (`CHUNK` in http-client.ts): every chunk is one, the last shorter.
+const UPLOAD_CHUNK: u64 = 8 << 20;
+const CHUNK_IDLE: Duration = Duration::from_secs(600);
+
+/// Drops the upload `id` (its `.part` too) and remembers it ended.
+fn end_chunked(all: &mut HashMap<String, Chunked>, id: &str) {
+    if let Some(c) = all.remove(id) {
+        let _ = std::fs::remove_file(c.part);
+    }
+    let mut ended = lock(&CHUNK_ENDED);
+    if !ended.iter().any(|e| e == id) {
+        if ended.len() >= 256 {
+            ended.pop_front();
+        }
+        ended.push_back(id.to_string());
+    }
+}
+
 /// One running inspection; frees its place even when core panics.
 struct Inspecting<'a>(&'a AtomicUsize);
 
@@ -270,7 +310,7 @@ impl Drop for Flag<'_> {
 }
 
 /// `X.Y.Z`, each part 1 to 9 digits.
-fn plain_version(v: &str) -> bool {
+pub(crate) fn plain_version(v: &str) -> bool {
     let parts: Vec<&str> = v.split('.').collect();
     parts.len() == 3
         && parts
@@ -279,7 +319,7 @@ fn plain_version(v: &str) -> bool {
 }
 
 /// Every byte but the unreserved ones as `%XX`.
-fn percent_encode(text: &str) -> String {
+pub(crate) fn percent_encode(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
@@ -288,58 +328,6 @@ fn percent_encode(text: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
-}
-
-/// Asks elfldr at `addr` to download v`version`'s PS5 ELF from its GitHub release and start it
-/// with `serve`: `GET /?uri=<that URL>`, `args` and `pipe` inside the URL's own query (elfldr
-/// reads them from there). elfldr answers 200 at once, then downloads and spawns, writing any
-/// failure into the body; with `pipe=0` it closes once spawned. The new process takes the port
-/// over from this one (`serve`'s handover) once it is idle.
-// ponytail: unverified on hardware: elfldr's sceHttp has to follow GitHub's 302
-// to its asset host and GitHub to ignore the extra query; elfldr ignores certificate errors and
-// nothing checks a signature (anyone who can intercept the console's traffic can serve an ELF);
-// it reads the body once without checking its length, so a short read could start a cut ELF.
-fn elfldr_load(addr: SocketAddr, version: &str) -> Result<(), Response> {
-    let uri = format!(
-        "https://github.com/quer3q/ps5-dump-forge/releases/download/v{version}/\
-         ps5-dump-forge-{version}-ps5.elf?args=serve&pipe=0"
-    );
-    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3)).map_err(|_| {
-        Response::error(
-            503,
-            format!(
-                "elfldr isn't running on port {}: load it, then try again",
-                addr.port()
-            ),
-        )
-    })?;
-    let request = format!(
-        "GET /?uri={} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n",
-        percent_encode(&uri)
-    );
-    let failed = |why: &str| {
-        Response::error(
-            502,
-            format!("elfldr couldn't download or start v{version}: {why}"),
-        )
-    };
-    // The download (~11 MB) happens inside this reply; within the page's minute.
-    let reply = crate::ask(
-        stream,
-        &request,
-        Instant::now() + Duration::from_secs(55),
-        64 * 1024,
-    )
-    .map_err(|e| failed(&e.to_string()))?;
-    if crate::status_of(&reply) != Some(200) {
-        return Err(Response::error(502, "elfldr refused the request"));
-    }
-    let text = String::from_utf8_lossy(&reply);
-    let body = text.split_once("\r\n\r\n").map_or("", |(_, body)| body);
-    match body.lines().find(|l| l.contains("Error")) {
-        Some(line) => Err(failed(line.trim())),
-        None => Ok(()),
-    }
 }
 
 /// The browse roots and the notes about candidates left out; an error on a computer with no
@@ -450,6 +438,23 @@ impl Server {
             })
         };
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let connect = match &opts.connect_dir {
+            None => Err("Connect is off in this server".to_string()),
+            Some(dir) => crate::connect::Connect::start(dir, opts.connect_port)
+                .map(Arc::new)
+                .map_err(|e| format!("Connect couldn't start: {}: {e}", dir.display())),
+        };
+        if let Err(e) = &connect
+            && opts.connect_dir.is_some()
+        {
+            eprintln!("ps5-dump-forge serve: {e}");
+        }
+        // A peer's writes never land in what this device's unfinished jobs use, and no job
+        // starts on what a peer is writing here.
+        if let Ok(connect) = &connect {
+            connect.set_busy(jobs.uses_hook());
+            jobs.set_external_busy(connect.writing_hook());
+        }
         Ok(Self {
             url: crate::console_url(local, opts.platform),
             instance: random_hex(8)?,
@@ -465,6 +470,7 @@ impl Server {
             updating: AtomicBool::new(false),
             uploads: Mutex::new(HashSet::new()),
             cores,
+            connect,
             opts,
             #[cfg(test)]
             admit_pause: std::time::Duration::ZERO,
@@ -490,6 +496,14 @@ impl Server {
             Ok(head) => head,
             Err(r) => return r,
         };
+        if head.method == "POST" && head.path == http::CONNECT_UPLOAD {
+            let length = head.header("content-length").map(|_| head.length as u64);
+            let query = head.query.clone();
+            let mut body = http::BodyReader::new(stream, &mut head, UPLOAD_IDLE);
+            return self
+                .connect_upload(&query, length, &mut body)
+                .unwrap_or_else(|r| r);
+        }
         if head.method == "POST" && head.path == http::UPLOAD {
             let length = head.header("content-length").map(|_| head.length as u64);
             let query = head.query.clone();
@@ -519,7 +533,7 @@ impl Server {
         };
         match (post, api) {
             (false, "session") => Ok(self.session()),
-            (false, "qr") => self.qr(),
+            (false, "qr") => self.qr(&head.query),
             (false, "elfldr") => self.elfldr(),
             (true, "inspect") => self.inspect(body),
             (true, "default_output") => {
@@ -566,6 +580,9 @@ impl Server {
             (true, "edit_discard") => self.edit_discard(body),
             (true, "library_scan") => self.library_scan(body),
             (true, "library_cover") => self.library_cover(body),
+            // The PS5's internal storage (`/data`) `{free, total}` in bytes for the Storage tab's
+            // heads; `null` on a computer or when `statfs` fails.
+            (true, "storage") => Ok(Response::json(&self.roots.storage())),
             (true, "host_tree") => self.host_tree(body),
             (true, "edit_check") => self.edit_check(body),
             #[cfg(target_env = "ps5")]
@@ -608,6 +625,11 @@ impl Server {
                 false => Ok(self.quit()),
             },
             (true, "self_update") => self.self_update(body),
+            (false, "connect/state") => Ok(Response::json(&self.connect()?.snapshot())),
+            (false, "connect/download") => self.connect_download(&head.query),
+            (true, route) if route.starts_with("connect/") => {
+                self.connect_route(&route["connect/".len()..], body)
+            }
             _ => Err(Response::error(404, "unknown route")),
         }
     }
@@ -641,18 +663,25 @@ impl Server {
             "separator": std::path::MAIN_SEPARATOR_STR,
             // The page shows it: the console's own page is on 127.0.0.1.
             "url": self.url,
+            // A phone opens it (Connect's QR): this server's page on the Connect tab.
+            "connect_url": format!("{}/#connect", self.url),
             // A bring-up build (`FORGE_DEBUG_API`): the page links its `/probe`.
             "debug": cfg!(target_env = "ps5") && option_env!("FORGE_DEBUG_API").is_some(),
         }))
     }
 
     /// `GET /api/qr`: the session's `url` as a QR code (SVG) for a phone to open. 404 when the
-    /// server couldn't tell its IP (its url then names it in words).
-    fn qr(&self) -> Reply {
+    /// server couldn't tell its IP (its url then names it in words). `?connect=1`: the Connect
+    /// tab's address (`<url>/#connect`).
+    fn qr(&self, query: &str) -> Reply {
         if self.url.contains(' ') {
             return Err(Response::error(404, "no address to show"));
         }
-        let code = qrcode::QrCode::with_error_correction_level(&self.url, qrcode::EcLevel::L)
+        let url = match http::query_value(query, "connect") {
+            Some(_) => format!("{}/#connect", self.url),
+            None => self.url.clone(),
+        };
+        let code = qrcode::QrCode::with_error_correction_level(&url, qrcode::EcLevel::L)
             .map_err(|e| Response::error(500, format!("internal error: {e}")))?;
         Ok(Response::svg(qr_svg(&code)))
     }
@@ -779,6 +808,9 @@ impl Server {
     fn start_job(&self, body: &[u8]) -> Reply {
         let mut request = parse::<StartArg>(body)?.request;
         readable(&request.source)?;
+        for p in &request.transfer {
+            readable(p)?;
+        }
         // Below the core count by default, so the server stays responsive; on the PS5 by two,
         // since its browser shares the payload's 5 CPUs (3 workers made a `.pkg` 4% slower
         // than 4, with the page usable again).
@@ -1251,7 +1283,16 @@ impl Server {
                 ));
             }
         }
-        elfldr_load(self.opts.elfldr, &version)?;
+        crate::payload::load_release(self.opts.elfldr, &version).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotConnected => Response::error(
+                503,
+                format!(
+                    "elfldr isn't running on port {}: load it, then try again",
+                    self.opts.elfldr.port()
+                ),
+            ),
+            _ => Response::error(502, e.to_string()),
+        })?;
         Ok(Response::json(&json!({})))
     }
 
@@ -1264,10 +1305,338 @@ impl Server {
 
     pub fn finish(&self) {
         self.jobs.cancel_all_and_wait();
+        if let Ok(connect) = &self.connect {
+            connect.shutdown();
+        }
         #[cfg(target_env = "ps5")]
         crate::self_copy::wait();
         (self.opts.notify)(crate::notice::stopped(crate::notice::console_lang()));
         (self.opts.exit)(0);
+    }
+}
+
+// ---- Connect: the Connect tab's routes (`/api/connect/...`) --------------------------------
+
+/// `/api/connect/*` bodies; one struct, each route reads the fields it needs.
+#[derive(Deserialize)]
+struct ConnectArg {
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    key_id: String,
+    /// `approve`: a pending request's id, and the answer.
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    allow: bool,
+}
+
+#[derive(Deserialize)]
+struct NasId {
+    id: String,
+}
+
+/// A plain file name for an upload: no separator, not `.`/`..`, no NUL.
+fn plain_name(name: &str) -> bool {
+    !(name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', '\0'])
+        || (cfg!(windows) && name.contains(':')))
+}
+
+impl Server {
+    fn connect(&self) -> Result<&Arc<crate::connect::Connect>, Response> {
+        self.connect.as_ref().map_err(|e| Response::error(503, e))
+    }
+
+    /// `POST /api/connect/<route>`: Connect's service as the Tauri `connect_*` commands call
+    /// it. A failed call is 400 with `connect::error_text` (a refusal's code, else the text).
+    fn connect_route(&self, route: &str, body: &[u8]) -> Reply {
+        let c = self.connect()?;
+        let failed = |e: std::io::Error| Response::error(400, crate::connect::error_text(&e));
+        match route {
+            "nas_save" => {
+                let req: crate::nas::NasSave = parse(body)?;
+                return Ok(Response::json(
+                    &json!({ "id": c.nas_save(&req).map_err(failed)? }),
+                ));
+            }
+            "nas_forget" => {
+                let a: NasId = parse(body)?;
+                return Ok(Response::json(&c.nas_forget(&a.id).map_err(failed)?));
+            }
+            _ => {}
+        }
+        let a: ConnectArg = parse(body)?;
+        match route {
+            // Asks the device to pair; `state.outgoing` follows it.
+            "pair" => {
+                c.pair(&a.address).map_err(failed)?;
+                Ok(Response::json(&()))
+            }
+            // What answers at the address (Forge, SMB, NFS or FTP; about 3 s at most).
+            "probe" => Ok(Response::json(&c.probe(&a.address).map_err(failed)?)),
+            "pair_cancel" => {
+                c.pair_cancel();
+                Ok(Response::json(&()))
+            }
+            // This device's user answers another device's pairing request.
+            "approve" => Ok(Response::json(&c.approve(&a.id, a.allow))),
+            "forget" => Ok(Response::json(&c.forget(&a.key_id).map_err(failed)?)),
+            "discover_start" => {
+                c.discover_start();
+                Ok(Response::json(&()))
+            }
+            "discover_stop" => {
+                c.discover_stop();
+                Ok(Response::json(&()))
+            }
+            _ => Err(Response::error(404, "unknown route")),
+        }
+    }
+
+    /// `POST /api/connect/upload?dir=&name=` (percent-encoded; a phone's file): the raw body,
+    /// exactly `Content-Length` bytes, as `<dir>/<name>` in an existing folder, through an
+    /// exclusive `.part` beside it and a rename that never replaces; `{path}`. 409 for a name
+    /// that exists; refused once stopping.
+    fn connect_upload(&self, query: &str, length: Option<u64>, body: &mut dyn Read) -> Reply {
+        let Some(length) = length else {
+            return Err(Response::error(411, "bad request: needs Content-Length"));
+        };
+        let arg = |key: &str| {
+            http::query_value(query, key)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| {
+                    Response::error(400, format!("bad request: needs {key}=, percent-encoded"))
+                })
+        };
+        let (dir, name) = (PathBuf::from(arg("dir")?), arg("name")?);
+        if !plain_name(&name) {
+            return Err(Response::error(
+                400,
+                format!("{name:?} is not a plain file name"),
+            ));
+        }
+        self.refuse_if_stopping()?;
+        if self.opts.platform == Platform::Ps5
+            && let Some(why) = ps5_dump_forge_core::out::ps5_refusal(&dir)
+        {
+            return Err(Response::error(400, why));
+        }
+        if !std::fs::metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            let text = format!("{}: not a folder", dir.display());
+            return Err(Response::error(404, text));
+        }
+        let target = dir.join(&name);
+        if let Some(id) = http::query_value(query, "id") {
+            return self.connect_upload_chunk(&id, query, target, length, body);
+        }
+        let exists = |t: &Path| format!("{}: already exists", t.display());
+        if std::fs::symlink_metadata(&target).is_ok() {
+            return Err(Response::error(409, exists(&target)));
+        }
+        let seq = UPLOAD_SEQ.fetch_add(1, Ordering::Relaxed);
+        let part = dir.join(format!(".forge-connect-{}-{seq}.part", std::process::id()));
+        let failed = |e: std::io::Error| core(format!("{}: {e}", target.display()));
+        let mut file = (std::fs::File::options().write(true).create_new(true))
+            .open(&part)
+            .map_err(failed)?;
+        let copied = (|| {
+            open_up(&file)?;
+            copy_body(body, &mut file, length)?;
+            file.sync_all()?;
+            drop(file);
+            ps5_dump_forge_core::rename_no_replace(&part, &target)
+        })();
+        if let Err(e) = copied {
+            let _ = std::fs::remove_file(&part);
+            return Err(match e.kind() {
+                std::io::ErrorKind::UnexpectedEof => Response::error(400, e),
+                std::io::ErrorKind::AlreadyExists => Response::error(409, exists(&target)),
+                _ => failed(e),
+            });
+        }
+        Ok(Response::json(&json!({ "path": target })))
+    }
+
+    /// One chunk of a parallel phone upload: `id` (the client's, 1–32 letters/digits), `offset`,
+    /// `size` (the whole file's); `{done: false}`, or `{path, done: true}` for the chunk that
+    /// completed it. `cancel=1` (empty body) drops the upload and its `.part`. A chunk that
+    /// fails drops the whole upload.
+    fn connect_upload_chunk(
+        &self,
+        id: &str,
+        query: &str,
+        target: PathBuf,
+        length: u64,
+        body: &mut dyn Read,
+    ) -> Reply {
+        let bad = |what: String| Response::error(400, format!("bad request: {what}"));
+        if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(bad("id= is 1-32 letters or digits".into()));
+        }
+        let drop_upload = || end_chunked(&mut lock(&CHUNKED), id);
+        if http::query_value(query, "cancel").as_deref() == Some("1") {
+            drop_upload();
+            return Ok(Response::json(&json!({ "cancelled": true })));
+        }
+        let num = |key: &str| {
+            http::query_value(query, key)
+                .and_then(|v| v.parse::<u64>().ok())
+                .ok_or_else(|| bad(format!("needs {key}= as a number")))
+        };
+        let (offset, size) = (num("offset")?, num("size")?);
+        if offset.checked_add(length).is_none_or(|end| end > size) {
+            return Err(bad(format!(
+                "{length} bytes at {offset} pass the size {size}"
+            )));
+        }
+        // Whole chunks at their places: overlapping or gapped ones could otherwise reach `size`
+        // with a hole left in the file.
+        if !offset.is_multiple_of(UPLOAD_CHUNK) || length != UPLOAD_CHUNK.min(size - offset) {
+            return Err(bad(format!(
+                "a chunk is {UPLOAD_CHUNK} bytes at a multiple of it (the last one shorter)"
+            )));
+        }
+        let exists = |t: &Path| format!("{}: already exists", t.display());
+        let failed = |e: std::io::Error| core(format!("{}: {e}", target.display()));
+        let part = {
+            let mut all = lock(&CHUNKED);
+            let idle: Vec<String> = (all.iter())
+                .filter(|(_, c)| c.touched.elapsed() > CHUNK_IDLE)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in idle {
+                end_chunked(&mut all, &k);
+            }
+            match all.get_mut(id) {
+                Some(c) if c.target == target && c.size == size => {
+                    c.touched = Instant::now();
+                    c.part.clone()
+                }
+                Some(_) => {
+                    return Err(Response::error(409, format!("upload {id} is another file")));
+                }
+                None => {
+                    if lock(&CHUNK_ENDED).iter().any(|e| e == id) {
+                        return Err(Response::error(409, format!("upload {id} has ended")));
+                    }
+                    if std::fs::symlink_metadata(&target).is_ok() {
+                        return Err(Response::error(409, exists(&target)));
+                    }
+                    let dir = target.parent().unwrap_or(Path::new("."));
+                    let part = dir.join(format!(".forge-connect-{}-{id}.part", std::process::id()));
+                    let file = (std::fs::File::options().write(true).create_new(true))
+                        .open(&part)
+                        .map_err(failed)?;
+                    open_up(&file).map_err(|e| {
+                        let _ = std::fs::remove_file(&part);
+                        failed(e)
+                    })?;
+                    all.insert(
+                        id.to_string(),
+                        Chunked {
+                            part: part.clone(),
+                            target: target.clone(),
+                            size,
+                            offsets: HashSet::new(),
+                            got: 0,
+                            touched: Instant::now(),
+                        },
+                    );
+                    part
+                }
+            }
+        };
+        let written = (|| {
+            let mut file = std::fs::File::options().write(true).open(&part)?;
+            file.seek(std::io::SeekFrom::Start(offset))?;
+            copy_body(body, &mut file, length)
+        })();
+        if let Err(e) = written {
+            drop_upload();
+            return Err(match e.kind() {
+                std::io::ErrorKind::UnexpectedEof => Response::error(400, e),
+                _ => failed(e),
+            });
+        }
+        let complete = {
+            let mut all = lock(&CHUNKED);
+            let Some(c) = all.get_mut(id) else {
+                return Err(Response::error(409, format!("upload {id} was cancelled")));
+            };
+            if c.offsets.insert(offset) {
+                c.got += length;
+            }
+            if c.got >= c.size {
+                all.remove(id)
+            } else {
+                None
+            }
+        };
+        let Some(c) = complete else {
+            return Ok(Response::json(&json!({ "done": false })));
+        };
+        let finished = (|| {
+            // Writable: Windows refuses to flush a read-only handle ("Access is denied").
+            let file = std::fs::File::options().write(true).open(&c.part)?;
+            let got = file.metadata()?.len();
+            if got != c.size {
+                return Err(std::io::Error::other(format!(
+                    "{got} bytes, not {}",
+                    c.size
+                )));
+            }
+            file.sync_all()?;
+            drop(file);
+            ps5_dump_forge_core::rename_no_replace(&c.part, &c.target)
+        })();
+        if let Err(e) = finished {
+            let _ = std::fs::remove_file(&c.part);
+            return Err(match e.kind() {
+                std::io::ErrorKind::AlreadyExists => Response::error(409, exists(&c.target)),
+                _ => failed(e),
+            });
+        }
+        Ok(Response::json(&json!({ "path": c.target, "done": true })))
+    }
+
+    /// `GET /api/connect/download?path=` (percent-encoded): a file to the browser, streamed
+    /// with `Content-Disposition: attachment`. A file that shrinks meanwhile ends short.
+    fn connect_download(&self, query: &str) -> Reply {
+        let Some(path) = http::query_value(query, "path").filter(|v| !v.is_empty()) else {
+            return Err(Response::error(
+                400,
+                "bad request: needs path=, percent-encoded",
+            ));
+        };
+        let path = PathBuf::from(path);
+        let not_a_file = || Response::error(400, format!("{}: not a file", path.display()));
+        let file = std::fs::File::open(&path).map_err(|e| {
+            // Windows doesn't open a folder ("Access is denied"): the same answer as elsewhere.
+            if path.is_dir() {
+                return not_a_file();
+            }
+            Response::error(404, format!("{}: {e}", path.display()))
+        })?;
+        let meta = file.metadata().map_err(core)?;
+        if !meta.is_file() {
+            return Err(not_a_file());
+        }
+        let name = path
+            .file_name()
+            .map_or("download".into(), |n| n.to_string_lossy());
+        let len = meta.len();
+        let body = Box::new(move |out: &mut dyn Write| {
+            std::io::copy(&mut file.take(len), out).map(|_| ())
+        });
+        Ok(Response::download(
+            "application/octet-stream",
+            &name,
+            len,
+            body,
+        ))
     }
 }
 
@@ -1322,8 +1691,6 @@ mod tests {
         }
     }
 
-    // Only the Unix-only admission test needs a folder.
-    #[cfg(unix)]
     fn dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("forge-api-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1377,8 +1744,9 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
         assert_eq!(v["roots"], json!([root]));
         assert_eq!(v["entries"], json!([]));
-        // A computer's reply has no free space.
+        // A computer's reply has no free space, nor its own route.
         assert!(v.get("storage").is_none(), "{v}");
+        assert_eq!(post(&server, "storage", json!({})).text(), "null");
         assert_eq!(
             (&v["truncated"], &v["warnings"]),
             (&json!(false), &json!([]))
@@ -1508,6 +1876,7 @@ mod tests {
             lz4_in_place: false,
             edits: Vec::new(),
             extract: Vec::new(),
+            transfer: Vec::new(),
             edit_rebuild: false,
             archive_password: None,
         });
@@ -1655,6 +2024,44 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         server.jobs.cancel_all_and_wait();
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    /// A transfer (core's copy job) starts through `start_job` like any job: a folder and a
+    /// file into a folder here, its `source` and `format` unused.
+    #[test]
+    fn transfer_job_through_start_job() {
+        let tmp = dir("transfer");
+        let src = tmp.join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/a.bin"), b"abc").unwrap();
+        std::fs::write(tmp.join("one.txt"), b"one").unwrap();
+        let out = tmp.join("out");
+        std::fs::create_dir(&out).unwrap();
+        let server = Arc::new(server());
+        let request = json!({ "request": {
+            "source": "", "format": "folder", "output": out,
+            "transfer": [src, tmp.join("one.txt")],
+        }});
+        let r = post(&server, "start_job", request);
+        assert_eq!(r.status, 200, "{}", r.text());
+        let id: u64 = r.text().parse().unwrap();
+        let start = Instant::now();
+        let done = loop {
+            let jobs = lock(&server.table).snapshot();
+            let done = jobs
+                .iter()
+                .find(|j| j["id"] == id)
+                .map(|j| j["done"].clone());
+            if let Some(d) = done.filter(|d| !d.is_null()) {
+                break d;
+            }
+            assert!(start.elapsed() < Duration::from_secs(30));
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(done["result"]["Ok"].is_object(), "{done}");
+        assert_eq!(std::fs::read(out.join("src/sub/a.bin")).unwrap(), b"abc");
+        assert_eq!(std::fs::read(out.join("one.txt")).unwrap(), b"one");
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
@@ -1931,5 +2338,150 @@ mod tests {
         assert!(lock(&server.table).all_admitted());
         assert_eq!(lock(&server.table).snapshot().len(), 1);
         assert!(starter.join().unwrap());
+    }
+
+    /// Connect over HTTP: the state with the service on (temporary data folder, any port), a
+    /// phone's upload over the socket past `BODY_MAX` and its download back, refusals.
+    #[test]
+    fn phone_uploads_refuse_mounted_games_before_reading_the_body() {
+        struct Unread;
+        impl Read for Unread {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("a refused upload must not read its body");
+            }
+        }
+        let opts = Options::new(0, vec![], Platform::Ps5, |_: &str| {});
+        let server = Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap();
+        for dir in [
+            "/mnt/shadowmnt",
+            "/mnt/shadowmnt/Game_01234567/data",
+            "/mnt/shadowmnt/pfsc/Game_01234567",
+        ] {
+            for extra in ["", "&id=mountrefusal&offset=0&size=1"] {
+                let query = format!("dir={}&name=file.bin{extra}", percent_encode(dir));
+                let err = server
+                    .connect_upload(&query, Some(1), &mut Unread)
+                    .err()
+                    .unwrap();
+                assert_eq!(err.status, 400);
+                assert!(err.text().contains("mounted game"), "{}", err.text());
+            }
+        }
+        assert!(!lock(&CHUNKED).contains_key("mountrefusal"));
+    }
+
+    #[test]
+    fn connect_upload_and_download() {
+        let root = std::env::temp_dir().join(format!("forge-api-connect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        let mut opts = Options::new(0, vec![root.clone()], Platform::Host, |_: &str| {});
+        (opts.connect_dir, opts.connect_port) = (Some(root.join("data")), 0);
+        let server = Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap());
+        let get = |path: &str| {
+            over_tcp(
+                &server,
+                format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes(),
+            )
+        };
+        let state = get("/api/connect/state");
+        assert!(state.starts_with("HTTP/1.1 200"), "{state}");
+        // Pairing is approved on the device: no code anywhere, the requests waiting listed.
+        assert!(
+            state.contains("\"pending\"")
+                && !state.contains("\"code\"")
+                && !state.contains("\"transfers\""),
+            "{state}"
+        );
+        // The old transfer engine's routes are gone (transfers are jobs now).
+        for route in ["send", "fetch", "cancel", "remote_list"] {
+            let r = over_tcp(
+                &server,
+                format!(
+                    "POST /api/connect/{route} HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n{{}}"
+                )
+                .as_bytes(),
+            );
+            assert!(r.starts_with("HTTP/1.1 404"), "{route}: {r}");
+        }
+        assert!(get("/api/session").contains("/#connect"));
+
+        let big: Vec<u8> = (0..http::BODY_MAX as u32 * 2 + 7)
+            .map(|i| i as u8)
+            .collect();
+        let dir = percent_encode(&root.to_string_lossy());
+        let put_q = |name: &str, extra: &str, body: &[u8]| {
+            let mut req = format!(
+                "POST /api/connect/upload?dir={dir}&name={}{extra} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n",
+                percent_encode(name),
+                body.len()
+            )
+            .into_bytes();
+            req.extend_from_slice(body);
+            over_tcp(&server, &req)
+        };
+        let put = |name: &str, body: &[u8]| put_q(name, "", body);
+        let reply = put("a b.bin", &big);
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert_eq!(std::fs::read(root.join("a b.bin")).unwrap(), big);
+        assert!(put("a b.bin", b"again").starts_with("HTTP/1.1 409"));
+        assert!(put("../x", b"x").starts_with("HTTP/1.1 400"));
+
+        // In 8 MiB chunks, out of order (as parallel requests land): done on the last byte.
+        let c = UPLOAD_CHUNK as usize;
+        let file: Vec<u8> = (0..2 * c + 5).map(|i| (i % 251) as u8).collect();
+        let n = file.len();
+        let cuts = [(c, 2 * c), (0, c), (2 * c, n)];
+        for (k, &(from, to)) in cuts.iter().enumerate() {
+            let q = format!("&id=up1&offset={from}&size={n}");
+            let reply = put_q("chunked.bin", &q, &file[from..to]);
+            assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+            assert_eq!(reply.contains("\"done\":true"), k == 2, "{reply}");
+        }
+        assert_eq!(std::fs::read(root.join("chunked.bin")).unwrap(), file);
+        // Past the size, or not a whole chunk at its place: refused.
+        let past = put_q("x.bin", "&id=up2&offset=4&size=5", b"ab");
+        assert!(past.starts_with("HTTP/1.1 400"), "{past}");
+        let odd = put_q("x.bin", "&id=up2&offset=0&size=9", b"abc");
+        assert!(odd.starts_with("HTTP/1.1 400"), "{odd}");
+        // A cancelled upload leaves nothing, and a chunk still in flight can't start it again.
+        let last = format!("&id=up3&offset={c}&size={}", c + 1);
+        assert!(put_q("y.bin", &last, b"z").contains("\"done\":false"));
+        assert!(put_q("y.bin", "&id=up3&cancel=1", b"").contains("cancelled"));
+        let late = put_q("y.bin", &last, b"z");
+        assert!(late.starts_with("HTTP/1.1 409"), "{late}");
+        assert!(!root.join("y.bin").exists());
+        assert!(
+            !std::fs::read_dir(&root)
+                .unwrap()
+                .any(|e| { e.unwrap().file_name().to_string_lossy().ends_with(".part") })
+        );
+
+        let path = percent_encode(&root.join("a b.bin").to_string_lossy());
+        // Binary, so not through `over_tcp` (a String).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let s = server.clone();
+        let t = std::thread::spawn(move || s.handle(listener.accept().unwrap().0));
+        let mut client = TcpStream::connect(addr).unwrap();
+        let req = format!("GET /api/connect/download?path={path} HTTP/1.1\r\nHost: x\r\n\r\n");
+        client.write_all(req.as_bytes()).unwrap();
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).unwrap();
+        t.join().unwrap();
+        let split = reply.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = String::from_utf8_lossy(&reply[..split]);
+        assert!(
+            head.starts_with("HTTP/1.1 200") && head.contains("attachment"),
+            "{head}"
+        );
+        assert!(
+            head.contains(&format!("Content-Length: {}", big.len())),
+            "{head}"
+        );
+        assert_eq!(reply[split + 4..], big[..]);
+        assert!(get(&format!("/api/connect/download?path={dir}")).starts_with("HTTP/1.1 400"));
+        server.connect.as_ref().unwrap().shutdown();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

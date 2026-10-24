@@ -1,4 +1,4 @@
-// Convert: source → target format → output → Build, then one row per job below the cards.
+// Convert: source → target format → output → Build.
 // LZ4 asset packs (trace, pack, unpack, the in-place patch) have their own screen (Lz4.tsx).
 
 import { useEffect, useRef, useState } from "react";
@@ -28,8 +28,7 @@ import {
 import { useMessages } from "./i18n";
 import { Icon } from "./icons";
 import { inspectSource } from "./password";
-import { JobsCard } from "./JobList";
-import type { Action, Job } from "./jobs";
+import { jobType, type Action, type Job } from "./jobs";
 import {
   DEFAULT_FFPFSC_LEVEL,
   FfpfscField,
@@ -82,8 +81,6 @@ export function Convert(props: {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false); // state lags a fast double click
-  /** Jobs this page started: only those scroll into view (not the ones a reload restores). */
-  const started = useRef(new Set<JobId>());
   // Only the latest pick may land (an older inspect can finish last).
   const sourceSeq = useRef(0);
   const out = useOutput(format, props.jobs, setError);
@@ -99,9 +96,14 @@ export function Convert(props: {
     setRemoveBackport(false);
     setIns(null);
     setPassword(null);
-    setInsError(null);
     setError(null);
     out.reset(path, fmt);
+    await open(path);
+  };
+
+  // Read the source (again for Unlock: the target, backport and a typed name stay as they are).
+  const open = async (path: string) => {
+    setInsError(null);
     setInspecting(true);
     const seq = ++sourceSeq.current;
     try {
@@ -150,6 +152,22 @@ export function Convert(props: {
       }),
     [source],
   );
+
+  // A job that changed this source in place (an edit, an LZ4 Patch or Unpatch) has finished:
+  // read it again. Every job seen unfinished counts, also one started on another tab.
+  const live = useRef(new Set<JobId>());
+  useEffect(() => {
+    let again = false;
+    for (const j of props.jobs) {
+      if (!j.result) {
+        live.current.add(j.id);
+        continue;
+      }
+      if (!live.current.delete(j.id)) continue;
+      if (source !== null && j.request?.source === source && (j.request.edits?.length || j.request.lz4_in_place)) again = true;
+    }
+    if (again && source !== null) void open(source);
+  }, [props.jobs, source]);
 
   const pickFormat = (fmt: Format) => {
     setFormat(fmt);
@@ -219,15 +237,16 @@ export function Convert(props: {
     submittingRef.current = true;
     setSubmitting(true);
     const choice = out.choiceSeq.current;
+    const seq = sourceSeq.current;
     try {
       const id = await api.startJob(request);
-      started.current.add(id);
       props.dispatch({ type: "started", id, request });
       out.next(source, request.output, choice);
       // A double click's second press lands once the job started: the button rests a moment.
       await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {
-      setError(errorText(e));
+      // Not under a source picked since.
+      if (seq === sourceSeq.current) setError(errorText(e));
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -235,7 +254,7 @@ export function Convert(props: {
   };
 
   const sameJobs = props.jobs.filter(
-    (j) => !j.result && j.request?.source === source && j.request.format === format && !j.request.edits?.length,
+    (j) => !j.result && j.request?.source === source && j.request.format === format && jobType(j.request) === "convert",
   );
   // A typed name that an unfinished job is writing can't be used twice; a generated one
   // moves on to the next free name, so another Build is a second copy.
@@ -245,14 +264,13 @@ export function Convert(props: {
   const formatWarn = ins
     ? ins.findings.filter((l) => classify(l).formats?.includes(format)).length
     : 0;
-  const hasJobs = props.jobs.length > 0;
   // An unreadable source fails its naming too: Source already says why.
   const shownError = insError ? null : error;
   // What to expect for an AMPR game, unless Build is off anyway.
   const ampr = !blockReason && (runtimeNote !== null || indexNote !== null);
 
   return (
-    <div className={hasJobs ? "screen with-jobs" : "screen"}>
+    <div className="screen">
       <div className="cols">
         <SourceCard
           path={source}
@@ -260,11 +278,16 @@ export function Convert(props: {
           busy={inspecting}
           error={insError}
           ins={ins}
-          onUnlock={() => source && void pickSource(source, sourceIsImage)}
+          onUnlock={() => source && void open(source)}
         />
 
         <section className="card" aria-labelledby="c-target">
-          <CardHead icon="target" title={t.target} id="c-target" />
+          <CardHead icon="target" title={t.target} id="c-target">
+            <button type="button" className="small" onClick={props.onCompare}>
+              <Icon name="table" />
+              {t.compare}
+            </button>
+          </CardHead>
           <FormatPicker
             name="target-format"
             label={t.targetFormat}
@@ -317,10 +340,6 @@ export function Convert(props: {
           )}
           {format === "pkg" && <KrakenField prefix="c" value={krakenLevel} onChange={setKrakenLevel} />}
           <VerifySwitch checked={fullVerify} onChange={setFullVerify} />
-          <button className="link" onClick={props.onCompare}>
-            <Icon name="table" />
-            {t.compare}
-          </button>
           <OutputField out={out} source={source} prefix="c" />
           <div className="build-row">
             <GenerateSwitch out={out} source={source} />
@@ -333,9 +352,13 @@ export function Convert(props: {
               {t.build}
             </button>
           </div>
-          {(blockReason || formatWarn > 0 || dupe || shownError || ampr) && (
+          {(blockReason || formatWarn > 0 || dupe || collides || shownError || ampr) && (
             <div className="build-notes">
-              {shownError && <p className="bad">{shownError}</p>}
+              {shownError && (
+                <p className="bad" role="alert">
+                  {shownError}
+                </p>
+              )}
               {blockReason && (
                 <p className="note-line block">
                   <Icon name="alert" />
@@ -362,7 +385,7 @@ export function Convert(props: {
                   <span>{indexNote}</span>
                 </p>
               )}
-              {dupe && (
+              {(dupe || collides) && (
                 <p className="note-line muted">
                   <Icon name="info" />
                   <span>
@@ -375,7 +398,6 @@ export function Convert(props: {
         </section>
       </div>
 
-      {hasJobs && <JobsCard jobs={props.jobs} dispatch={props.dispatch} started={started} prefix="c" />}
     </div>
   );
 }

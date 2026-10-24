@@ -259,6 +259,8 @@ pub fn plan(tree: &dyn SourceTree, opts: &Options, cancel: &AtomicBool) -> Resul
     let files = nodes.iter().filter(|n| !n.dir).count() as u64;
     let dirs = nodes.len() as u64 - files; // the root included, as the script counts
     let alloc = data_clusters.checked_mul(CLUSTER).ok_or_else(too_big)?;
+    // The free room asked for is kept free whatever the folders take (the size alone budgets
+    // 256 B per entry, a folder takes a cluster): sized for content + room clusters.
     let target = add(
         default_size(files, dirs, data_bytes, alloc)?,
         opts.free_bytes
@@ -271,7 +273,7 @@ pub fn plan(tree: &dyn SourceTree, opts: &Options, cancel: &AtomicBool) -> Resul
         fat_sectors,
         heap_sector,
         image: image_size,
-    } = size_volume(content, target)?;
+    } = size_volume(add(content, opts.free_bytes.div_ceil(CLUSTER))?, target)?;
     let used = add(bitmap, content)?;
     let mut next = FIRST_CLUSTER + bitmap + 1; // after the bitmap and the up-case table
     for &n in &order {

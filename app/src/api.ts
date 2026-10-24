@@ -4,6 +4,7 @@
 
 import { transport } from "forge-transport";
 import { msg, num } from "./i18n";
+import { readable, type NasProtocol } from "./peers";
 import type { DropEvent, DropItem, PickOptions, Unlisten } from "./transport";
 
 export type { DropEvent, DropItem, HostTree } from "./transport";
@@ -23,10 +24,10 @@ export const ARCHIVE_PASSWORD_REQUIRED = "This archive needs a password.";
 export const ARCHIVE_PASSWORD_WRONG = "The password is not correct.";
 /** A target: every source kind, plus the LZ4 packed folder (a folder, read as one). */
 export type Format = Kind | "lz4";
-/** What a job does with LZ4 asset packs, besides the target: install the trace runtime, write
- * packs back as plain files, or put Forge's release runtime back. */
-/** `pack`: LZ4 packs into `format` (folder, exfat, ffpkg, ffpfs, ffpfsc); the `lz4` format is
- * the same as `folder` with `pack`. */
+/** What a job does with LZ4 asset packs, besides the target: install the trace runtime (`trace`),
+ * write packs back as plain files (`unpack`), put Forge's release runtime back (`unpatch`), or
+ * pack into `format` (`pack`: folder, exfat, ffpkg, ffpfs, ffpfsc; the `lz4` format is the same
+ * as `folder` with `pack`). */
 export type Lz4Mode = "trace" | "unpack" | "unpatch" | "pack";
 /** The image inside a `.ffpfsc` container. */
 export type InnerFormat = "exfat" | "ffpkg" | "ffpfs";
@@ -67,7 +68,7 @@ export interface ConvertRequest {
   output: string;
   /** `null`: every core. */
   compression_threads: number | null;
-  /** The image inside a `.ffpfsc`; `null` (or any other target): `.exfat`. */
+  /** The image inside a `.ffpfsc`; `null`: `.ffpkg`. Ignored for any other target. */
   inner: InnerFormat | null;
   /** Leave the backport libraries (not the emulators) out of fakelib/; refused when the
    * executables' SDK was lowered. */
@@ -102,6 +103,10 @@ export interface ConvertRequest {
   /** Non-empty: an extract job; game-relative `/` paths of files or folders, each copied into
    * `output` (an existing folder) under its own last component. `format` is `"folder"`. */
   extract?: string[];
+  /** Non-empty: a transfer job (Connect's copy job, its own queue beside the others); files or
+   * folders on this device, a peer (`flink://`) or a NAS (`smb://`, `ftp://`, `nfs://`), each
+   * copied into `output` (an existing folder here, on a peer or on a NAS) under its own name. `source` and `format` unused. */
+  transfer?: string[];
 }
 
 /** How the output was verified. `samples` and `seed` are 0 for full. */
@@ -296,7 +301,8 @@ export interface Lz4Patch {
 /** One job in `GET /api/jobs` (http build): what a reloaded page rebuilds its list from. */
 export interface SnapshotJob {
   id: JobId;
-  request: ConvertRequest | null;
+  /** Always there: the server lists a job only once its request is known. */
+  request: ConvertRequest;
   progress: ProgressEvent | null;
   /** The job's stages in order (`StagesEvent`); empty until known. */
   stages: string[];
@@ -386,6 +392,153 @@ export interface DirListing {
   truncated?: boolean;
 }
 
+// ---- Connect (the Connect tab; server `connect.rs`) ----------------------------------------
+
+/** This device on the Connect card. */
+export interface ConnectThisDevice {
+  key_id: string;
+  name: string;
+  platform: string;
+  port: number;
+  /** Why the FLINK listener isn't running; null while it is. */
+  listen_error: string | null;
+  /** The address the default route leaves from; null when unknown. */
+  ip: string | null;
+}
+
+/** A saved (paired) device. `address` `ip:port`; `last_seen` unix seconds, 0 = never. */
+export interface ConnectDevice {
+  key_id: string;
+  name: string;
+  platform: string;
+  address: string | null;
+  last_seen: number;
+  online: boolean;
+}
+
+export interface ForgeFound {
+  key_id: string;
+  name: string;
+  platform: string;
+  address: string;
+  paired: boolean;
+}
+
+export interface NasFound {
+  name: string;
+  service: "smb" | "ftp" | "nfs" | string;
+  address: string;
+  port: number;
+}
+
+export interface Discovered {
+  searching: boolean;
+  error: string | null;
+  forge: ForgeFound[];
+  nas: NasFound[];
+}
+
+/** A saved NAS: one per host + port. The password never comes back: `has_password`. */
+export interface NasDevice {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  /** A game source and an output, whichever it is (its games aren't edited in place). */
+  protocol: NasProtocol;
+  /** Empty: guest (anonymous for FTP; always empty for NFS, which has no login). */
+  user: string;
+  has_password: boolean;
+  online: boolean;
+  /** Unix seconds of the last probe that reached it since the service started; 0 = none. */
+  last_online: number;
+}
+
+/** Another device's pairing request, waiting for this device's user. `check`: the six digits
+ * both screens show. */
+export interface PairRequest {
+  id: string;
+  name: string;
+  platform: string;
+  ip: string;
+  check: string;
+}
+
+/** This device's own pairing request: `asking` (connecting), `waiting` (`check` set: the other
+ * device's user decides), then an outcome. */
+export interface PairOutgoing {
+  id: number;
+  address: string;
+  check: string | null;
+  state:
+    | "asking"
+    | "waiting"
+    | "paired"
+    | "denied"
+    | "timed_out"
+    | "busy"
+    | "already_paired"
+    | "too_many_attempts"
+    | "failed"
+    | "cancelled";
+  error: string | null;
+  device: ConnectDevice | null;
+}
+
+/** What answers at an address (`connect.probe`): a Forge (its FLINK port and name) or a NAS. */
+export interface ConnectProbe {
+  kind: "forge" | NasProtocol;
+  host: string;
+  port: number;
+  name: string | null;
+}
+
+export interface ConnectState {
+  device: ConnectThisDevice;
+  devices: ConnectDevice[];
+  nas: NasDevice[];
+  discovery: Discovered;
+  pending: PairRequest[];
+  outgoing: PairOutgoing | null;
+}
+
+const cc = <T,>(cmd: string, args?: Record<string, unknown>) => transport.connect<T>(cmd, args);
+
+/** The Connect service. Errors are strings: a refusal's code (`too_many_attempts`,
+ * `not_paired`, ...) or the service's text. */
+export const connect = {
+  state: () => cc<ConnectState>("state"),
+  /** Asks the device at `address` (ip, ip:port or host[:port]) to pair; `state.outgoing`
+   * follows it. */
+  pair: (address: string) => cc<null>("pair", { address }),
+  pairCancel: () => cc<null>("pair_cancel"),
+  /** What answers at `address` (host or host:port, IPv6 in brackets; about 3 s at most):
+   * with no port a Forge first, then SMB, NFS, FTP; a Forge off the local network and
+   * "nothing to connect to at <address>" are errors. */
+  probe: (address: string) => cc<ConnectProbe>("probe", { address }),
+  /** This device's user answers another device's request; false when it no longer waits. */
+  approve: (id: string, allow: boolean) => cc<boolean>("approve", { id, allow }),
+  forget: (keyId: string) => cc<boolean>("forget", { key_id: keyId }),
+  discoverStart: () => cc<null>("discover_start"),
+  discoverStop: () => cc<null>("discover_stop"),
+  /** Saves a NAS (`host` host[:port], port default the protocol's own: 445, 21 or 2049; updated
+   * in place when saved before; NFS drops `user` and `password`);
+   * its id. `id`: the saved entry an edit changes. `user`/`password` undefined keep the saved
+   * ones, "" clears them. */
+  nasSave: (nas: { id?: string; name: string; host: string; port?: number; protocol?: NasProtocol; user?: string; password?: string }) =>
+    cc<string>("nas_save", nas),
+  nasForget: (id: string) => cc<boolean>("nas_forget", { id }),
+  /** Desktop app: elfldr at `address` (host[:port], port 9021 by default) downloads release
+   * `version`'s PS5 ELF from GitHub and starts it (within a minute). */
+  payloadInstall: (address: string, version: string) => cc<null>("payload_install", { address, version }),
+  /** Desktop app: the ELF file at `path` streamed to elfldr at `address`; the bytes sent. */
+  payloadSend: (address: string, path: string) => cc<number>("payload_send", { address, path }),
+  /** http build: a browser file into the server's folder `dir`; its path. */
+  upload: transport.connectUpload,
+  /** http build: the URL that downloads the server's file; the app: null. */
+  downloadUrl: transport.connectDownloadUrl,
+};
+
 /** Where the backend runs (the server's own answer in the http build); rejects when unknown. */
 export const runtimePlatform: () => Promise<RuntimePlatform> = transport.platform;
 
@@ -435,10 +588,14 @@ export const api = {
   movePath: (from: string, to: string) => invoke<null>("move_path", { from, to }).then(() => undefined),
   /** One folder's entries; null (http build only): the server's browse roots. */
   listDir: (path: string | null) => invoke<DirListing>("list_dir", { path, explorer: true }),
+  /** http build on the PS5: its internal storage (`/data`) in bytes; null when unknown. */
+  storage: () => invoke<{ free: number; total: number } | null>("storage", {}),
   /** The app: this user's home folder (the File explorer's start), or null when there is none.
    * The http build has none (it starts at the server's roots). */
   homeFolder: () => (web ? Promise.resolve(null) : invoke<string | null>("home_folder")),
-  /** Discover game dumps under the chosen folder, or the PS5's roots (read-only, bounded). */
+  /** Discover game dumps under the chosen folder, or the PS5's roots (read-only, bounded). `root`
+   * may be left out only in the http build (the PS5 scans its roots; a computer answers 400);
+   * the app's `library_scan` requires it. */
   libraryScan: (root?: string) => invoke<LibraryScan>("library_scan", root ? { root } : {}),
   /** A dump's cover as a data URL, or null. */
   libraryCover: (path: string) => invoke<string | null>("library_cover", { path }),
@@ -511,7 +668,8 @@ export async function dropContents(item: DropItem): Promise<{ files: { path: str
 
 /** Invoke errors arrive as the command's `String` error. */
 export function errorText(e: unknown): string {
-  return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+  // A paired device's `flink://` address by its name.
+  return readable(typeof e === "string" ? e : e instanceof Error ? e.message : String(e));
 }
 
 // IEC units stay as they are in every language; only the decimal mark follows it.

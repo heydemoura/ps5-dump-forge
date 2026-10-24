@@ -1,14 +1,15 @@
-// The Storage tab's Library view: the game dumps under one folder, as cards or rows. On a
+// The Storage tab's Library view: the game dumps under one folder, as cards or compact rows,
+// filtered by kind chips (All, each kind present, LZ4 packed, Additional content). On a
 // computer the user chooses the folder (nothing scans before that; a refused folder gets an
 // error screen), here or in the File explorer (one folder for both views); on the PS5 the first
 // visit scans the server's roots. The list, the folder and the view live in memory; only the
 // first visit (PS5), Refresh and a newly chosen folder scan. Covers load one at a time after
 // the list.
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { api, errorText, pick, runtimePlatform, type LibraryEntry, type LibraryScan, type RuntimePlatform } from "./api";
-import { basename, Dots, FormatPill, isWithin, notifyDeleted, onDeleted, PathLine } from "./common";
+import { basename, Dots, FormatPill, isArchive, isWithin, kindLabel, notifyDeleted, onDeleted, PathLine } from "./common";
 import { confirmDelete } from "./delete";
 import { gameTitle, num, useMessages } from "./i18n";
 import { Icon } from "./icons";
@@ -16,12 +17,37 @@ import { Icon } from "./icons";
 // Read at render: gameTitle follows the language, and the components re-render on a switch.
 const name = (e: LibraryEntry) => gameTitle(e.title_names, e.title_name) || e.title_id || basename(e.path);
 
+/** The kind chips' filter: "all", an entry's kind, or one of the two labels (LZ4 packed,
+ * Additional content), which can't clash with a kind. */
+type Filter = string;
+const LZ4 = "#lz4";
+const ADDON = "#addon";
+const KIND_ORDER = ["folder", "ffpkg", "exfat", "ffpfs", "ffpfsc", "pkg"];
+/** The cards' row gap (`.library-cards`), and how much of the second row the well shows. */
+const ROW_GAP = 16;
+const PEEK = 56;
+const matches = (e: LibraryEntry, f: Filter) =>
+  f === "all" || (f === LZ4 ? e.lz4_packed === true : f === ADDON ? e.additional_content === true : e.kind === f);
+
 /** Storage in decimal GB as the console's Settings shows it: whole numbers, one decimal under 10 GB. */
 const gb = (bytes: number) => {
   // The precision follows the rounded value: 9.96 GB is "10 GB", not "10.0 GB".
   const tenths = Math.round(bytes / 1e8) / 10;
   return `${tenths < 10 ? num(tenths, 1) : num(Math.round(bytes / 1e9))} GB`;
 };
+
+/** The PS5's free space, first in a Storage view's head actions (before Refresh). */
+export function FreeSpace({ storage }: { storage: { free: number; total: number } | null | undefined }) {
+  const t = useMessages().library;
+  if (!storage) return null;
+  return (
+    <span className="library-storage" title={t.storageTip}>
+      <Icon name="drive" />
+      <span>{t.free(gb(storage.free), gb(storage.total))}</span>
+      <span className="visually-hidden">{t.storageTip}</span>
+    </span>
+  );
+}
 
 export function Library(props: {
   visible: boolean;
@@ -31,8 +57,12 @@ export function Library(props: {
   onFolder: (folder: string | null) => void;
   onEdit: (entry: LibraryEntry) => void;
   onConvert: (entry: LibraryEntry) => void;
+  /** Storage's Library | File explorer switch, first in this card's head. */
+  switcher?: ReactNode;
 }) {
   const t = useMessages().library;
+  const c = useMessages().common;
+  const loading = useMessages().picker.loading;
   const [platform, setPlatform] = useState<RuntimePlatform | null>(null);
   const [folder, setFolderState] = useState<string | null>(null); // the accepted folder (computer)
   const folderRef = useRef<string | null>(null); // the same, read at call time by scan
@@ -47,6 +77,8 @@ export function Library(props: {
   const [target, setTarget] = useState<string | null>(null); // the folder being scanned
   const [refused, setRefused] = useState(false); // a newly chosen folder failed: the error screen
   const [view, setView] = useState<"cards" | "list">("cards");
+  const [filter, setFilter] = useState<Filter>("all");
+  const filterRef = useRef<Filter>("all"); // the filter as last rendered, read by the delete listener
   const [result, setResult] = useState<LibraryScan | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +106,9 @@ export function Library(props: {
   const refreshRef = useRef<HTMLButtonElement>(null);
   const focusAt = useRef<number | null>(null);
   const deleting = useRef(false);
+  const [deletingPath, setDeletingPath] = useState<string | null>(null); // shown while a delete runs
+  // Covers that failed (a 429 while the read cap is full) get a few more tries, a while later.
+  const retry = useRef<{ timer: number | undefined; left: number }>({ timer: undefined, left: 5 });
 
   // The platform, once; a failed lookup is retried by Refresh.
   const lookup = async (): Promise<RuntimePlatform | null> => {
@@ -98,7 +133,10 @@ export function Library(props: {
     try {
       for (;;) {
         const mine = generation.current;
-        const next = resultRef.current?.entries.find((e) => e.has_cover && !tried.current.has(e.path) && !failed.has(e.path));
+        // The kind chip's games first (each turn reads the chip as last rendered), then the rest.
+        const wanted = (e: LibraryEntry) => e.has_cover && !tried.current.has(e.path) && !failed.has(e.path);
+        const list = resultRef.current?.entries ?? [];
+        const next = list.find((e) => wanted(e) && matches(e, filterRef.current)) ?? list.find(wanted);
         if (scanning.current || !visibleRef.current || !next) return;
         tried.current.add(next.path);
         let url: string | null = null;
@@ -116,6 +154,13 @@ export function Library(props: {
       }
     } finally {
       pumping.current = false;
+      if (failed.size > 0 && retry.current.timer === undefined && retry.current.left > 0) {
+        retry.current.left -= 1;
+        retry.current.timer = window.setTimeout(() => {
+          retry.current.timer = undefined;
+          void pump();
+        }, 3000);
+      }
     }
   };
 
@@ -126,6 +171,10 @@ export function Library(props: {
     scanning.current = true;
     attempted.current = true;
     goneDuring.current = [];
+    window.clearTimeout(retry.current.timer);
+    retry.current = { timer: undefined, left: 5 };
+    // The well's panel buttons give way to the spinner: focus stays in the well, not on <body>.
+    if (wellRef.current?.contains(document.activeElement)) wellRef.current.focus();
     setBusy(true);
     setTarget(root ?? null);
     setError(null);
@@ -203,8 +252,9 @@ export function Library(props: {
         goneDuring.current?.push(path);
         const cur = resultRef.current;
         if (!cur) return;
-        const i = cur.entries.findIndex((e) => isWithin(e.path, path));
-        if (i < 0) return;
+        if (!cur.entries.some((e) => isWithin(e.path, path))) return;
+        // The row's place among those shown, so focus lands on its neighbour.
+        const i = Math.max(0, cur.entries.filter((e) => matches(e, filterRef.current)).findIndex((e) => isWithin(e.path, path)));
         if (wellRef.current?.contains(document.activeElement)) focusAt.current = i;
         for (const e of cur.entries) {
           if (isWithin(e.path, path)) {
@@ -220,12 +270,13 @@ export function Library(props: {
     const i = focusAt.current;
     if (i === null || !result) return;
     focusAt.current = null;
-    const items = wellRef.current?.querySelectorAll("li");
+    const items = wellRef.current?.querySelectorAll(".library-cards > li, .library-rows > li");
     const li = items?.[Math.min(i, items.length - 1)];
     (li?.querySelector("button") ?? refreshRef.current)?.focus();
   }, [result]);
 
-  const remove = async (entry: LibraryEntry) => {
+  // Stable, so a cover arriving re-renders only its own Item.
+  const remove = useCallback(async (entry: LibraryEntry) => {
     if (deleting.current) return;
     deleting.current = true;
     const path = entry.path;
@@ -233,6 +284,7 @@ export function Library(props: {
       if (!(await confirmDelete(path, entry.kind === "folder"))) return;
       setNotice(null);
       setDeleteError(null);
+      setDeletingPath(path);
       await api.deletePath(path);
       notifyDeleted(path);
       setNotice(path);
@@ -241,14 +293,71 @@ export function Library(props: {
       setDeleteError(errorText(e));
     } finally {
       deleting.current = false;
+      setDeletingPath(null);
     }
-  };
+  }, []);
 
   const entries = result?.entries ?? [];
   const host = platform === "host";
   const storage = platform === "ps5" ? result?.storage : undefined; // the PS5's /data, as of the last scan
   const empty = host && !folder && !props.folder && !refused; // a computer with no folder chosen yet
-  const body = busy ? (
+  // The kind chips: All, then each kind present in a fixed order (any other after), then LZ4
+  // packed and Additional content; each with its count.
+  const counts = new Map<Filter, number>();
+  const add = (k: Filter) => counts.set(k, (counts.get(k) ?? 0) + 1);
+  for (const e of entries) {
+    add(e.kind);
+    if (e.lz4_packed === true) add(LZ4);
+    if (e.additional_content === true) add(ADDON);
+  }
+  const kinds = [...KIND_ORDER.filter((k) => counts.has(k)), ...[...counts.keys()].filter((k) => !KIND_ORDER.includes(k) && k !== LZ4 && k !== ADDON)];
+  // A chosen kind that is gone (deleted, or not in a new scan) shows everything.
+  const shown: Filter = filter === "all" || counts.has(filter) ? filter : "all";
+  filterRef.current = shown;
+  useEffect(() => {
+    if (shown !== filter) setFilter(shown);
+  }, [shown, filter]);
+  const visibleEntries = shown === "all" ? entries : entries.filter((e) => matches(e, shown));
+  // The well is at least one whole card row tall, plus the top of the second row when there is
+  // one: a card's height follows its column's width (a square cover), so it is measured again
+  // on a resize and whenever other cards may lead (another scan, filter or count).
+  const cardsShown = props.visible && view === "cards" ? visibleEntries.length : 0;
+  useLayoutEffect(() => {
+    const well = wellRef.current;
+    if (!well) return;
+    const fit = () => {
+      const cards = well.querySelectorAll<HTMLElement>(".library-cards > li");
+      const first = cards[0];
+      if (!first) return well.style.removeProperty("--fit");
+      const second = Array.from(cards).some((c) => c.offsetTop > first.offsetTop);
+      well.style.setProperty("--fit", `${first.offsetHeight + (second ? ROW_GAP + PEEK : 0)}px`);
+    };
+    fit();
+    // The well's own width too (a scrollbar coming or going); old WebKit without ResizeObserver
+    // follows the window only.
+    const watch = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    watch?.observe(well);
+    window.addEventListener("resize", fit);
+    return () => {
+      watch?.disconnect();
+      window.removeEventListener("resize", fit);
+    };
+  }, [cardsShown, shown, result]);
+  const chip = (id: Filter, cls: string, label: string, n: number) => (
+    <button key={id} type="button" className={`kind-chip ${cls}`} aria-pressed={shown === id} onClick={() => setFilter(id)}>
+      {label} <span className="n">{num(n)}</span>
+    </button>
+  );
+  const listed = !busy && !refused && !empty && result !== null;
+  const body = platform === null && !error ? (
+    <div className="library-busy">
+      <span className="spinner" aria-hidden="true" />
+      <span>
+        {loading}
+        <Dots />
+      </span>
+    </div>
+  ) : busy ? (
     <div className="library-busy" role="status" aria-live="polite">
       <span className="spinner" aria-hidden="true" />
       <span>
@@ -262,7 +371,7 @@ export function Library(props: {
         <Icon name="alert" />
       </span>
       <p className="empty-title">{t.cantScanFolder}</p>
-      <p className="muted">{error}</p>
+      <p className="muted backend">{error}</p>
       <div className="row center">
         <button type="button" onClick={() => void choose()}>
           <Icon name="folder" />
@@ -287,12 +396,12 @@ export function Library(props: {
     <>
       {error && (
         <p className="library-msg" role="alert">
-          <span className="tag orange">{t.cantScan}</span> {error}
+          <span className="tag orange">{t.cantScan}</span> <span className="backend">{error}</span>
         </p>
       )}
       {deleteError && (
         <p className="library-msg" role="alert">
-          <span className="tag orange">{t.cantDelete}</span> {deleteError}
+          <span className="tag orange">{t.cantDelete}</span> <span className="backend">{deleteError}</span>
         </p>
       )}
       {notice && (
@@ -305,14 +414,36 @@ export function Library(props: {
           <span className="tag orange">{t.truncated}</span> <span className="muted">{t.limits}</span>
         </p>
       )}
-      {result && result.roots.length === 0 && <p className="muted">{t.noRoots}</p>}
-      {result && result.roots.length > 0 && entries.length === 0 && (
-        <p className="muted">{t.none}</p>
+      {result && entries.length === 0 && (
+        <div className="empty library-empty">
+          <span className="empty-icon">
+            <Icon name="folder" />
+          </span>
+          <p className="muted">{result.roots.length === 0 ? t.noRoots : t.none}</p>
+          {host && (
+            <div className="row center">
+              <button type="button" onClick={() => void choose()}>
+                <Icon name="folder" />
+                {t.chooseAnother}
+              </button>
+            </div>
+          )}
+        </div>
       )}
-      {entries.length > 0 && (
+      {visibleEntries.length > 0 && (
         <ul className={view === "cards" ? "library-cards" : "library-rows"}>
-          {entries.map((e) => (
-            <Item key={e.path} entry={e} cover={covers.current.get(e.path)} list={view === "list"} onEdit={props.onEdit} onConvert={props.onConvert} remove={remove} />
+          {visibleEntries.map((e) => (
+            <Item
+              key={e.path}
+              entry={e}
+              cover={covers.current.get(e.path)}
+              list={view === "list"}
+              onEdit={props.onEdit}
+              onConvert={props.onConvert}
+              remove={remove}
+              deleting={deletingPath === e.path}
+              locked={deletingPath !== null}
+            />
           ))}
         </ul>
       )}
@@ -326,66 +457,71 @@ export function Library(props: {
           </ul>
         </details>
       )}
-      {result && <p className="muted library-note">{t.stays}</p>}
     </>
   );
 
   return (
-    <section className="card library" aria-labelledby="library-title">
-      <div className="library-head">
-        <h2 id="library-title">
-          <Icon name="library" />
-          {t.library}
-          {result && <span className="count">{num(entries.length)}</span>}
-        </h2>
-        <div className="library-ctl">
-          {storage && (
-            <span className="library-storage" title={t.storageTip}>
-              <Icon name="drive" />
-              <span>{t.free(gb(storage.free), gb(storage.total))}</span>
-            </span>
-          )}
-          {host && folder && (
-            <span className="library-folder">
-              <PathLine path={folder} />
-            </span>
-          )}
+    <section className="card library storage-card" aria-label={t.library}>
+      <div className="storage-head">
+        {props.switcher}
+        <div className="storage-actions">
+          <FreeSpace storage={storage} />
           {(platform !== null || error !== null) && !empty && !refused && (
-            <button type="button" className="small" ref={refreshRef} disabled={busy} onClick={() => void refresh()}>
+            <button type="button" className="small" ref={refreshRef} aria-disabled={busy || undefined} onClick={() => void refresh()}>
               <Icon name="refresh" />
               {t.refresh}
             </button>
           )}
           {host && folder && (
-            <button type="button" className="small" disabled={busy} onClick={() => void choose()}>
+            <button type="button" className="small" aria-disabled={busy || undefined} onClick={() => void choose()}>
               <Icon name="folder" />
               {t.choose}
             </button>
           )}
-          {platform !== null && !empty && !refused && <div className="library-views">
-            <button type="button" className="small icon-only" aria-pressed={view === "cards"} aria-label={t.cards} title={t.cards} onClick={() => setView("cards")}>
-              <Icon name="grid" />
-            </button>
-            <button type="button" className="small icon-only" aria-pressed={view === "list"} aria-label={t.list} title={t.list} onClick={() => setView("list")}>
-              <Icon name="list" />
-            </button>
-          </div>}
+          {platform !== null && !empty && !refused && (
+            <div className="library-views" role="group" aria-label={t.showAs}>
+              <button type="button" className="small icon-only" aria-pressed={view === "cards"} aria-label={t.cards} title={t.cards} onClick={() => setView("cards")}>
+                <Icon name="grid" />
+              </button>
+              <button type="button" className="small icon-only" aria-pressed={view === "list"} aria-label={t.list} title={t.list} onClick={() => setView("list")}>
+                <Icon name="list" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
-      <div className="library-well" ref={wellRef} tabIndex={0} aria-busy={busy} aria-label={t.games}>
+      {/* A computer's count names the chosen folder; the PS5 has none (the chips count). */}
+      {listed && host && folder && (
+        <div className="library-meta">
+          <div className="library-count">{t.countIn(entries.length, <PathLine path={folder} />)}</div>
+        </div>
+      )}
+      {listed && entries.length > 0 && (
+        <div className="kind-chips" role="group" aria-label={t.kinds}>
+          {chip("all", "all", t.all, entries.length)}
+          {kinds.map((k) => chip(k, `fmt-${isArchive(k) ? "archive" : k}`, kindLabel(k), counts.get(k) ?? 0))}
+          {counts.has(LZ4) && chip(LZ4, "lz4", t.lz4Chip, counts.get(LZ4) ?? 0)}
+          {counts.has(ADDON) && chip(ADDON, "addon", c.additionalContent, counts.get(ADDON) ?? 0)}
+        </div>
+      )}
+      <div className="library-well" ref={wellRef} tabIndex={0} role="region" aria-label={t.games}>
         {body}
       </div>
     </section>
   );
 }
 
-function Item(props: {
+const Item = memo(function Item(props: {
   entry: LibraryEntry;
   cover: string | undefined;
   list: boolean;
   onEdit: (e: LibraryEntry) => void;
   onConvert: (e: LibraryEntry) => void;
   remove: (e: LibraryEntry) => void;
+  /** This entry is being deleted: its actions are off. */
+  deleting: boolean;
+  /** A delete runs: every trash button is off. */
+  locked: boolean;
 }) {
   const t = useMessages().library;
   const c = useMessages().common;
@@ -400,13 +536,22 @@ function Item(props: {
   );
   const actions = (
     <span className="library-actions">
-      <button type="button" className="small icon-only" aria-label={t.edit(n)} title={t.edit(n)} onClick={() => props.onEdit(e)}>
+      <button type="button" className="small icon-only" disabled={props.deleting} aria-label={t.edit(n)} title={t.edit(n)} onClick={() => props.onEdit(e)}>
         <Icon name="pencil" />
       </button>
-      <button type="button" className="small icon-only" aria-label={t.convert(n)} title={t.convert(n)} onClick={() => props.onConvert(e)}>
+      <button type="button" className="small icon-only" disabled={props.deleting} aria-label={t.convert(n)} title={t.convert(n)} onClick={() => props.onConvert(e)}>
         <Icon name="convert" />
       </button>
-      <button type="button" className="small icon-only danger" aria-label={t.remove(n)} title={t.remove(n)} onClick={() => props.remove(e)}>
+      <button
+        type="button"
+        className="small icon-only danger"
+        // The row being deleted keeps focus (aria-disabled), so it can move on to a neighbour.
+        disabled={props.locked && !props.deleting}
+        aria-disabled={props.deleting || undefined}
+        aria-label={props.deleting ? t.deleting(n) : t.remove(n)}
+        title={props.deleting ? t.deleting(n) : t.remove(n)}
+        onClick={() => props.remove(e)}
+      >
         <Icon name="trash" />
       </button>
     </span>
@@ -420,25 +565,27 @@ function Item(props: {
     </div>
   );
   return props.list ? (
-    <li className="library-row" title={e.path}>
+    <li className="library-row">
       {cover}
       <div className="library-text">
         <div className="library-name">{n}</div>
         <div className="library-sub muted">
-          {e.title_id}
+          <span>{e.title_id}</span>
           {e.version && <span>{e.version}</span>}
           {packed && <Lz4Badge />}
+          {ac}
         </div>
       </div>
-      <FormatPill kind={e.kind} />
-      {ac}
+      <div className="library-kind">
+        <FormatPill kind={e.kind} />
+      </div>
       <div className="library-path">
         <PathLine path={e.path} />
       </div>
       {actions}
     </li>
   ) : (
-    <li className="library-card" title={e.path}>
+    <li className="library-card">
       {box}
       <div>
         <div className="library-name">{n}</div>
@@ -458,14 +605,15 @@ function Item(props: {
       </div>
     </li>
   );
-}
+});
 
 /** An LZ4 packed dump's badge: "LZ4" in LZ4 yellow on a liquid-glass pill. */
 function Lz4Badge() {
   const t = useMessages().library;
   return (
     <span className="lz4-badge" title={t.lz4Tip}>
-      LZ4<span className="visually-hidden">{t.lz4Packed}</span>
+      <span aria-hidden="true">LZ4</span>
+      <span className="visually-hidden">{t.lz4Tip}</span>
     </span>
   );
 }

@@ -13,12 +13,14 @@ const CHECKS = { one: "contrôle", many: "de contrôles", other: "contrôles" };
 const fr: Messages = {
   // App.tsx
   app: {
-    address: (url) => `Adresse : ${url}. Afficher comment se connecter, avec un code QR`,
     screens: "Écrans",
     convert: "Convertir",
     active: (n) => `, ${num(n)} en cours`,
     edit: "Modifier",
     storage: "Stockage",
+    connect: "Connexion",
+    disconnected: "Déconnecté",
+    connected: (n: number) => plural(n, { one: `Connecté (${num(n)} appareil)`, many: `Connecté (${num(n)} d’appareils)`, other: `Connecté (${num(n)} appareils)` }),
     about: "À propos",
     prevTab: "Onglet précédent (L2)",
     nextTab: "Onglet suivant (R2)",
@@ -37,6 +39,7 @@ const fr: Messages = {
     stopAndQuit: (n) => (n === 1 ? "Arrêter la tâche et quitter" : "Arrêter les tâches et quitter"),
     stoppingJobs: "Arrêt des tâches et nettoyage…",
     stoppingForge: "Arrêt de Dump Forge…",
+    quitting: "Fermeture de PS5 Dump Forge…",
     couldntStop: "Impossible d’arrêter Dump Forge",
     close: "Fermer",
     tryAgain: "Réessayer",
@@ -122,28 +125,20 @@ const fr: Messages = {
     },
     features: [
       ["Conversion", "entre un dossier, ffpkg, exfat, ffpfs, ffpfsc et fpkg, dans les deux sens."],
+      ["Transfert", "de fichiers et conversion de jeux entre votre PS5, des ordinateurs et un NAS via SMB, FTP ou NFS."],
       ["Modification", "des fichiers d’un jeu comme dans un dossier, avec sa jaquette, son firmware, son backport, ses DLC et ses problèmes de noms de fichiers avant la création."],
-      ["Suppression", "d’un jeu du disque, après confirmation."],
-      ["LZ4", "traçage d’un jeu AMPR, puis empaquetage de ses ressources avec réparation intelligente (expérimental)."],
       ["En flux", "de n’importe quelle source vers n’importe quelle cible : sans copie temporaire, même pour l’image dans un ffpfsc ou un jeu dans une archive."],
       ["Archives", "un .zip, .7z ou .rar contenant un jeu se parcourt, se convertit ou s’empaquette comme un dossier."],
+      ["USB et cartes SD", "écrit sur des clés et cartes formatées en exFAT ou FAT32."],
+      ["LZ4", "traçage d’un jeu AMPR, puis empaquetage de ses ressources avec réparation intelligente (expérimental)."],
       ["Stockage", "une Bibliothèque de vos jeux et un Explorateur de fichiers pour renommer, déplacer et supprimer."],
       ["Sûr", "votre jeu n’est jamais modifié sans que vous le demandiez ; les fichiers parasites sont ignorés et les mauvais noms de fichiers signalés d’avance."],
-      ["USB et cartes SD", "écrit sur des clés et cartes formatées en exFAT ou FAT32."],
-      ["Sur place ou reconstruit", "les modifications vont directement dans l’image si elles tiennent, sinon dans une nouvelle image qui la remplace après vérification."],
     ],
-    howToConnect: "Comment se connecter",
-    connectText: (url) => (
-      <>Ouvrez {url} dans un navigateur sur n’importe quel appareil de votre réseau local, ou scannez ce code.</>
-    ),
-    close: "Fermer",
     about: "À propos",
-    aboutText: "Cet outil convertit un jeu de n’importe quel format vers n’importe quel autre, sur toutes les plateformes, PS5 comprise.",
-    connectAny: "Se connecter depuis n’importe quel appareil",
-    useAddress: (url) => <>Utilisez {url} ou scannez ce code.</>,
     compare: "Comparer les formats",
     compareLabel: "Comparaison des formats",
     format: "Format",
+    credits: "Crédits",
     upstream: (app) =>
       `Chiffres des auteurs : ce qu’annoncent les auteurs d’ampr_emu et de Lazy_AMPR, non mesuré par ${app} ; ils varient selon le jeu. ampr_emu 0.4.2.1 est une version de test de l’auteur ; problème connu : certains jeux plantent lors de la sauvegarde.`,
     bundled: "Les dossiers empaquetés en LZ4 fonctionnent avec ampr_emu 0.4.2.1 de drakmor (GPL-3.0), fourni sans modification. Source :",
@@ -156,7 +151,7 @@ const fr: Messages = {
   // Edit.tsx
   edit: {
     details: "Détails",
-    deleting: "Suppression de la source…",
+    deleting: "Suppression de la source",
     delete: "Supprimer la source",
     deleted: "Supprimé :",
     filter: "Filtrer par chemin",
@@ -178,7 +173,7 @@ const fr: Messages = {
     howTitle: "Comment ça marche",
     /** The empty state's paragraphs. */
     how: (app) => [
-      "Ouvrez le **dossier** ou **l’image** d’un jeu, puis modifiez-le comme un dossier sur une clé USB : **ajoutez et remplacez des fichiers** (glissez-les ici ou utilisez « Ajouter »), **renommez, supprimez**, créez des dossiers.",
+      "Ouvrez le **dossier** ou **l’image** d’un jeu, puis modifiez-le comme un dossier sur une clé USB : **ajoutez et remplacez des fichiers** (glissez-les ici ou utilisez « Ajouter »), **renommez et supprimez**.",
       `Rien ne change **tant que vous n’appuyez pas sur « Appliquer »** : vos modifications s’accumulent ici, puis ${app} les écrit d’un coup directement dans l’image ou le dossier et vérifie le résultat. **Ce n’est pas un disque monté** : ${app} garde la trace de vos modifications et les applique lui-même.`,
       `Quand les modifications tiennent, elles vont **directement dans l’image** ; sinon (plus de place à l’intérieur, ou un format qui ne les accepte pas), ${app} crée à côté une nouvelle image avec vos modifications et la met à sa place une fois vérifiée. Dans les deux cas, en cas d’échec, l’image reste telle quelle.`,
       "Les archives peuvent être parcourues, mais pas modifiées.",
@@ -189,6 +184,7 @@ const fr: Messages = {
     upTip: "Remonter d’un dossier",
     name: "Nom",
     size: "Taille",
+    actions: "Actions",
     items: (n) => `${num(n)} ${plural(n, { one: "élément", many: "d’éléments", other: "éléments" })}`,
     inFolder: (dirs, files) =>
       `${num(dirs)} ${plural(dirs, { one: "dossier", many: "de dossiers", other: "dossiers" })}, ${num(files)} ${plural(files, FILES)}`,
@@ -196,25 +192,28 @@ const fr: Messages = {
     emptyFolder: "Ce dossier est vide.",
     open: (name) => `Ouvrir ${name}`,
     archiveNote: "Les archives peuvent être parcourues, mais pas modifiées. Pour la modifier, convertissez-la d’abord en dossier ou en image.",
+    nasNote: "Les jeux d’un NAS peuvent être parcourus et extraits, mais pas modifiés. Pour le modifier, convertissez-le ou extrayez-le d’abord sur cet appareil.",
+    peerNote: "Les jeux d’un autre Forge peuvent être parcourus et extraits, mais pas modifiés. Pour le modifier, convertissez-le ou extrayez-le d’abord sur cet appareil.",
     /** The explorer's changes: none is made until Apply. */
     addFiles: "Ajouter des fichiers",
     addFolder: "Ajouter un dossier",
     pickAddFiles: "Choisissez les fichiers à ajouter",
     pickAddFolder: "Choisissez le dossier à ajouter",
-    nameLabel: "Nom",
+    peerRoot: "Un appareil entier ne peut pas être ajouté : choisissez un dossier à l’intérieur.",
     renameItem: (name) => `Renommer ${name}`,
     removeItem: (name) => `Supprimer ${name}`,
     renameTip: "Renommer (F2)",
     removeTip: "Supprimer (touche Suppr)",
+    removeTipMac: "Supprimer (touches fn+Supprimer)",
     /** Extract: copy files or folders out of the source into a folder chosen on this machine. */
-    extract: "Extraire",
     extractItem: (name: string) => `Extraire ${name}`,
     extractTip: "Copier dans un dossier de votre choix",
     extractFolder: "Extraire le dossier",
     extractFolderTip: "Copier le dossier affiché dans un dossier de votre choix",
     extractGameTip: "Copier tout le jeu dans un dossier de votre choix",
+    extractNotOnDisk: "Ce dossier n’existe que dans vos modifications en attente : appliquez-les pour l’extraire.",
     pickExtract: "Choisissez où extraire",
-    extractPending: "Extrait les fichiers tels qu’ils sont maintenant, sans vos modifications en attente",
+    extractPending: "Extrait les fichiers tels qu’ils sont maintenant, sans vos modifications en attente.",
     nameEmpty: "Saisissez un nom.",
     nameBad: "Un nom ne peut pas contenir / ni \\, ni être . ou ..",
     nameTaken: (name) => `${name} existe déjà ici.`,
@@ -224,6 +223,7 @@ const fr: Messages = {
     wasAt: (path) => `Avant : ${path}`,
     sizeLater: "Plus que ce qui a pu être listé : le reste est lu quand les modifications sont appliquées",
     dropInto: (folder) => `Déposez pour ajouter à ${folder}`,
+    droppedGone: (path) => `${path} : le fichier déposé n’est plus là`,
     pending: (n) =>
       plural(n, {
         one: `${num(n)} modification pas encore appliquée`,
@@ -231,7 +231,7 @@ const fr: Messages = {
         other: `${num(n)} modifications pas encore appliquées`,
       }),
     undo: "Annuler",
-    undoTip: "Annuler la dernière modification",
+    undoTip: "Annuler la dernière action, avec toutes ses modifications",
     discard: "Tout abandonner",
     discardTip: "Oublier toutes les modifications pas encore appliquées",
     discardTitle: (n) =>
@@ -267,6 +267,7 @@ const fr: Messages = {
     /** How the changes go in (the pending bar), from core's check before Apply. */
     modeLabel: "Mode d’application",
     checking: "Vérification de la façon d’appliquer les modifications",
+    nothingToChange: "Rien à changer : le jeu reste tel quel.",
     checkFailed: "Impossible de vérifier les modifications :",
     checkAgain: "Vérifier à nouveau",
     inPlace: "Sur place",
@@ -304,6 +305,7 @@ const fr: Messages = {
     closeImage: "Si le jeu tourne depuis cette image, fermez-le d’abord.",
     closeFolder: "Si le jeu tourne depuis ce dossier, fermez-le d’abord.",
     applyRestores: "Une édition précédente de cette image a été interrompue : l’image est d’abord remise dans son état d’origine.",
+    uploadingFile: (i: number, n: number) => `Envoi du fichier ${num(i)} sur ${num(n)}`,
     uploading: (i: number, n: number, sent: string, total: string) => `Envoi du fichier ${num(i)} sur ${num(n)} : ${sent} sur ${total}`,
     uploadLabel: "Envoi",
     uploadCancelled: "Envoi annulé. Rien n’a changé dans le jeu.",
@@ -362,6 +364,7 @@ const fr: Messages = {
     /** An Edit tab job's tag: changes written into the source, or a rebuilt image swapped in. */
     edit: "Modification",
     editRebuild: "Modification · reconstruction",
+    transfer: "Transfert",
     extract: "Extraction",
     job: (id) => `Tâche ${id}`,
     done: "Terminé",
@@ -372,7 +375,7 @@ const fr: Messages = {
     dismiss: "Masquer",
     stopJob: "Arrêter ?",
     cancel: "Annuler",
-    stopHint: "Cliquez de nouveau sur « Arrêter ? » dans les 4 secondes pour arrêter la tâche.",
+    stopHint: "Appuyez de nouveau sur « Arrêter ? » dans les 4 secondes pour arrêter la tâche.",
     from: "depuis ",
     left: (d) => `il reste ${d}`,
     inStep: (time) => `${time} dans cette étape`,
@@ -387,6 +390,7 @@ const fr: Messages = {
     cantBuild: "Impossible de créer ce jeu :",
     cantEdit: "Impossible d’appliquer les modifications :",
     cantExtract: "Impossible d’extraire :",
+    cantTransfer: "Transfert impossible :",
     cantBuildAs: (f) => (
       <>
         Impossible de créer ce jeu en <b>{f}</b> :
@@ -412,9 +416,8 @@ const fr: Messages = {
     noRoots: "Aucun dossier n’est disponible pour l’analyse.",
     none: "Aucun jeu trouvé. La recherche descend jusqu’à six niveaux et ignore les dossiers système. D’autres sources restent possibles dans « Modifier » ou « Convertir ».",
     skipped: "Emplacements et fichiers ignorés",
-    stays: "Les résultats restent affichés jusqu’à ce que vous cliquiez sur « Actualiser ». Les nouvelles sorties apparaissent après l’actualisation.",
     library: "Bibliothèque",
-    storageTip: "Espace libre sur le stockage interne de la console (/data), lors de la dernière analyse",
+    storageTip: "Espace libre sur le stockage interne de la console (/data)",
     free: (free, total) => (
       <>
         Espace libre : <b>{free}</b> sur {total}
@@ -427,8 +430,17 @@ const fr: Messages = {
     edit: (n) => `Modifier ${n}`,
     convert: (n) => `Convertir ${n}`,
     remove: (n) => `Supprimer ${n}`,
+    deleting: (n) => `Suppression de ${n}`,
     lz4Tip: "Empaqueté en LZ4 : paquets de ressources ampr_emu",
-    lz4Packed: " empaqueté",
+    showAs: "Afficher en",
+    kinds: "Afficher le type",
+    all: "Tous",
+    lz4Chip: "Empaqueté en LZ4",
+    countIn: (n, path) => (
+      <>
+        <b>{num(n)}</b> {plural(n, { one: "jeu dans", many: "de jeux dans", other: "jeux dans" })} {path}
+      </>
+    ),
   },
   // Storage.tsx, Files.tsx: the Storage tab (Library | File explorer)
   storage: {
@@ -441,6 +453,7 @@ const fr: Messages = {
     choose: "Choisir un dossier",
     roots: "Lecteurs",
     location: "Emplacement",
+    folders: "Dossiers",
     up: "Remonter",
     upTip: "Remonter d’un dossier",
     refresh: "Actualiser",
@@ -458,9 +471,10 @@ const fr: Messages = {
     noRoots: "Aucun lecteur n’est disponible.",
     cantList: "Impossible d’ouvrir ce dossier :",
     link: "Lien",
-    linkTip: "Un lien : il peut être ouvert, mais il n’est jamais modifié ici",
+    linkTip: "Un lien : il peut être ouvert, mais pas renommé, déplacé ni supprimé ici",
     mounted: "Monté",
     mountedTip: "Monté par ShadowMount+ : quittez le jeu et désactivez ShadowMount+ pour le supprimer, le renommer ou le déplacer",
+    mountedNote: "Les images marquées Monté sont utilisées par ShadowMount+ : quittez le jeu et désactivez ShadowMount+ pour les supprimer, les renommer ou les déplacer.",
     open: (n) => `Ouvrir ${n}`,
     more: (n) => `Autres actions pour ${n}`,
     rename: (n) => `Renommer ${n}`,
@@ -470,6 +484,7 @@ const fr: Messages = {
     moveTitle: (n) => `Déplacer ${n} vers`,
     remove: (n) => `Supprimer ${n}`,
     removeTip: "Supprimer (touche Suppr)",
+    removeTipMac: "Supprimer (touches fn+Supprimer)",
     cantDelete: "Impossible de supprimer :",
     cantRename: "Impossible de renommer :",
     cantMove: "Impossible de déplacer :",
@@ -477,7 +492,6 @@ const fr: Messages = {
     deleted: (path) => `Supprimé : ${path}`,
     renamed: (path) => `Renommé en ${path}`,
     moved: (path) => `Déplacé vers ${path}`,
-    atOnce: "La suppression, le renommage et le déplacement s’appliquent immédiatement, sans annulation. Fermez le jeu avant de modifier ses fichiers.",
   },
   // Lz4.tsx
   lz4: {
@@ -503,6 +517,8 @@ const fr: Messages = {
     packedFirst: "la source est empaquetée en LZ4 : dépaquetez-la d’abord",
     damaged: "ses paquets LZ4 sont endommagés",
     archive: "une archive ne peut pas être tracée : convertissez-la d’abord",
+    nas: "un jeu sur un NAS ne peut pas être tracé : convertissez-le d’abord",
+    peer: "un jeu sur un autre appareil ne peut pas être tracé : convertissez-le d’abord",
     chooseFirst: "choisissez d’abord une source",
     notRead: "la source n’est pas encore lue",
     pickProfile: "Profil LZ4",
@@ -517,7 +533,7 @@ const fr: Messages = {
     replacing: "Une tâche recrée déjà cette image : attendez qu’elle se termine.",
     blocked: (a, first, more) =>
       `${a === "patch" ? "Impossible de patcher" : a === "unpatch" ? "Impossible de retirer le patch" : a === "pack" ? "Impossible d’empaqueter" : "Impossible de dépaqueter"} : ${first}${more > 0 ? ` (et ${num(more)} de plus, voir « Source »)` : ""}.`,
-    chooseGame: "Choisissez d’abord un dossier de jeu ou une image.",
+    chooseGame: "Choisissez d’abord un dossier de jeu, une image ou une archive.",
     noAmprGame: "Ce jeu n’utilise pas AMPR, donc LZ4 ne peut pas servir ici.",
     additionalContent: "C’est un contenu additionnel (sans eboot.bin), donc LZ4 ne peut pas servir ici.",
     installsRuntime: (a, version) =>
@@ -529,11 +545,12 @@ const fr: Messages = {
     freshIndex: (state, a) =>
       `${state === "stale" ? "ampr_emu.index ne liste pas les fichiers de ce jeu" : state === "damaged" ? "ampr_emu.index est illisible" : "Ce jeu n’a pas d’ampr_emu.index"} : ${a === "pack" ? "Empaqueter" : a === "patch" ? "Patcher" : "Retirer le patch"} en écrit un nouveau.`,
     unavailable: (items) => `Indisponible pour cette source : ${items.join(" ; ")}.`,
+    unavailableItem: (name, why) => `${name} (${why})`,
+    optionWhy: (why) => `, ${why}`,
     readOnly: (kind) => <>
       <b>{kind}</b> est en lecture seule sur la console, il ne peut donc pas être tracé. Convertissez-le d’abord en <b>ffpkg</b> ou <b>exfat</b>.
     </>,
     action: "Action",
-    traceAction: "Action de traçage",
     changes: (a, image) => a === "patch"
       ? `Modifie ${image ? "cette image" : "ce dossier"} : le runtime de traçage remplace fakelib/libSceAmpr.sprx, sans copie de sauvegarde.`
       : `Modifie ${image ? "cette image" : "ce dossier"} : le runtime de production revient et les traces sont supprimées, sans copie de sauvegarde.`,
@@ -549,9 +566,7 @@ const fr: Messages = {
     choose: "Choisir",
     profileHint: "Un fichier TOML de règles d’empaquetage, utilisé à la place des traces.",
     target: "Cible",
-    packInto: "Empaqueter vers",
     direct: "Empaquette directement dans l’image ; les fichiers du jeu sont lus deux fois.",
-    targetFormat: "Format cible",
     unpackFolder: "Un nouveau dossier de jeu, avec les paquets réécrits sous forme de fichiers ordinaires.",
     unpackHint: (n) =>
       n === null
@@ -586,7 +601,7 @@ const fr: Messages = {
     optionalTraces: "Traces (facultatif)",
     unlock: "Déverrouiller pour choisir d’autres traces",
     loaded: "Les traces sont déjà chargées depuis cette source",
-    lockedHint: (bytes) => `Les traces propres à cette source (${bytes}). Cliquez sur le cadenas pour en choisir d’autres.`,
+    lockedHint: (bytes) => `ampr_commands.bin (${bytes}). Utilisez le cadenas pour en choisir d’autres.`,
     clear: "Effacer",
     zip: "Zip",
     folder: "Dossier",
@@ -635,6 +650,9 @@ const fr: Messages = {
   },
   // Picker.tsx
   picker: {
+    devices: "Appareils",
+    thisDevice: "Cet appareil",
+    systemDialog: "Boîte de dialogue du système",
     drives: "Lecteurs",
     location: "Emplacement",
     parent: "Dossier parent",
@@ -645,8 +663,9 @@ const fr: Messages = {
     noFolders: "Aucun dossier ici.",
     noImages: "Aucun dossier, image PS5 ni archive ici.",
     noFiles: (ext) => `Aucun dossier ni fichier ${dotted(ext, " ou ")} ici.`,
-    chooseFiles: (n) => `Choisir ${num(n)} ${plural(n, FILES)}`,
+    chooseFiles: (n) => (n === 0 ? "Choisir des fichiers" : `Choisir ${num(n)} ${plural(n, FILES)}`),
     nothing: "Aucun dossier ni fichier ici.",
+    cantList: "Impossible d’ouvrir ce dossier :",
     cancel: "Annuler",
     chooseFolder: "Choisir ce dossier",
   },
@@ -739,7 +758,7 @@ const fr: Messages = {
     text: (folder) =>
       folder
         ? "Le dossier et tout son contenu seront supprimés définitivement : pas de corbeille, pas d’annulation. Si la suppression s’arrête en cours de route, une partie peut déjà avoir disparu."
-        : "Le fichier image sera supprimé définitivement : pas de corbeille, pas d’annulation. Si la suppression s’arrête en cours de route, une partie peut déjà avoir disparu.",
+        : "Le fichier image sera supprimé définitivement : pas de corbeille, pas d’annulation.",
     no: "Non",
     yes: "Oui, supprimer",
     archiveTitle: "Supprimer cette archive ?",
@@ -781,6 +800,7 @@ const fr: Messages = {
       quitUnreachable: "Impossible de joindre Dump Forge pour l’arrêter.",
       stillAnswering: "Dump Forge répond toujours après 2 minutes ; vérifiez la PS5.",
       gone: "Dump Forge ne signale plus cette tâche (retirée de son historique avant que son résultat ait été vu)",
+      uploadIncomplete: "L’envoi ne s’est pas terminé.",
     },
   },
   // target.tsx
@@ -877,7 +897,7 @@ const fr: Messages = {
     update: "Mettre à jour",
     later: "Plus tard",
     updating: "Mise à jour…",
-    updatingNote: "La nouvelle version est en cours de téléchargement, l’app redémarrera toute seule.",
+    updatingNote: "La nouvelle version est en cours de téléchargement. Cette page se rechargera d’elle-même avec elle.",
     downloading: "Téléchargement dans votre navigateur : décompressez l’archive et remplacez cette copie par son contenu.",
     failed: (v) => `Impossible de mettre à jour vers la v${v}`,
     timeout: (v) => `La v${v} n’a pas démarré en une minute. Si elle a été téléchargée, arrêtez Dump Forge et rouvrez-le pour terminer la mise à jour.`,
@@ -885,6 +905,150 @@ const fr: Messages = {
     close: "Fermer",
   },
   // api.ts: prettyDuration's units
+  // Connect.tsx, ConnectHelp.tsx: pairing, Autodiscovery, saved devices
+  connect: {
+    thisDevice: "Cet appareil",
+    howItWorks: "Comment se connecter",
+    ipAddress: "Adresse IP",
+    seen: (n: number, unit: "now" | "m" | "h" | "d") =>
+      unit === "m"
+        ? plural(n, { one: `vu : il y a ${num(n)} minute`, many: `vu : il y a ${num(n)} de minutes`, other: `vu : il y a ${num(n)} minutes` })
+        : unit === "h"
+          ? plural(n, { one: `vu : il y a ${num(n)} heure`, many: `vu : il y a ${num(n)} d’heures`, other: `vu : il y a ${num(n)} heures` })
+          : unit === "d"
+            ? plural(n, { one: `vu : il y a ${num(n)} jour`, many: `vu : il y a ${num(n)} de jours`, other: `vu : il y a ${num(n)} jours` })
+            : "vu : à l’instant",
+    listenError: (e) => `Les autres appareils ne peuvent pas joindre celui-ci : ${e}`,
+    unavailable: (e) => `Connexion indisponible : ${e}`,
+    loading: "Chargement",
+    discover: "Détection automatique",
+    stop: "Arrêter",
+    fileTransfer: "Transfert de fichiers",
+    devices: "Appareils",
+    show: "Afficher",
+    all: "Tous",
+    onlineOf: (n, total) => `${num(n)} sur ${num(total)} en ligne`,
+    sendFilesTo: (name) => `Envoyer des fichiers à ${name}`,
+    details: (name) => `Détails de ${name}`,
+    userIs: (user) => `utilisateur ${user}`,
+    nearby: "À proximité",
+    nearbyNone: "Aucun nouvel appareil trouvé",
+    addDevice: "Ajouter un appareil",
+    addressExample: "192.168.1.20 ou nas.local",
+    addByProtocol: "Ou ajouter par protocole :",
+    savedEmpty: "Aucun appareil enregistré pour l’instant",
+    savedEmptyHint:
+      "La détection automatique trouve Forge et le stockage réseau sur ce réseau. Associez un appareil et autorisez-le sur celui-ci, ou enregistrez un NAS.",
+    online: "En ligne",
+    offline: "Hors ligne",
+    computer: "Ordinateur",
+    address: "Adresse",
+    keyId: "ID de clé",
+    lastSeen: "Vu pour la dernière fois",
+    status: "État",
+    never: "Jamais",
+    unknown: "Inconnu",
+    forget: "Oublier",
+    forgetNote: "« Oublier » retire l’association sur cet appareil seulement. Pour l’utiliser de nouveau, associez-le à nouveau.",
+    close: "Fermer",
+    cancel: "Annuler",
+    pairTitle: "Associer un appareil",
+    pair: "Associer",
+    connectTo: "Connecter",
+    probing: (address) => `Vérification de ${address}`,
+    pairing: "Association",
+    waitingFor: (address) => `En attente de l’autorisation de l’association par ${address}`,
+    checkNumber: "Numéro de contrôle",
+    checkHint: "Il doit correspondre au numéro qu’affiche l’autre appareil.",
+    denied: "L’autre appareil a refusé l’association.",
+    timedOut: "Personne n’a autorisé l’association sur l’autre appareil à temps.",
+    pairBusy: "L’autre appareil a d’autres demandes d’association en attente. Réessayez dans une minute.",
+    alreadyPaired: "Cet appareil est déjà enregistré sur l’autre. Oubliez-le d’abord là-bas, puis associez-le à nouveau.",
+    tooManyAttempts: "Trop de demandes refusées. Réessayez dans 10 minutes.",
+    pairPromptTitle: (name) => `Associer à ${name} ?`,
+    pairPromptBody: (name, platform, ip) =>
+      `${name} (${platform}, ${ip}) veut s’associer à cet appareil. Un appareil associé peut lire les fichiers de cet appareil et en ajouter de nouveaux.`,
+    pairPromptCheck: (name) => `N’autorisez que si ${name} affiche le même numéro de contrôle.`,
+    allow: "Autoriser",
+    deny: "Refuser",
+    notPaired: "L’autre appareil ne connaît plus celui-ci. Associez-le à nouveau.",
+    searching: "Recherche sur ce réseau",
+    forge: "Forge",
+    save: "Enregistrer",
+    kindNas: "NAS",
+    nasAddTitle: (protocol) => `Ajouter un NAS ${protocol}`,
+    nasEditTitle: (protocol) => `Modifier le NAS ${protocol}`,
+    nasName: "Nom",
+    nasAddressHint: "Adresse IP ou nom d’hôte ; ajoutez :port s’il n’est pas 445",
+    nasUser: "Nom d’utilisateur",
+    nasUserHint: "Laissez vide pour vous connecter en invité",
+    ftpAddressHint: "Adresse IP ou nom d'hôte ; ajoutez :port s'il n'est pas 21",
+    nfsAddressHint: "Adresse IP ou nom d'hôte ; ajoutez :port s'il n'est pas 2049",
+    ftpUserHint: "Laissez vide pour vous connecter en anonyme",
+    ftpNote: "FTP n'est pas chiffré, identifiants compris.",
+    nfsNote: "NFS n'a pas d'identifiants : Forge se connecte en root (NFSv4.1, sinon NFSv3), l'export du serveur doit donc autoriser cet appareil. NFS n'est pas chiffré.",
+    nasPassword: "Mot de passe",
+    nasPasswordKeep: "Laissez vide pour garder le mot de passe enregistré",
+    guest: "Invité",
+    passwordSaved: "Enregistré",
+    passwordNone: "Aucun",
+    edit: "Modifier",
+    nasForgetNote: "« Oublier » retire ce NAS et son mot de passe enregistré de cet appareil.",
+    pickSendFiles: "Fichiers à envoyer",
+    pickSendFolder: "Dossier à envoyer",
+    pickSaveTo: "Où l’enregistrer",
+    thisBrowser: "Ce navigateur",
+    browserHint: "Les fichiers de ce téléphone ou de cet ordinateur vont dans un dossier de cet appareil, et ce navigateur enregistre un fichier de cet appareil.",
+    uploadTo: "Dossier de destination",
+    uploadPick: "Choisir les fichiers à envoyer",
+    uploading: (name, i, n) => `Envoi de ${name} (${num(i)} sur ${num(n)})`,
+    uploaded: "Envoi terminé",
+    uploadedBefore: (done, n) =>
+      plural(done, {
+        one: `${num(done)} fichier sur ${num(n)} a été envoyé et reste sur cet appareil.`,
+        other: `${num(done)} fichiers sur ${num(n)} ont été envoyés et restent sur cet appareil.`,
+      }),
+    cantStart: "Impossible de lancer le transfert :",
+    cantUpload: "Impossible d’envoyer :",
+    pickDownload: "Fichier à télécharger",
+    transferIntro: "Envoyez des fichiers ou un dossier depuis n’importe quel appareil vers un dossier ici, sur un appareil associé ou sur un NAS. Le transfert s’exécute comme une tâche dans la liste des tâches.",
+    send: "Envoyer",
+    sendWhat: "Quoi envoyer",
+    sendTo: "Envoyer vers",
+    sendNeedsDevice: "Connectez d’abord un autre appareil : associez un Forge ou ajoutez un NAS.",
+    nothingChosen: "Rien n’est encore choisi",
+    chooseFiles: "Choisir des fichiers",
+    chooseFolder: "Choisir un dossier",
+    startTransfer: "Démarrer",
+    uploadHere: "Envoyer vers cet appareil",
+    downloadHere: "Télécharger depuis cet appareil",
+    consoleNoFiles: "Le navigateur de la console ne peut pas choisir de fichiers : ouvrez cette page sur un téléphone ou un ordinateur.",
+    wholeRoot: "Un appareil, un partage ou un lecteur entier ne peut pas être envoyé : choisissez un dossier à l’intérieur.",
+    helpPhone: "Scannez le QR code pour ouvrir cette page sur un téléphone. Là, « Envoyer vers cet appareil » et « Télécharger depuis cet appareil » dans « Transfert de fichiers » déplacent les fichiers du téléphone.",
+    /** How to connect: short paragraphs, in order (no headings). */
+    help: [
+      "Connexion relie Dump Forge sur votre PS5 et vos ordinateurs d’un même réseau.",
+      "Pour associer, lancez la « Détection automatique » et choisissez « Associer » dans « À proximité », ou saisissez une adresse dans « Ajouter un appareil », puis autorisez-le sur l’autre appareil. Autorisez-le seulement si les deux écrans affichent le même numéro de contrôle.",
+      "Un NAS (SMB, FTP, NFS) s’ajoute de la même façon. Les appareils associés et les NAS servent de sources de jeux et de destinations ; leurs jeux n’y sont pas modifiés.",
+      "« Transfert de fichiers » copie des fichiers et des dossiers entre eux. Un nom qui existe déjà à destination est refusé.",
+    ],
+    helpSecurity: "Rien de ce qui est envoyé entre les appareils n’est chiffré : n’importe qui sur votre réseau peut le lire. Le mot de passe enregistré d’un NAS reste sur cet appareil, non chiffré. Utilisez Connexion uniquement sur votre réseau domestique.",
+    installTitle: "Dump Forge sur la PS5",
+    ps5Address: "Adresse de la PS5",
+    install: "Installer sur la PS5",
+    installHint: "Nécessite le chargeur ELF de la console, accessible sur le réseau (port 9021).",
+    findingRelease: "Recherche de la version sur GitHub",
+    installing: (v, host) => `Installation de Dump Forge ${v} sur ${host}`,
+    installed: (v, host) => `Dump Forge ${v} démarre sur ${host}. Associez-le depuis Ajouter un appareil une fois lancé.`,
+    noRelease: "Impossible de trouver la version PS5 de Dump Forge sur GitHub. Vérifiez la connexion internet de cet ordinateur, puis réessayez.",
+    otherPayload: "Tout autre payload ELF :",
+    sendPayload: "Envoyer un payload",
+    pickPayload: "Choisir un payload ELF",
+    sendingPayload: (name, host) => `Envoi de ${name} à ${host}`,
+    sentPayload: (name, size, host) => `${name} (${size}) envoyé à ${host}.`,
+    helpInstallTitle: "Installer Dump Forge sur une PS5 en un clic",
+    helpInstallText: "Utilisez la carte d’installation de Dump Forge pour envoyer le payload à la console. Elle télécharge depuis GitHub la version correspondante (ou la plus récente) et la lance.",
+  },
   duration: { s: (s) => `${s} s`, ms: (m, s) => `${m} min ${s} s`, hm: (h, m) => `${h} h ${m} min` },
 };
 

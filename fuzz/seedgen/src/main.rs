@@ -243,6 +243,7 @@ fn kraken_sample() -> Res<KrakenSample> {
         mount_size: 0xc0000,
         data_end: 0x42234,
         meta_base: 0x80000,
+        block_digests: None,
     };
     let blob = kraken_image::layout(&img, &[0, 0x41234])?;
     // The seed must decode back to what went in.

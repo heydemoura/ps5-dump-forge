@@ -27,6 +27,22 @@
     "allow-open-repo",
     "allow-update-target",
     "allow-open-update",
-    "allow-quit-app"
+    "allow-quit-app",
+    "allow-connect-state",
+    "allow-connect-pair",
+    "allow-connect-probe",
+    "allow-connect-pair-cancel",
+    "allow-connect-approve",
+    "allow-connect-forget",
+    "allow-connect-discover-start",
+    "allow-connect-discover-stop",
+    "allow-connect-send",
+    "allow-connect-fetch",
+    "allow-connect-cancel",
+    "allow-connect-remote-list",
+    "allow-connect-nas-save",
+    "allow-connect-nas-forget",
+    "allow-connect-payload-install",
+    "allow-connect-payload-send"
   ]
 }

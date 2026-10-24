@@ -7,9 +7,10 @@ import type { ReactNode } from "react";
 import { api, dropContents, type DropItem } from "./api";
 import { basename, Modal, openOverlay } from "./common";
 import { withoutJunk, type AddItem, type Finding, type Planned } from "./explorer";
-import { useMessages } from "./i18n";
+import { msg, useMessages } from "./i18n";
 import type { Messages } from "./locales/en";
 import { Icon } from "./icons";
+import { readable } from "./peers";
 
 /** Where an add's bytes come from: a path on the machine that runs the job (the app's drops and
  * dialogs; the web page's dialog, which browses the server), or, from a browser drop, files that
@@ -33,6 +34,8 @@ export type Incoming = AddItem<AddSource>;
  * a folder's contents. Its name by the platform's separators (a `\` in a macOS or Linux name
  * stays, and core refuses it). */
 export async function fromHost(path: string): Promise<Incoming> {
+  // A paired device's root (`flink://<key_id>`) has no name to land under but its key id.
+  if (/^flink:\/\/[^/\\]*[/\\]*$/i.test(path)) throw new Error(msg().edit.peerRoot);
   const t = await api.hostTree(path);
   return {
     name: basename(path),
@@ -96,21 +99,23 @@ export function askConflicts(names: string[], folder: string): Promise<ConflictA
 function ConflictDialog(props: { names: string[]; folder: string; close: () => void; answer: (a: ConflictAnswer) => void }) {
   const t = useMessages().edit;
   return (
-    <Modal close={props.close} className="modal card conflict" role="alertdialog" labelledBy="cf-title" describedBy="cf-text">
+    <Modal close={props.close} className="modal card" role="alertdialog" labelledBy="cf-title" describedBy="cf-in cf-text">
       <div className="modal-head">
         <span className="head-icon warn">
           <Icon name="warn" />
         </span>
         <h2 id="cf-title">{t.conflictTitle(props.names.length)}</h2>
       </div>
-      <div id="cf-text">
-        <p className="conflict-in">{t.conflictIn(<span className="path">{props.folder}</span>)}</p>
+      <div>
+        <p id="cf-in" className="conflict-in">{t.conflictIn(<span className="path">{props.folder}</span>)}</p>
         <ul className="rows path fold-box conflict-names" tabIndex={0} aria-label={t.conflictTitle(props.names.length)}>
           {props.names.map((n) => (
             <li key={n}>{n}</li>
           ))}
         </ul>
-        <p className="muted">{t.conflictText}</p>
+        <p id="cf-text" className="muted">
+          {t.conflictText}
+        </p>
       </div>
       <div className="row end">
         <button autoFocus onClick={() => props.answer("cancel")}>
@@ -174,7 +179,7 @@ const P = ({ children }: { children: ReactNode }) => <span className="path">{chi
 
 /** Why a change won't apply, in the UI's words (core's preflight says it again on Apply). */
 export function findingText(t: Messages["edit"], f: Finding): ReactNode {
-  const p = <P>{f.path === "" ? "“”" : f.path}</P>;
+  const p = <P>{f.path === "" ? '""' : f.path}</P>;
   switch (f.why) {
     case "invalid":
       return t.whyInvalid(p);
@@ -261,7 +266,7 @@ export function PendingBar(props: {
             return (
               <li key={i}>
                 <span>{changeText(t, c)}</span>
-                {from && <span className="muted change-from">{t.opFrom(<P>{from}</P>)}</span>}
+                {from && <span className="muted change-from">{t.opFrom(<P>{readable(from)}</P>)}</span>}
                 {props.findings[i]?.map((f, j) => (
                   <span key={j} className="note-line warn">
                     <Icon name="warn" />

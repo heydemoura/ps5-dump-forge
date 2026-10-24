@@ -16,12 +16,11 @@ use ps5_dump_forge_patch::{Applied, Data, Op, Recovery, Syncs, Write};
 use ps5upload_fpkg::source::{SourceFile, SourceTree};
 
 use crate::convert::{Kind, SourceStamp, open_source};
-use crate::edit::{Edited, HostFile};
-use crate::finalize::{followed_id, handle_id, path_id};
+use crate::edit::{Edited, HostFile, Opened};
+use crate::finalize::{followed_id, handle_id};
 use crate::jobs::Ctx;
 use crate::lz4::{IndexState, RuntimeAction};
 use crate::preflight;
-use crate::scan::{Stamp, open_nofollow};
 use crate::verify::{self, Mode};
 use crate::{ConvertRequest, EditCheck, Format, JobReport};
 
@@ -54,6 +53,30 @@ const JOURNAL_MARGIN: u64 = 1 << 20;
 /// What the request asks for that an edit doesn't take.
 pub(crate) fn request_findings(req: &ConvertRequest) -> Vec<String> {
     let mut findings = Vec::new();
+    if crate::net::is_network(&req.source) {
+        findings.push(
+            "a game on a NAS or another device can be browsed but not edited; convert it first"
+                .into(),
+        );
+    }
+    // A paired device's files (`flink://`) are added like this device's; a NAS's (SMB, NFS,
+    // FTP) aren't.
+    let from_nas: Vec<String> = (req.edits.iter())
+        .filter_map(|e| match e {
+            crate::Edit::Add { from, .. }
+                if crate::remote::is_remote(from) && !crate::remote::is_flink(from) =>
+            {
+                Some(from.display().to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    if !from_nas.is_empty() {
+        findings.push(format!(
+            "files are added from this device or a paired one, not a NAS: {}",
+            from_nas.join(", ")
+        ));
+    }
     let lz4: Vec<&str> = [
         ("lz4", req.lz4.is_some()),
         ("lz4_profile", req.lz4_profile.is_some()),
@@ -149,7 +172,6 @@ pub(crate) fn smp_finding(image: &Path) -> Option<String> {
 /// resolved), so it belongs to a mounted game, changed only through the image it was
 /// mounted from. Folder edits, the LZ4 folder patch and Extract's destination check it too
 /// (PS5 only).
-#[cfg(any(target_os = "freebsd", test))]
 pub(crate) fn smp_inside(path: &Path) -> Option<String> {
     crate::listing::smp_hidden(path).then(|| {
         format!(
@@ -301,8 +323,12 @@ fn scan_with(
     settle: bool,
 ) -> anyhow::Result<Result<Scanned, Vec<String>>> {
     let image = req.source.clone();
-    let kind = Kind::of(&image)?;
     let mut findings = request_findings(req);
+    // A NAS or peer source is refused before it is asked anything (an offline one too).
+    if crate::net::is_network(&image) {
+        return Ok(Err(findings));
+    }
+    let kind = Kind::of(&image)?;
     findings.extend(kind_finding(kind, rebuild));
     if !findings.is_empty() {
         return Ok(Err(findings));
@@ -390,7 +416,10 @@ fn busy(image: &Path) -> String {
 pub(crate) fn settle(req: &ConvertRequest) -> Option<String> {
     let image = &req.source;
     let journal = ps5_dump_forge_patch::journal_path(image);
-    if std::fs::symlink_metadata(&journal).is_err()
+    // A NAS or peer path is never edited (`request_findings`), and `smb://` / `flink://` also
+    // spell a relative local path: never recover a journal there.
+    if crate::net::is_network(image)
+        || std::fs::symlink_metadata(&journal).is_err()
         || !matches!(Kind::of(image), Ok(k) if !matches!(k, Kind::Folder | Kind::Archive(_)))
         || smp_finding(image).is_some()
     {
@@ -710,7 +739,7 @@ pub(crate) fn fold(
     // An add of the image itself (or of a folder holding it) would read it while it changes.
     if let Ok(me) = crate::finalize::followed_id(image) {
         findings.extend(
-            (hosts.iter().filter(|h| h.id == me))
+            (hosts.iter().filter(|h| h.id == Some(me)))
                 .map(|h| format!("{} is the image being edited", h.path.display())),
         );
     }
@@ -857,7 +886,8 @@ fn fresh_index(
 /// The edit job: scan, preflight, then [`apply`] and its check.
 pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> {
     // A game folder is changed directly (`edit_folder`).
-    if Kind::of(&req.source)? == Kind::Folder {
+    // A NAS or peer source goes to `scan`'s refusal unasked.
+    if !crate::net::is_network(&req.source) && Kind::of(&req.source)? == Kind::Folder {
         return crate::edit_folder::run(req, ctx);
     }
     let planned = plan_job(req, ctx)?;
@@ -1095,7 +1125,7 @@ impl Drop for Pending {
 /// file the edit was planned with (identity, size, modification time) before it is read.
 struct Hosts<'a> {
     files: &'a [HostFile],
-    open: Option<(u32, File)>,
+    open: Option<(u32, Opened)>,
 }
 
 impl<'a> Hosts<'a> {
@@ -1115,15 +1145,12 @@ impl<'a> Hosts<'a> {
                 host.size
             )));
         }
-        let named = path_id(&host.path).map_err(with_path)?.0 == host.id;
         if self.open.as_ref().is_none_or(|(at, _)| *at != id) {
             self.open = None;
-            self.open = Some((id, open_nofollow(&host.path).map_err(with_path)?));
+            self.open = Some((id, host.open().map_err(with_path)?));
         }
         let file = &mut self.open.as_mut().expect("opened above").1;
-        let meta = file.metadata().map_err(with_path)?;
-        let held = handle_id(file).map_err(with_path)? == host.id;
-        if !named || !held || !meta.is_file() || Stamp::of(&meta) != host.stamp {
+        if !file.same(host).map_err(with_path)? {
             return Err(io::Error::other(format!(
                 "{} changed after it was added (replaced, or its size or modification time); \
                  add it again",
@@ -1196,6 +1223,20 @@ mod tests {
             ps5_dump_forge_ufs2::write(&mut tree, &layout, &mut file, &cancel, progress).unwrap();
         }
         out
+    }
+
+    #[test]
+    fn request_findings_add_only_from_this_device_or_a_peer() {
+        let from = |f: &str| Edit::Add {
+            from: f.into(),
+            to: "x.bin".into(),
+        };
+        let nas = ["smb://nas/s/x.bin", "nfs://nas/e/x.bin", "ftp://nas/x.bin"];
+        let mut edits: Vec<Edit> = nas.iter().map(|f| from(f)).collect();
+        edits.push(from("flink://00112233445566778899aabbccddeeff/x.bin"));
+        let findings = request_findings(&request(Path::new("/g"), edits));
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].ends_with(&nas.join(", ")), "{findings:?}");
     }
 
     pub(super) fn request(source: &Path, edits: Vec<Edit>) -> ConvertRequest {
@@ -1761,6 +1802,74 @@ mod apply_tests {
             assert_eq!(std::fs::read(&img).unwrap(), original);
             assert!(!ps5_dump_forge_patch::journal_path(&img).exists());
         }
+    }
+
+    /// [`edits`] with every file and folder added from a paired device's copy of `dir/host`
+    /// (junk in its folder left out).
+    fn peer_edits(dir: &Path) -> (Vec<Edit>, std::sync::Arc<crate::remote::tests::Fake>) {
+        let mut edits = edits(dir);
+        put(&dir.join("host"), "pack/.DS_Store", b"junk");
+        let (root, fake) = crate::remote::tests::peer(&dir.join("host"));
+        for edit in &mut edits {
+            if let Edit::Add { from, .. } = edit {
+                let name = from.file_name().unwrap().to_str().unwrap();
+                *from = root.join(name).url();
+            }
+        }
+        (edits, fake)
+    }
+
+    #[test]
+    fn files_added_from_a_peer_are_applied_and_checked() {
+        for (name, rebuild) in [
+            ("game.exfat", false),
+            ("game.ffpkg", false),
+            ("game.ffpkg", true),
+        ] {
+            let dir = crate::test_dir(&format!("edit-peer-{name}-{rebuild}"));
+            let img = image(&dir, name, b"\x7fELF plain eboot", &[]);
+            let (before, _) = contents(&img);
+            let mut req = request(&img, peer_edits(&dir).0);
+            req.full_verify = true;
+            req.edit_rebuild = rebuild;
+            with_ctx(|ctx| crate::convert::run(&req, ctx))
+                .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            let (files, empty) = contents(&img);
+            let want: BTreeMap<String, Vec<u8>> = [
+                ("data/new/new.bin", vec![9u8; 200_000]),
+                ("data/pack/x.txt", b"x".to_vec()),
+                ("data/renamed.bin", before["data/a.bin"].clone()),
+                ("data/sub/b.bin", b"a new bee".to_vec()),
+                ("eboot.bin", before["eboot.bin"].clone()),
+                ("sce_sys/param.json", before["sce_sys/param.json"].clone()),
+            ]
+            .into_iter()
+            .map(|(p, b)| (p.to_string(), b))
+            .collect();
+            assert_eq!(files, want, "{name}");
+            assert_eq!(empty, ["data/pack/void", "extra/deep"], "{name}");
+        }
+    }
+
+    #[test]
+    fn a_peer_file_changed_after_the_plan_fails_with_nothing_written() {
+        let dir = crate::test_dir("edit-peer-changed");
+        let img = image(&dir, "game.ffpkg", b"\x7fELF plain eboot", &[]);
+        let (edits, fake) = peer_edits(&dir);
+        let req = request(&img, edits);
+        let original = std::fs::read(&img).unwrap();
+        let err = with_ctx(|ctx| {
+            let planned = plan_job(&req, ctx).unwrap();
+            fake.touch("new.bin");
+            apply(planned, false, ctx, &checked(&|_| Ok(())))
+        })
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("changed after it was added"),
+            "{err:#}"
+        );
+        assert_eq!(std::fs::read(&img).unwrap(), original);
+        assert!(!ps5_dump_forge_patch::journal_path(&img).exists());
     }
 
     fn checked<'a>(check: &'a dyn Fn(&Path) -> anyhow::Result<()>) -> Hooks<'a> {

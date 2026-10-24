@@ -12,6 +12,7 @@ import {
   errorText,
   pick,
   prettyBytes,
+  runtimePlatform,
   web,
   type ConvertRequest,
   type Format,
@@ -24,8 +25,11 @@ import {
   CardHead,
   ChooseMenu,
   classify,
+  Dots,
   FormatPicker,
   isArchive,
+  isPeer,
+  isNas,
   isWithin,
   kindLabel,
   onDeleted,
@@ -34,15 +38,14 @@ import {
 } from "./common";
 import { openLz4Help } from "./Lz4Help";
 import { Icon } from "./icons";
-import { JobsCard } from "./JobList";
+import { isLoopback } from "./launcher";
 import { inspectSource as readSource } from "./password";
-import type { Action, Job } from "./jobs";
+import { jobType, type Action, type Job } from "./jobs";
 import {
   formatInfo,
   GenerateSwitch,
   Lead,
   OutputField,
-  running,
   useOutput,
   VerifySwitch,
 } from "./target";
@@ -67,13 +70,15 @@ const traceLabel = (mib: number) => (mib >= 1024 ? `${num(mib / 1024)} GiB` : `$
 export type Lz4Action = TraceAct | "pack" | "unpack";
 
 /** Why a scenario doesn't apply to this source; null when it does. `archive`: the source is
- * an archive, which jobs unpack first: Pack/Unpack only, nothing to trace in place. */
-function scenarioWhy(s: Scenario, lz4: Lz4Facts | null, archive = false): string | null {
+ * an archive, which jobs unpack first: Pack/Unpack only, nothing to trace in place; `net`: on a
+ * saved NAS (`smb://`) or a paired Forge (`flink://`), read only, the same. */
+function scenarioWhy(s: Scenario, lz4: Lz4Facts | null, archive = false, net: Net = null): string | null {
   const t = msg().lz4;
   // An AMPR game without its own ampr_emu gets every action too: Pack and Patch/Unpatch put
   // the bundled runtime in (by user decision).
   if (s === "pack") return lz4?.imports_ampr || lz4?.packed ? null : t.noAmpr;
   if (archive) return t.archive;
+  if (net) return net === "nas" ? t.nas : t.peer;
   if (!lz4?.imports_ampr) return t.noAmpr;
   if (lz4.packed) return t.packedFirst;
   if (lz4.manifest_error !== null) return t.damaged;
@@ -81,9 +86,13 @@ function scenarioWhy(s: Scenario, lz4: Lz4Facts | null, archive = false): string
 }
 
 /** The scenario a new source starts on: Pack/Unpack whenever it is usable, else Trace. */
-function defaultScenario(lz4: Lz4Facts | null, archive = false): Scenario | null {
-  return SCENARIOS.find((s) => scenarioWhy(s, lz4, archive) === null) ?? null;
+function defaultScenario(lz4: Lz4Facts | null, archive = false, net: Net = null): Scenario | null {
+  return SCENARIOS.find((s) => scenarioWhy(s, lz4, archive, net) === null) ?? null;
 }
+
+/** Which other device a source is on, if any. */
+type Net = "nas" | "peer" | null;
+const netOf = (path: string | null): Net => (isNas(path) ? "nas" : isPeer(path) ? "peer" : null);
 
 /** Pack's targets, in picker order: the LZ4 packed folder, then the plain images it packs
  * straight into. Unpack's: a folder or the same images. The tab offers no .ffpfsc or .fpkg
@@ -134,7 +143,6 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false); // state lags a fast double click
-  const started = useRef(new Set<JobId>());
   /** Jobs seen unfinished; one that finishes is checked against the source once. */
   const live = useRef(new Set<JobId>());
   const sourceSeq = useRef(0);
@@ -142,11 +150,12 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const lz4 = ins?.lz4 ?? null;
   const kind = ins?.kind ?? (sourceIsImage ? "" : "folder");
   const archive = isArchive(kind);
+  const net = netOf(source);
   const why = (s: Scenario) =>
-    !source ? t.chooseFirst : !ins ? t.notRead : ins.additional_content ? t.noEboot : scenarioWhy(s, lz4, archive);
+    !source ? t.chooseFirst : !ins ? t.notRead : ins.additional_content ? t.noEboot : scenarioWhy(s, lz4, archive, net);
   const usable = SCENARIOS.filter((s) => why(s) === null);
   const scenario: Scenario | null =
-    chosen && usable.includes(chosen) ? chosen : ins && !ins.additional_content ? defaultScenario(lz4, archive) : null;
+    chosen && usable.includes(chosen) ? chosen : ins && !ins.additional_content ? defaultScenario(lz4, archive, net) : null;
   const packed = !!lz4?.packed;
   const traceAct: TraceAct = act ?? (lz4?.runtime === "forge_trace" ? "unpatch" : "patch");
   const writableImage = sourceIsImage && WRITABLE_IMAGES.includes(kind as Format);
@@ -178,7 +187,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       const facts = found.lz4 ?? null;
       const target = packTarget(facts, packFormat);
       if (facts?.packed) setFormat(target);
-      out.opened(path, defaultScenario(facts, isArchive(found.kind)) === "pack" ? target : null, opened);
+      out.opened(path, defaultScenario(facts, isArchive(found.kind), netOf(path)) === "pack" ? target : null, opened);
     } catch (e) {
       if (seq === sourceSeq.current) setInsError(errorText(e));
     } finally {
@@ -285,14 +294,14 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     setProfile(null);
   };
 
-  const pending = running(props.jobs).length;
+  const pending = props.jobs.filter((j) => j.request && !j.result).length;
   const hard = ins ? ins.findings.filter((l) => classify(l).kind === "block") : [];
   const folderTrace = scenario === "trace" && !sourceIsImage;
   const imageTrace = scenario === "trace" && writableImage;
   const job = scenario === "pack" || imageTrace;
   const action: Lz4Action = scenario === "trace" ? traceAct : packed ? "unpack" : "pack";
   const replacing = props.jobs.some(
-    (j) => !j.result && j.request?.lz4_in_place && j.request.source === source,
+    (j) => !j.result && (j.request?.lz4_in_place || j.request?.edits?.length) && j.request.source === source,
   );
   const blockReason = insError
     ? t.unreadable
@@ -306,7 +315,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
 
   // Trace on a folder: one request, not a job.
   const runFolder = async () => {
-    if (!source || !folderTrace || blockReason || submittingRef.current) return;
+    if (!source || !folderTrace || blockReason || inspecting || submittingRef.current) return;
     setError(null);
     setPatched(null);
     submittingRef.current = true;
@@ -319,6 +328,9 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       if (seq !== sourceSeq.current) return;
       setPatched({ source: src, act: a, result });
       void inspectSource(src, false, null);
+      // As `start`: a double click's second press must not run the action the re-read source
+      // now defaults to (Patch → Unpatch).
+      await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {
       if (seq !== sourceSeq.current) return;
       setError(errorText(e));
@@ -360,22 +372,23 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
     ...(password !== null && { archive_password: password }),
   });
   const start = async () => {
-    if (!source || !job || blockReason || submittingRef.current) return;
+    if (!source || !job || blockReason || inspecting || submittingRef.current) return;
     if (!imageTrace && (!target || named.error || collides)) return;
     setError(null);
     const request = makeRequest(source);
     submittingRef.current = true;
     setSubmitting(true);
     const choice = out.choiceSeq.current;
+    const seq = sourceSeq.current;
     try {
       const id = await api.startJob(request);
-      started.current.add(id);
       props.dispatch({ type: "started", id, request });
       if (!imageTrace) out.next(source, request.output, choice);
       // A double click's second press lands once the job started: the button rests a moment.
       await new Promise((r) => setTimeout(r, 1000));
     } catch (e) {
-      setError(errorText(e));
+      // Not under a source picked since.
+      if (seq === sourceSeq.current) setError(errorText(e));
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
@@ -385,7 +398,11 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const patchDone = folderTrace && patched?.source === source ? patched : null;
   const sameJobs = props.jobs.filter(
     (j) =>
-      !j.result && !j.request?.lz4_in_place && !j.request?.edits?.length && j.request?.source === source && j.request.format === fmt,
+      !j.result &&
+      jobType(j.request) === "lz4" &&
+      !j.request?.lz4_in_place &&
+      j.request?.source === source &&
+      j.request.format === (fmt === "lz4" ? "folder" : fmt),
   );
   const outputJob = scenario === "pack";
   // Any unfinished job writing this path, from any source.
@@ -394,7 +411,6 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
   const formatWarn =
     ins && job ? ins.findings.filter((l) => classify(l).formats?.includes(fmt)).length : 0;
   const unusable = SCENARIOS.filter((s) => why(s) !== null);
-  const hasJobs = props.jobs.length > 0;
   const showButton = folderTrace || job;
   const journal = lz4?.journal_bytes ?? null;
   // What the action does to the game's runtime and index (hidden while blocked). Pack/Unpack:
@@ -427,7 +443,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
       : null;
 
   return (
-    <div className={hasJobs ? "screen with-jobs" : "screen"}>
+    <div className="screen">
       <div className="cols">
         <SourceCard
           path={source}
@@ -442,7 +458,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
 
         <section className="card" aria-labelledby="l-lz4">
           <CardHead icon="compress" title={t.title} id="l-lz4">
-            <button type="button" className="small help-btn" onClick={openLz4Help}>
+            <button type="button" className="small" onClick={openLz4Help}>
               <Icon name="info" />
               {t.help}
             </button>
@@ -471,7 +487,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           ) : (
             ins &&
             unusable.length > 0 && (
-              <p className="muted hint lz4-why">{t.unavailable(unusable.map((s) => `${t.scenarios[s]} (${why(s)})`))}</p>
+              <p className="muted hint lz4-why">{t.unavailable(unusable.map((s) => t.unavailableItem(t.scenarios[s], why(s) ?? "")))}</p>
             )
           )}
           {readOnly && (
@@ -482,11 +498,11 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           )}
           {scenario === "trace" && !readOnly && ins && source && (
             <>
-              {journal !== null && <RecordedTraces source={source} ins={ins} />}
-              <span className="label target-label" aria-hidden="true">{t.action}</span>
+              {journal !== null && <RecordedTraces source={source} ins={ins} fakelib={traceAct !== "patch"} />}
+              <span className="label target-label" id="l-trace-act-label">{t.action}</span>
               <SegPicker
                 name="l-trace-act"
-                label={t.traceAction}
+                labelledBy="l-trace-act-label"
                 className="inner"
                 options={TRACE_ACTS}
                 labels={t.actions}
@@ -506,7 +522,9 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                   <>
                     <label className="label range-label" htmlFor="l-trace-mib">
                       <span>{t.room}</span>
-                      <span className="range-value">{traceLabel(traceMib)}</span>
+                      <span className="range-value" aria-hidden="true">
+                        {traceLabel(traceMib)}
+                      </span>
                     </label>
                     <input
                       id="l-trace-mib"
@@ -516,6 +534,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                       max={1024}
                       step={64}
                       value={traceMib}
+                      aria-valuetext={traceLabel(traceMib)}
                       onChange={(e) => setTraceMib(Number(e.target.value))}
                     />
                     <p className="muted hint">{t.roomHint}</p>
@@ -566,15 +585,15 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                   hint={t.profileHint}
                 />
               </details>
-              <p className="muted hint">{ruleSource(profile, locked ? null : traces, journal)}</p>
+              <p className="muted hint">{ruleSource(profile, locked ? null : traces, lz4?.traces_zip != null ? journal : null)}</p>
             </div>
           )}
           {scenario === "pack" && ins && !packed && (
             <>
-              <span className="label target-label" aria-hidden="true">{t.target}</span>
+              <span className="label target-label" id="l-pack-format-label">{t.target}</span>
               <FormatPicker
                 name="l-pack-format"
-                label={t.packInto}
+                labelledBy="l-pack-format-label"
                 value={fmt}
                 onChange={pickPackFormat}
                 formats={PACK_FORMATS}
@@ -590,10 +609,10 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
           )}
           {scenario === "pack" && lz4?.packed && (
             <>
-              <span className="label target-label" aria-hidden="true">{t.target}</span>
+              <span className="label target-label" id="l-target-format-label">{t.target}</span>
               <FormatPicker
                 name="l-target-format"
-                label={t.targetFormat}
+                labelledBy="l-target-format-label"
                 value={fmt}
                 onChange={pickFormat}
                 formats={UNPACK_FORMATS}
@@ -614,19 +633,32 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
               <button
                 className="primary"
                 onClick={folderTrace ? runFolder : start}
-                disabled={
-                  !!blockReason || submitting || (outputJob && (!target || !!named.error || collides))
-                }
+                disabled={!!blockReason || inspecting || (outputJob && (!target || !!named.error || collides))}
+                // Busy with its own request: aria-disabled, so it keeps focus (both handlers ignore clicks then).
+                aria-disabled={submitting || undefined}
+                aria-busy={submitting || undefined}
               >
                 <Icon name="bolt" />
                 {t.actions[action]}
+                {submitting && <Dots />}
               </button>
             </div>
           )}
-          {(blockReason || formatWarn > 0 || dupe || error || patchDone || runtimeNote || indexNote) && (
+          {/* Always mounted, so a finished folder Patch/Unpatch is announced. */}
+          <div role="status">
+            {patchDone && (
+              <div className="build-notes">
+                <PatchResult act={patchDone.act} result={patchDone.result} />
+              </div>
+            )}
+          </div>
+          {(blockReason || formatWarn > 0 || dupe || (outputJob && collides) || error || runtimeNote || indexNote) && (
             <div className="build-notes">
-              {error && <p className="bad">{error}</p>}
-              {patchDone && <PatchResult act={patchDone.act} result={patchDone.result} />}
+              {error && (
+                <p className="bad backend" role="alert">
+                  {error}
+                </p>
+              )}
               {blockReason && (
                 <p className="note-line block">
                   <Icon name="alert" />
@@ -636,7 +668,7 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
               {!blockReason && formatWarn > 0 && (
                 <p className="note-line warn">
                   <Icon name="warn" />
-                  <span>{t.likelyFail(kindLabel(fmt))}</span>
+                  <span>{t.likelyFail(kindLabel(fmt === "lz4" ? "folder" : fmt))}</span>
                 </p>
               )}
               {runtimeNote && (
@@ -651,13 +683,13 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
                   <span>{indexNote}</span>
                 </p>
               )}
-              {dupe && (
+              {(dupe || (outputJob && collides)) && (
                 <p className="note-line muted">
                   <Icon name="info" />
                   <span>
                     {collides
                       ? t.collides(action, fmt === "folder" || fmt === "lz4")
-                      : t.already(action, kindLabel(fmt))}
+                      : t.already(action, kindLabel(fmt === "lz4" ? "folder" : fmt))}
                   </span>
                 </p>
               )}
@@ -666,7 +698,6 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
         </section>
       </div>
 
-      {hasJobs && <JobsCard jobs={props.jobs} dispatch={props.dispatch} started={started} prefix="l" />}
     </div>
   );
 }
@@ -675,7 +706,9 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
  * option that doesn't apply is disabled, its reason read out and in its tooltip. */
 function SegPicker<T extends string>(props: {
   name: string;
-  label: string;
+  /** The group's name: `label`, or the id of a visible label (`labelledBy`). */
+  label?: string;
+  labelledBy?: string;
   options: T[];
   labels: Record<T, string>;
   value: T | null;
@@ -683,8 +716,14 @@ function SegPicker<T extends string>(props: {
   why: (v: T) => string | null;
   className?: string;
 }) {
+  const t = useMessages().lz4;
   return (
-    <div className={`seg formats ${props.className ?? ""}`} role="radiogroup" aria-label={props.label}>
+    <div
+      className={`seg formats ${props.className ?? ""}`}
+      role="radiogroup"
+      aria-label={props.labelledBy ? undefined : props.label}
+      aria-labelledby={props.labelledBy}
+    >
       {props.options.map((o) => {
         const why = props.why(o);
         return (
@@ -704,7 +743,7 @@ function SegPicker<T extends string>(props: {
             />
             <span className="seg-opt">
               {props.labels[o]}
-              {why && <span className="visually-hidden">, {why}</span>}
+              {why && <span className="visually-hidden">{t.optionWhy(why)}</span>}
             </span>
           </label>
         );
@@ -714,7 +753,7 @@ function SegPicker<T extends string>(props: {
 }
 
 /** Where Pack's rules come from, in core's order: a profile, traces chosen here, this
- * source's own traces, else a built-in guess. */
+ * source's own traces (a journal with its index: core ignores one without), else a built-in guess. */
 function ruleSource(profile: string | null, traces: string | null, journalBytes: number | null): string {
   const t = msg().lz4;
   if (profile !== null) return t.profileRules;
@@ -725,41 +764,56 @@ function ruleSource(profile: string | null, traces: string | null, journalBytes:
 
 const INDEX = "ampr_emu.index";
 
-/** Trace, a source with a journal: what was recorded. The web build offers the traces as one
+/** Trace, a source with a journal: what was recorded (`fakelib`: its fakelib warning, off
+ * under Patch, whose box has its own). The web build offers the traces as one
  * zip from the server (the route streams it out of a folder or any image), to pack the
  * original dump on a computer; the app has them at hand for Pack/Unpack. */
-function RecordedTraces(props: { source: string; ins: Inspection }) {
+function RecordedTraces(props: { source: string; ins: Inspection; fakelib: boolean }) {
   const t = useMessages().lz4;
   const zip = props.ins.lz4?.traces_zip ?? null;
   const index = props.ins.files.find((f) => f.path === INDEX)?.size ?? 0;
   const total = (props.ins.lz4?.journal_bytes ?? 0) + index;
+  // A loopback page may be the PS5's own browser (a computer's `serve` says "host"), as Transfer checks:
+  // `null` (unknown, the button hidden) until the platform check answers.
+  const [onConsole, setOnConsole] = useState<boolean | null>(() => (web && isLoopback(location.hostname) ? null : false));
+  useEffect(() => {
+    if (web && isLoopback(location.hostname))
+      void runtimePlatform().then(
+        (p) => setOnConsole(p === "ps5"),
+        () => {},
+      );
+  }, []);
   return (
     <div className="field lz4 recorded">
       <span className="label">{t.recorded}</span>
-      {!web ? (
-        <p className="muted hint">{t.recordedHint(prettyBytes(props.ins.lz4?.journal_bytes ?? 0))}</p>
-      ) : (
-        <p className="muted hint">{t.downloadHint}</p>
-      )}
-      {!web ? null : zip !== null ? (
-        <div className="row downloads">
-          <a
-            className="button"
-            href={`/api/lz4_traces?source=${encodeURIComponent(props.source)}`}
-            download={zip}
-          >
-            <Icon name="download" />
-            <span>{t.download(prettyBytes(total), zip)}</span>
-          </a>
-        </div>
-      ) : (
+      {zip === null ? (
+        // Without its index core ignores the journal (both builds).
         <p className="note-line warn">
           <Icon name="warn" />
           <span>{t.missingIndex}</span>
         </p>
+      ) : !web ? (
+        <p className="muted hint">{t.recordedHint(prettyBytes(props.ins.lz4?.journal_bytes ?? 0))}</p>
+      ) : (
+        <>
+          <p className="muted hint">{t.downloadHint}</p>
+          {/* The console's own browser can't save it: the hint sends it to a computer's. */}
+          {onConsole === false && (
+            <div className="row downloads">
+              <a
+                className="button"
+                href={`/api/lz4_traces?source=${encodeURIComponent(props.source)}`}
+                download={zip}
+              >
+                <Icon name="download" />
+                <span>{t.download(prettyBytes(total), zip)}</span>
+              </a>
+            </div>
+          )}
+        </>
       )}
       <p className="muted hint">{t.truncatedJournal}</p>
-      <FakelibWarning recorded />
+      {props.fakelib && <FakelibWarning recorded />}
     </div>
   );
 }
@@ -776,7 +830,7 @@ function FakelibWarning({ recorded = false }: { recorded?: boolean }) {
   );
 }
 
-/** The LZ4 tab's empty Source: one yellow Choose source… (a game folder, or an image or archive, asked
+/** The LZ4 tab's empty Source: one yellow Choose source (a game folder, or an image or archive, asked
  * first: the native dialogs pick one kind) and what to expect. */
 function Lz4Empty({ onPick }: { onPick: (path: string, isImage: boolean) => void }) {
   const t = useMessages().lz4;
@@ -865,7 +919,14 @@ function TracesControl(props: {
         </span>
         <span className="row nowrap">
           {props.path !== null && (
-            <button className="small" onClick={props.onClear}>
+            <button
+              className="small"
+              onClick={() => {
+                props.onClear();
+                // Clear goes away with the path: hand focus to Choose.
+                document.getElementById(`${id}-choose`)?.focus();
+              }}
+            >
               {t.clear}
             </button>
           )}
@@ -918,12 +979,19 @@ function PathChoice(props: {
         </span>
         <span className="row nowrap">
           {props.path !== null && (
-            <button className="small" onClick={props.onClear}>
+            <button
+              className="small"
+              onClick={() => {
+                props.onClear();
+                // Clear goes away with the path: hand focus to the first choice.
+                document.getElementById(`${props.id}-choose`)?.focus();
+              }}
+            >
               {t.clear}
             </button>
           )}
-          {props.choices.map((c) => (
-            <button key={c.label} className="small" onClick={c.onChoose}>
+          {props.choices.map((c, i) => (
+            <button key={c.label} id={i === 0 ? `${props.id}-choose` : undefined} className="small" onClick={c.onChoose}>
               {c.label}
             </button>
           ))}
@@ -953,7 +1021,7 @@ function PatchResult({ act, result }: { act: TraceAct; result: Lz4Patch }) {
       {result.warning && (
         <p className="note-line warn">
           <Icon name="warn" />
-          <span>{result.warning}.</span>
+          <span className="backend">{result.warning}.</span>
         </p>
       )}
     </>

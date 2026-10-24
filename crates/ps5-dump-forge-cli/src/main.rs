@@ -103,6 +103,8 @@ usage: ps5-dump-forge inspect <path> [--json] [--password-stdin]
             /mnt/ext0..1, no --root). No protections: anyone on the network can use it
   -h, --help";
 
+// One value per run: Convert's size (over clippy's limit on Windows, whose PathBuf is larger) costs nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum Cli {
     Inspect {
@@ -353,6 +355,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
                     lz4_in_place,
                     edits: Vec::new(),
                     extract: Vec::new(),
+                    transfer: Vec::new(),
                     edit_rebuild: false,
                     archive_password: None,
                 },
@@ -557,6 +560,7 @@ fn serve(port: u16, roots: Vec<PathBuf>) -> ExitCode {
         (roots, Platform::Host)
     };
     let mut opts = Options::new(port, roots, platform, notify);
+    opts.connect_dir = ps5_dump_forge_server::connect::default_dir();
     on_ctrl_c();
     opts.interrupt = Some(&INTERRUPTED);
     match ps5_dump_forge_server::serve(opts) {

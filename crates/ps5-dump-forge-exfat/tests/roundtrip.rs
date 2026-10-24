@@ -351,6 +351,21 @@ impl SourceTree for MemTree {
     }
 }
 
+/// Each folder takes a whole cluster, which the size budgets at 256 B: the room asked for
+/// (an LZ4 trace's) must still be free.
+#[test]
+fn free_bytes_stay_free_with_many_folders() {
+    let names: Vec<String> = (0..4000).map(|i| format!("d{i:04}/f")).collect();
+    let mut files: Vec<(&str, u64)> = names.iter().map(|n| (n.as_str(), 1)).collect();
+    files.push(("eboot.bin", 1));
+    let opts = Options {
+        free_bytes: 256 << 20,
+        ..Options::default()
+    };
+    let layout = plan(&MemTree::new(&files), &opts, &AtomicBool::new(false)).unwrap();
+    assert!(layout.free_bytes() >= 256 << 20, "{}", layout.free_bytes());
+}
+
 #[test]
 fn bad_names_are_all_listed() {
     let mut tree = MemTree::new(&[

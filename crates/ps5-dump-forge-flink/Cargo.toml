@@ -1,0 +1,20 @@
+[package]
+name = "ps5-dump-forge-flink"
+description = "FLINK v2, Connect's Forge-to-Forge protocol: frames, MACs, handshake, RPC, data lanes"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# Frame CRCs and MACs.
+blake3.workspace = true
+crc32fast = "1.5"
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
+
+# `tune_buffers`: the PS5's socket buffers.
+[target.'cfg(target_os = "freebsd")'.dependencies]
+libc.workspace = true

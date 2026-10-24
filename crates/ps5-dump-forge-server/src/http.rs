@@ -12,8 +12,10 @@ pub(crate) const BODY_MAX: usize = 1024 * 1024;
 /// The body cap of the two routes that take a whole edit list (`start_job`, `edit_check`): a
 /// dropped folder in the web build is one `add` per file, about 200 bytes each.
 pub(crate) const JOB_BODY_MAX: usize = 8 * 1024 * 1024;
-/// The one route whose body has no size limit: streamed to disk, never held in memory.
+/// A route whose body has no size limit: streamed to disk, never held in memory.
 pub(crate) const UPLOAD: &str = "/api/edit_upload";
+/// Connect's phone upload: a raw body of any size into a server folder, streamed as [`UPLOAD`].
+pub(crate) const CONNECT_UPLOAD: &str = "/api/connect/upload";
 
 /// A request line and its headers (names lowercased), with the bytes read past them.
 pub(crate) struct Head {
@@ -304,7 +306,7 @@ pub(crate) fn parse_head(bytes: &[u8]) -> Result<Head, Response> {
         }
         head.length = length.parse().unwrap_or(usize::MAX);
         let cap = match (head.method.as_str(), head.path.as_str()) {
-            ("POST", UPLOAD) => None,
+            ("POST", UPLOAD | CONNECT_UPLOAD) => None,
             ("POST", "/api/start_job" | "/api/edit_check") => Some((JOB_BODY_MAX, "8 MiB")),
             _ => Some((BODY_MAX, "1 MiB")),
         };

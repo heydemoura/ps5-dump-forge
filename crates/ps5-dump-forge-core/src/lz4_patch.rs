@@ -45,6 +45,7 @@ pub(crate) fn patch(folder: &Path, runtime: Runtime) -> anyhow::Result<Lz4Patch>
         Runtime::Trace => (TRACE, "patch"),
         Runtime::Release => (RELEASE, "unpatch"),
     };
+    crate::net::refuse(folder, &format!("an LZ4 {verb}"))?;
     let kind = Kind::of(folder)?;
     if let Kind::Archive(_) = kind {
         bail!(
@@ -179,6 +180,23 @@ pub(crate) fn write_temp_new(
     write_temp_as(dir, name, fill, &crate::finalize::rename_no_replace)
 }
 
+/// A temporary name of this attempt for `name` (`.<name>.forge-<pid>-<n>.tmp`).
+pub(crate) fn temp_name(name: &str) -> String {
+    let attempt = ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    // A long name cut to 160 bytes, so the temporary one stays within 255.
+    let cut = (0..=name.len().min(160))
+        .rev()
+        .find(|&i| name.is_char_boundary(i))
+        .unwrap_or(0);
+    let tmp = format!(
+        ".{}.forge-{}-{attempt}.tmp",
+        &name[..cut],
+        std::process::id()
+    );
+    debug_assert!(is_temp(&tmp));
+    tmp
+}
+
 fn write_temp_as(
     dir: &Path,
     name: &str,
@@ -186,29 +204,30 @@ fn write_temp_as(
     rename: &dyn Fn(&Path, &Path) -> io::Result<()>,
 ) -> anyhow::Result<()> {
     let target = dir.join(name);
-    let attempt = ATTEMPT.fetch_add(1, Ordering::Relaxed);
-    // A long name cut to 160 bytes, so the temporary one stays within 255.
-    let cut = (0..=name.len().min(160))
-        .rev()
-        .find(|&i| name.is_char_boundary(i))
-        .unwrap_or(0);
-    let short = &name[..cut];
-    let tmp = dir.join(format!(
-        ".{short}.forge-{}-{attempt}.tmp",
-        std::process::id()
-    ));
-    debug_assert!(is_temp(&tmp.to_string_lossy()));
+    let tmp = dir.join(temp_name(name));
     let mut file = create_new(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    // Ours: created above. Removed unless renamed, also when `fill` panics (a job catches it).
+    let mut guard = TempGuard(Some(&tmp));
     let written = fill(&mut file).and_then(|()| sync(&file)).and_then(|()| {
         drop(file);
         rename(&tmp, &target)
     });
-    if let Err(e) = written {
-        // Ours: created above, never renamed.
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e).with_context(|| format!("writing {}", target.display()));
+    if written.is_ok() {
+        guard.0 = None;
     }
-    Ok(())
+    drop(guard);
+    written.with_context(|| format!("writing {}", target.display()))
+}
+
+/// Removes its temporary file when dropped armed.
+struct TempGuard<'a>(Option<&'a Path>);
+
+impl Drop for TempGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(tmp) = self.0 {
+            let _ = std::fs::remove_file(tmp);
+        }
+    }
 }
 
 /// U4 on FreeBSD: ps5upload's retries, and a sync that only succeeded on a retry fails.

@@ -10,7 +10,7 @@
 //! digests) — never by the size of the game.
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cnt_write::{self, CntParams};
@@ -151,16 +151,18 @@ pub enum KrakenSpool {
     File(std::path::PathBuf),
 }
 
-fn spool_file(out: &File, spool: &KrakenSpool) -> Result<File> {
+fn spool_file(out: &dyn crate::PkgOut, spool: &KrakenSpool) -> Result<Box<dyn crate::PkgOut>> {
     Ok(match spool {
-        KrakenSpool::InPlace => out.try_clone()?,
+        KrakenSpool::InPlace => out.try_clone_out()?,
         // Never truncate a spool another build is writing.
-        KrakenSpool::File(path) => std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|e| crate::Error::Format(format!("{}: {e}", path.display())))?,
+        KrakenSpool::File(path) => Box::new(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|e| crate::Error::Format(format!("{}: {e}", path.display())))?,
+        ),
     })
 }
 
@@ -229,7 +231,7 @@ fn cancelled() -> crate::Error {
 
 /// Write the whole package to `out`, which must be empty and seekable.
 pub fn write_package(
-    out: &mut File,
+    out: &mut dyn crate::PkgOut,
     request: &StreamRequest,
     read: RangeRead,
     progress: &mut Progress,
@@ -254,6 +256,10 @@ pub fn write_package(
     if cancel.load(Ordering::Relaxed) {
         return Err(cancelled());
     }
+    // A plaintext image spooled in place is already where the outer image keeps it, as it is
+    // stored: its blocks are digested as they are compressed, and nothing reads them back.
+    let digest_in_memory = matches!(request.kraken_spool, Some(KrakenSpool::InPlace))
+        && matches!(request.image_mode, crate::ImageMode::PlaintextNoAuth);
     let kraken = match &request.kraken_spool {
         Some(where_to) => {
             (progress.phase)("compressing the image");
@@ -266,6 +272,7 @@ pub fn write_package(
                 read,
                 spool_file(out, where_to)?,
                 spool_base(where_to),
+                digest_in_memory,
                 threads,
                 request.level,
                 cancel,
@@ -300,12 +307,17 @@ pub fn write_package(
             )?,
         ),
     };
-    // Where the compressed image is read back from: the package itself when it was written in
-    // place, where it already sits, or its separate spool file.
+    // Where the compressed image is read back from, when its blocks were not digested as they
+    // were written (an encrypted image, transformed here; a separate spool, copied in): the
+    // package itself when it was written in place, where it already sits, or its spool file.
     let in_place = matches!(request.kraken_spool, Some(KrakenSpool::InPlace));
+    let digested = kraken.as_ref().and_then(|k| k.block_digests.as_ref());
     let mut spool = match &request.kraken_spool {
-        Some(KrakenSpool::InPlace) if kraken.is_some() => Some(out.try_clone()?),
-        Some(KrakenSpool::File(path)) if kraken.is_some() => Some(File::open(path)?),
+        _ if digested.is_some() => None,
+        Some(KrakenSpool::InPlace) if kraken.is_some() => Some(out.try_clone_out()?),
+        Some(KrakenSpool::File(path)) if kraken.is_some() => {
+            Some(Box::new(File::open(path)?) as Box<dyn crate::PkgOut>)
+        }
         _ => None,
     };
     let spool_at = request.kraken_spool.as_ref().map_or(0, spool_base);
@@ -336,9 +348,25 @@ pub fn write_package(
     let mut file_digests = FileDigester::new(files.len());
     let mut block = vec![0u8; BLOCK as usize];
     let mut spans: Vec<(usize, usize, usize)> = Vec::with_capacity(8);
-    // The compressed image: its files' digests were taken as it was compressed. It is read
-    // back a batch at a time and its blocks digested (and encrypted) on every core.
+    // The compressed image: its files' digests were taken as it was compressed, and a plaintext
+    // one's block digests too. Any other is read back a batch at a time and its blocks digested
+    // (and encrypted) on every core.
     let mut index = 0u64;
+    if let Some(blocks) = digested {
+        if blocks.len() as u64 != inner_blocks {
+            return Err(crate::Error::Format(format!(
+                "{} block digests for an image of {inner_blocks} blocks",
+                blocks.len()
+            )));
+        }
+        for (at, &(digest, crc)) in blocks.iter().enumerate() {
+            digests[at] = digest;
+            crcs[1 + at] = crc;
+            file_digests.blocks.push(digest);
+        }
+        index = inner_blocks;
+        (progress.bytes)((index * BLOCK).min(outer_size), outer_size);
+    }
     if let Some(spool) = spool.as_mut() {
         let threads = compression_threads(request.threads);
         let mut batch = Vec::new();
@@ -597,7 +625,7 @@ pub fn write_package(
     if cancel.load(Ordering::Relaxed) {
         return Err(cancelled());
     }
-    out.sync_all()?;
+    out.sync_out()?;
 
     let size = cnt_offset + cnt.bytes.len() as u64 + si.len() as u64;
     (progress.bytes)(outer_size, outer_size);

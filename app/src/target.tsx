@@ -10,11 +10,15 @@ import {
   FormatPicker,
   IMAGE_EXTENSIONS,
   isPasswordRequired,
+  isNetwork,
   joinPath,
   kindLabel,
   Prose,
   SEPARATORS,
+  useDeviceName,
+  usePeerPath,
 } from "./common";
+import { useConnectState } from "./useConnectState";
 import { msg, useMessages } from "./i18n";
 import type { Messages } from "./locales/en";
 import { Icon, type IconName } from "./icons";
@@ -114,7 +118,10 @@ export function FfpfscField(props: {
       </p>
       <label className="label range-label" htmlFor={`${props.prefix}-ffpfsc-level`}>
         <span>{t.compressionLevel}</span>
-        <span className="range-value">{props.level}</span>
+        {/* The slider says its value itself: kept out of its name. */}
+        <span className="range-value" aria-hidden="true">
+          {props.level}
+        </span>
       </label>
       <input
         id={`${props.prefix}-ffpfsc-level`}
@@ -247,9 +254,16 @@ function checkName(name: string, format: Format): { name: string; error?: string
   return error ? { name, error } : { name: saved };
 }
 
-/** Where unfinished jobs will publish: taken for a generated name. */
+/** Where unfinished jobs will publish: taken for a generated name. A transfer publishes each
+ * source under its name in its folder (core's `transfer::targets`). */
 export function running(jobs: Job[]): string[] {
-  return jobs.flatMap((j) => (j.request && !j.result ? [j.request.output] : []));
+  return jobs.flatMap((j) => {
+    const r = j.request;
+    if (!r || j.result) return [];
+    if (r.extract?.length) return r.extract.map((p) => joinPath(r.output, p.split("/").pop() || ""));
+    if (!r.transfer?.length) return [r.output];
+    return r.transfer.map((s) => (basename(s) ? joinPath(r.output, basename(s)) : r.output));
+  });
 }
 
 /**
@@ -257,12 +271,14 @@ export function running(jobs: Job[]): string[] {
  * or a typed one, in a folder that starts as the source's. `format` is the target this render
  * shows; calls made right after a source or format change pass the new ones themselves.
  */
-export function useOutput(format: Format, jobs: Job[], onError: (e: string) => void) {
+export function useOutput(format: Format, jobs: Job[], onError: (e: string | null) => void) {
   useMessages().target; // the typed name's error is in the current language
   const [output, setOutput] = useState("");
   const [generate, setGenerate] = useState(true);
   // The latest naming failed (the error went to `onError`): the box stops saying "Naming".
   const [failed, setFailed] = useState(false);
+  // The error `onError` shows is a naming one: a later name that works takes it back.
+  const namingError = useRef(false);
   // Only the latest output request may land.
   const outputSeq = useRef(0);
   // Bumped when the source, format or naming changes: a file dialog opened before that is
@@ -287,11 +303,18 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
       if (seq !== outputSeq.current) return;
       if (out) outDir.current = dirname(out);
       setOutput(out);
+      if (namingError.current) {
+        namingError.current = false;
+        onError(null);
+      }
     } catch (e) {
       // A locked archive: the screen asks for its password, then `opened` names it.
       if (seq !== outputSeq.current) return;
       setFailed(true);
-      if (!isPasswordRequired(errorText(e))) onError(errorText(e));
+      if (!isPasswordRequired(errorText(e))) {
+        namingError.current = true;
+        onError(errorText(e));
+      }
     }
   };
 
@@ -317,7 +340,8 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
       choiceSeq.current++;
       outputSeq.current++;
       password.current = null;
-      outDir.current = dirname(src);
+      // A source on another device: the user picks the output folder (core says so until then).
+      outDir.current = isNetwork(src) ? "" : dirname(src);
       setOutput("");
       setFailed(false);
       if (fmt) void refresh(src, fmt);
@@ -365,7 +389,9 @@ export function useOutput(format: Format, jobs: Job[], onError: (e: string) => v
       const t = msg().target;
       const title = FOLDER_FORMATS.includes(format) ? t.extractInto : t.saveInto;
       // Opens at the output's folder, not wherever the last browse ended (the game's own folder).
-      const dir = await pick({ directory: true, title, start: outDir.current || undefined });
+      // A paired Forge takes any output, an fpkg included (the builder writes through the peer);
+      // an FTP server takes all but an fpkg (it goes back over what it wrote).
+      const dir = await pick({ directory: true, title, start: outDir.current || undefined, devices: true });
       if (dir === null || choice !== choiceSeq.current) return;
       outDir.current = dir;
       if (!generate && name) {
@@ -390,14 +416,28 @@ export type Output = ReturnType<typeof useOutput>;
 
 /** The Output box: the generated name whole, or the typed one; its folder on the line below. */
 export function OutputField(props: { out: Output; source: string | null; prefix: string }) {
-  const t = useMessages().target;
+  const m = useMessages();
+  const t = m.target;
   const { out, source } = props;
   const id = `${props.prefix}-output`;
+  // Which device the output goes to: a paired one by name, else this one (named only while
+  // there are devices to tell apart). Its folder below reads "<device>: /<path>" too.
+  const shown = usePeerPath();
+  const peer = useDeviceName()(out.dir);
+  const saved = useConnectState().state;
+  const paired = (saved?.devices.length ?? 0) + (saved?.nas.length ?? 0) > 0;
   return (
     <div className="field" role="group" aria-labelledby={`${id}-label`}>
       <div className="label-row">
-        <span className="label" id={`${id}-label`}>
-          {t.output}
+        <span className="label-group">
+          <span className="label" id={`${id}-label`}>
+            {t.output}
+          </span>
+          {source && out.dir && (peer || paired) && (
+            <span className={peer ? "tag green" : "tag"} title={peer ?? undefined}>
+              {peer ?? m.picker.thisDevice}
+            </span>
+          )}
         </span>
         <button className="small" onClick={() => void out.choose(source)} disabled={!source}>
           {t.change}
@@ -425,6 +465,8 @@ export function OutputField(props: { out: Output; source: string | null; prefix:
           placeholder={source ? t.fileName : t.chooseSourceFirst}
           disabled={!source}
           spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
         />
       )}
       {out.named.error && (
@@ -432,9 +474,11 @@ export function OutputField(props: { out: Output; source: string | null; prefix:
           <Prose text={out.named.error} />
         </p>
       )}
-      {source && (
+      {source && out.dir && (
         <p className="out-dir path" id={`${id}-dir`}>
-          {out.named.name !== out.name && !out.named.error ? t.savedAs(out.named.name, out.dir) : t.inDir(out.dir)}
+          {out.named.name !== out.name && !out.named.error
+            ? t.savedAs(out.named.name, shown(out.dir))
+            : t.inDir(shown(out.dir))}
         </p>
       )}
     </div>

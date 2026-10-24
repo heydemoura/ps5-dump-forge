@@ -17,7 +17,8 @@
 #
 # Per volume (UFS, FAT, NULLFS), both optional:
 #   FREEBSD_BINS_<VOL>   test binaries to run, space separated: `lib` (core's unit tests),
-#                        `server-lib` (the server's), an integration test target name (`core`,
+#                        `server-lib` (the server's), `flink-lib` (FLINK's, the server's
+#                        protocol crate), an integration test target name (`core`,
 #                        `serve`, ...), or `all` (default for UFS and NULLFS; FAT defaults to
 #                        `lib freebsd_volumes`: tests/core.rs and the server's fixtures need
 #                        symlinks, hard links and FIFOs, which FAT32 cannot hold).
@@ -161,7 +162,7 @@ export CARGO_TARGET_AARCH64_UNKNOWN_FREEBSD_RUSTFLAGS="-C link-arg=--target=aarc
 export CC_aarch64_unknown_freebsd=clang-19 CFLAGS_aarch64_unknown_freebsd="$t"
 export AR_aarch64_unknown_freebsd=llvm-ar-19
 cd /src
-cargo test --release --locked -p ps5-dump-forge-core -p ps5-dump-forge-server --no-run \
+cargo test --release --locked -p ps5-dump-forge-core -p ps5-dump-forge-server -p ps5-dump-forge-flink --no-run \
   --target aarch64-unknown-freebsd \
   --message-format=json-render-diagnostics >/tmp/build.json
 stage=/src/target/freebsd/stage
@@ -169,7 +170,11 @@ find "$stage" -type f ! -name run.sh ! -name config.sh -delete
 all=""
 while read -r kind name exe; do
   if [ "$kind" = lib ]; then
-    case $name in ps5_dump_forge_core) name=lib ;; *) name=server-lib ;; esac
+    case $name in
+      ps5_dump_forge_core) name=lib ;;
+      ps5_dump_forge_flink) name=flink-lib ;;
+      *) name=server-lib ;;
+    esac
   fi
   cp "$exe" "$stage/$name"; all="$all $name"
 done < <(jq -r 'select(.reason == "compiler-artifact" and .executable != null and .profile.test)

@@ -1,7 +1,7 @@
 // Checks src/explorer.ts with a plain `node scripts/check-explorer.mjs` (type stripping): the
 // tree from an inspection's files and empty folders, folders-first natural order, a folder's
 // lookup, the filter's walk (paths from the current folder, folders first), the keyboard focus target
-// after a folder shows (none in an empty one: the grid takes it) and the totals.
+// after a folder shows (none in an empty one: the grid takes it).
 
 import assert from "node:assert/strict";
 
@@ -53,8 +53,6 @@ assert.equal(x.search(root, "", "e").length, 10); // all but data, data/Sub
   assert.equal(x.focusIndex(top, "missing"), 0);
 }
 
-assert.deepEqual(x.totals(root), { files: 7, bytes: 31 });
-assert.deepEqual(x.totals(x.findDir(root, "data")), { files: 3, bytes: 15 });
 assert.equal(x.parentOf("data/Sub"), "data");
 assert.equal(x.parentOf("data"), "");
 assert.equal(x.join("", "a"), "a");

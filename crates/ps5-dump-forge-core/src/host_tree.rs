@@ -1,7 +1,8 @@
 //! The Edit tab's preview of a host file or folder the user adds: what `Edited` would add.
 //! A bounded walk (no links followed, junk filtered as a conversion filters it) stops at the
 //! limits below; a folder within them is then listed by core's own folder scanner, so the
-//! preview holds exactly what `Edited` scans, refusals included. Reads metadata only.
+//! preview holds exactly what `Edited` scans, refusals included. Reads metadata only. A
+//! paired device's file or folder (`flink://`) is walked the same way through its listing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use ps5upload_fpkg::source::SourceTree;
 use serde::Serialize;
 
 use crate::preflight::listing;
+use crate::remote::{FlinkPath, Remote};
 use crate::scan::{ScannedFolder, is_junk};
 
 /// Directory entries enumerated (junk and folders included); past it the walk stops and the
@@ -60,6 +62,11 @@ fn host_tree_with(
     max_entries: usize,
     budget: Duration,
 ) -> anyhow::Result<HostTree> {
+    // A paired device's only: Edit adds nothing from a NAS (SMB, NFS, FTP).
+    if crate::remote::is_flink(path) {
+        return peer_tree(path, cancel, max_entries, budget);
+    }
+    crate::net::refuse(path, "adding files")?;
     // Without trailing separators or `.` components: `lstat("link/")` describes the target.
     let path: PathBuf = path.components().collect();
     let meta = fs::symlink_metadata(&path).with_context(|| format!("{}", path.display()))?;
@@ -104,6 +111,46 @@ fn host_tree_with(
         // The scan ran out of time: the walk's listing stands.
         walk.truncated = true;
     }
+    walked(&path, walk)
+}
+
+/// [`host_tree`] of a `flink://` path: a paired device's file, or its folder by the walk alone.
+// ponytail: no second scan as for a local folder (the job's `RemoteTree` walks as this does,
+// junk skipped unread).
+fn peer_tree(
+    path: &Path,
+    cancel: &AtomicBool,
+    max_entries: usize,
+    budget: Duration,
+) -> anyhow::Result<HostTree> {
+    let at = FlinkPath::parse(path)?;
+    let remote = crate::remote::get_for(&at)?;
+    let entry = crate::remote::entry(&*remote, &at).with_context(|| path.display().to_string())?;
+    if entry.link {
+        bail!("{} is a link (not followed)", path.display());
+    }
+    if entry.special {
+        bail!("{} is not a file or folder", path.display());
+    }
+    if entry.bad_name {
+        bail!("{}: name is not valid UTF-8", path.display());
+    }
+    if !entry.dir {
+        return Ok(HostTree {
+            kind: HostKind::File,
+            size: entry.size,
+            files: Vec::new(),
+            empty_dirs: Vec::new(),
+            truncated: false,
+        });
+    }
+    let mut walk = Walk::new(cancel, Instant::now() + budget, max_entries);
+    walk.peer_dir(&*remote, &at, "")?;
+    walked(path, walk)
+}
+
+/// The walk's listing of the folder at `path`, unless it refused anything.
+fn walked(path: &Path, mut walk: Walk) -> anyhow::Result<HostTree> {
     if !walk.refused.is_empty() {
         bail!(
             "{} holds entries that cannot be converted:\n{}",
@@ -118,7 +165,7 @@ fn host_tree_with(
         size: walk.files.iter().map(|f| f.size).sum(),
         files: walk.files,
         empty_dirs: walk.empty_dirs,
-        truncated: true,
+        truncated: walk.truncated,
     })
 }
 
@@ -222,6 +269,59 @@ impl<'a> Walk<'a> {
         }
         Ok(kept)
     }
+
+    /// [`Self::dir`] of a folder on a paired device, by its listing.
+    fn peer_dir(&mut self, remote: &dyn Remote, at: &FlinkPath, rel: &str) -> anyhow::Result<bool> {
+        let shown = |name: &str| match rel {
+            "" => name.to_string(),
+            _ => format!("{rel}/{name}"),
+        };
+        let entries = match remote.list(at) {
+            Ok(entries) => entries,
+            Err(e) if rel.is_empty() => return Err(e).context(at.url().display().to_string()),
+            Err(e) => {
+                self.refused.push(format!("{rel}: unreadable ({e})"));
+                return Ok(true);
+            }
+        };
+        let mut kept = false;
+        for entry in entries {
+            if self.cancel.load(Ordering::Relaxed) {
+                bail!("cancelled");
+            }
+            if self.visited >= self.max || Instant::now() >= self.deadline {
+                self.truncated = true;
+                return Ok(true);
+            }
+            self.visited += 1;
+            if is_junk(&entry.name) {
+                continue;
+            }
+            kept = true;
+            let path = shown(&entry.name);
+            if entry.bad_name {
+                self.refused
+                    .push(format!("{path} (name is not valid UTF-8)"));
+            } else if !crate::remote::addressable(&entry.name) {
+                self.refused
+                    .push(format!("{path} (a name a flink:// path can't spell)"));
+            } else if entry.link {
+                self.refused.push(format!("{path} (symlink, not followed)"));
+            } else if entry.special {
+                self.refused.push(format!("{path} (special file)"));
+            } else if entry.dir {
+                if !self.peer_dir(remote, &at.join(&entry.name), &path)? {
+                    self.empty_dirs.push(path);
+                }
+            } else {
+                self.files.push(HostFile {
+                    path,
+                    size: entry.size,
+                });
+            }
+        }
+        Ok(kept)
+    }
 }
 
 /// `ScannedFolder::scan` stopped by the caller's `cancel` (an error) or past `budget` (`None`).
@@ -287,6 +387,15 @@ mod tests {
         fs::write(dir.join("a/._deep.txt"), b"junk").unwrap();
         fs::write(dir.join("only-junk/Thumbs.db"), b"junk").unwrap();
         dir
+    }
+
+    #[test]
+    fn host_tree_lists_nothing_on_a_nas() {
+        let no = AtomicBool::new(false);
+        for nas in ["smb://nas/s/g", "nfs://nas/e/g", "ftp://nas/g"] {
+            let err = host_tree(Path::new(nas), &no).unwrap_err().to_string();
+            assert!(err.contains("read only"), "{nas}: {err}");
+        }
     }
 
     #[test]
@@ -370,6 +479,56 @@ mod tests {
         let err = host_tree(&fifo, &no).unwrap_err().to_string();
         assert!(err.contains("not a file or a folder"), "{err}");
         fs::remove_file(&link).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_peer_file_or_folder_is_listed_through_it() {
+        let dir = temp("peer");
+        fs::write(dir.join("top.bin"), b"top").unwrap();
+        fs::create_dir_all(dir.join("a/b/void")).unwrap();
+        fs::create_dir_all(dir.join("a/junk")).unwrap();
+        fs::write(dir.join("a/b/c.bin"), b"see").unwrap();
+        fs::write(dir.join("a/junk/.DS_Store"), b"j").unwrap();
+        fs::write(dir.join("a/.DS_Store"), b"j").unwrap();
+        let (root, fake) = crate::remote::tests::peer(&dir);
+        let no = AtomicBool::new(false);
+        let file = host_tree(&root.join("top.bin").url(), &no).unwrap();
+        assert_eq!((file.kind, file.size), (HostKind::File, 3));
+        let tree = host_tree(&root.join("a").url(), &no).unwrap();
+        assert_eq!(tree.kind, HostKind::Dir);
+        let files: Vec<&str> = tree.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(files, ["b/c.bin"]);
+        assert_eq!(tree.empty_dirs, ["b/void", "junk"]);
+        assert_eq!((tree.size, tree.truncated), (3, false));
+        // Cut short at the limit, as a local walk is.
+        let cut = host_tree_with(&root.join("a").url(), &no, 1, BUDGET).unwrap();
+        assert!(cut.truncated);
+        // A link is refused, at the path or inside it; a missing path is an error.
+        fake.links.lock().unwrap().push("a/b/c.bin".into());
+        let err = format!("{:#}", host_tree(&root.join("a").url(), &no).unwrap_err());
+        assert!(err.contains("b/c.bin (symlink"), "{err}");
+        let err = format!(
+            "{:#}",
+            host_tree(&root.join("a/b/c.bin").url(), &no).unwrap_err()
+        );
+        assert!(err.contains("is a link"), "{err}");
+        fake.links.lock().unwrap().clear();
+        // So are special files and names that aren't UTF-8, as the edit job refuses them.
+        fake.specials.lock().unwrap().push("a/b/c.bin".into());
+        let err = format!("{:#}", host_tree(&root.join("a").url(), &no).unwrap_err());
+        assert!(err.contains("b/c.bin (special file)"), "{err}");
+        let err = format!(
+            "{:#}",
+            host_tree(&root.join("a/b/c.bin").url(), &no).unwrap_err()
+        );
+        assert!(err.contains("not a file or folder"), "{err}");
+        fake.specials.lock().unwrap().clear();
+        fake.bad_names.lock().unwrap().push("a/b/c.bin".into());
+        let err = format!("{:#}", host_tree(&root.join("a").url(), &no).unwrap_err());
+        assert!(err.contains("b/c.bin (name is not valid UTF-8)"), "{err}");
+        fake.bad_names.lock().unwrap().clear();
+        assert!(host_tree(&root.join("gone").url(), &no).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 }
