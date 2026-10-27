@@ -10,7 +10,7 @@ use std::path::Path;
 use serde_json::json;
 
 pub(crate) const TITLE_ID: &str = "PDFG00001";
-const ICON: &[u8] = include_bytes!("../../../ps5/icon0.png");
+use crate::notice::ICON;
 /// Marks `/user/app/PDFG00001` as ours: the title folder this payload created, by its
 /// `(st_dev, st_ino)`, and a `registered 0` line once registration succeeded. Only in that
 /// folder are files that differ rewritten (another port, a new icon); any other folder by that

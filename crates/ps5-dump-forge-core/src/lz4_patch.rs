@@ -45,6 +45,8 @@ pub(crate) fn patch(folder: &Path, runtime: Runtime) -> anyhow::Result<Lz4Patch>
         Runtime::Trace => (TRACE, "patch"),
         Runtime::Release => (RELEASE, "unpatch"),
     };
+    // U8: auto rest mode waits while the folder is patched (the server's route and the CLI).
+    let _awake = crate::awake();
     crate::net::refuse(folder, &format!("an LZ4 {verb}"))?;
     let kind = Kind::of(folder)?;
     if let Kind::Archive(_) = kind {

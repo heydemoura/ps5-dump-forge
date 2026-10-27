@@ -51,9 +51,11 @@ pub(crate) struct Server {
     pub opts: Options,
     /// `http://<address>:<port>` as shown to the user.
     pub url: String,
-    roots: Roots,
+    /// Shared with the jobs' [`keep_list`] hook (what an extract or transfer never replaces).
+    roots: Arc<Roots>,
     instance: String,
-    jobs: Jobs,
+    /// Shared weakly with Connect's cancel hook (a peer cancels a job of this device).
+    jobs: Arc<Jobs>,
     table: Arc<Mutex<Table>>,
     /// Admitted minus finished jobs; only raised under `admission`, lowered by `Done`.
     running: Arc<AtomicI64>,
@@ -75,6 +77,8 @@ pub(crate) struct Server {
     /// Connect's service (FLINK, discovery, remote files), started with the server and shut down
     /// in `finish`; `Err` names why it isn't running (no data folder, unreadable peers file).
     connect: Result<Arc<crate::connect::Connect>, String>,
+    /// The console's notice when a conversion, LZ4 job or transfer ends, and its setting.
+    notices: Arc<crate::notice::JobNotices>,
     /// Tests widen the gap between `Jobs::start` returning and the table admitting the job.
     #[cfg(test)]
     admit_pause: std::time::Duration,
@@ -246,6 +250,8 @@ struct Chunked {
     part: PathBuf,
     target: PathBuf,
     size: u64,
+    /// `replace=1` on the chunk that started it: the finished file goes over one at `target`.
+    replace: bool,
     offsets: HashSet<u64>,
     got: u64,
     touched: Instant,
@@ -319,6 +325,24 @@ pub(crate) fn usable_roots(opts: &Options) -> std::io::Result<(Roots, Vec<String
     Ok((roots, notes))
 }
 
+/// What delete, move, discard and a replacing upload, extract or transfer never touch, nor
+/// any folder holding it: the browse roots, `configured` and current, and on the PS5 Forge's
+/// own files (the self copy launch-on-open starts, its lock, the tile's owner record).
+fn keep_list(roots: &Roots, configured: &[PathBuf]) -> Vec<PathBuf> {
+    let mut keep = roots.current();
+    keep.extend(configured.iter().cloned());
+    #[cfg(target_env = "ps5")]
+    keep.extend(
+        [
+            crate::self_copy::TARGET,
+            crate::self_copy::TARGET_LOCK,
+            crate::tile::OWNER_FILE,
+        ]
+        .map(PathBuf::from),
+    );
+    keep
+}
+
 /// A JSON object whose optional `root` is a string (else 400).
 fn optional_root(body: &[u8]) -> Result<Option<PathBuf>, Response> {
     match parse::<serde_json::Value>(body)? {
@@ -336,11 +360,14 @@ struct PathArg {
     path: PathBuf,
 }
 
-/// `/api/move_path`: `from` moved or renamed to `to`.
+/// `/api/move_path`: `from` moved or renamed to `to`; `replace` (the user confirmed it) takes
+/// over what is at `to`.
 #[derive(Deserialize)]
 struct MoveArg {
     from: PathBuf,
     to: PathBuf,
+    #[serde(default)]
+    replace: bool,
 }
 
 /// `/api/inspect`: `password` for an archive that needs one (never logged or echoed).
@@ -393,8 +420,7 @@ struct DirsArg {
 struct ListArg {
     #[serde(default)]
     path: Option<String>,
-    /// The Storage explorer: the Library's roots, and on the PS5 never ShadowMount+'s mount
-    /// folder (core's `list_explorer`).
+    /// The Storage explorer: core's `list_explorer` (on the PS5 mounted images are marked).
     #[serde(default)]
     explorer: bool,
 }
@@ -402,21 +428,12 @@ struct ListArg {
 impl Server {
     pub fn new(opts: Options, local: SocketAddr) -> std::io::Result<Self> {
         let (roots, notes) = usable_roots(&opts)?;
+        let roots = Arc::new(roots);
         for line in &notes {
             eprintln!("ps5-dump-forge serve: {line}");
         }
         let table = Arc::new(Mutex::new(Table::default()));
         let running = Arc::new(AtomicI64::new(0));
-        let jobs = {
-            let (table, running) = (table.clone(), running.clone());
-            Jobs::new(move |event| {
-                if let Event::Done { .. } = event {
-                    running.fetch_sub(1, Ordering::SeqCst);
-                }
-                lock(&table).record(&event);
-            })
-        };
-        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
         let connect = match &opts.connect_dir {
             None => Err("Connect is off in this server".to_string()),
             Some(dir) => crate::connect::Connect::start(dir, opts.connect_port)
@@ -428,11 +445,50 @@ impl Server {
         {
             eprintln!("ps5-dump-forge serve: {e}");
         }
+        let notices = Arc::new(crate::notice::JobNotices::new(
+            opts.settings_dir.clone(),
+            (opts.platform == Platform::Ps5).then(|| opts.notify.clone()),
+        ));
+        let jobs = {
+            let (table, running, notices) = (table.clone(), running.clone(), notices.clone());
+            // Weak: Connect holds the jobs' hooks.
+            let connect = connect.as_ref().ok().map(Arc::downgrade);
+            Arc::new(Jobs::new(move |event| {
+                if let Event::Done { .. } = event {
+                    running.fetch_sub(1, Ordering::SeqCst);
+                }
+                let ended = lock(&table).record(&event);
+                notices.send(ended);
+                if let Some(c) = connect.as_ref().and_then(std::sync::Weak::upgrade) {
+                    c.job_event(&event);
+                }
+            }))
+        };
+        // An extract or transfer that replaces (the user confirmed it) never takes what Delete
+        // keeps.
+        {
+            let (roots, configured) = (roots.clone(), opts.roots.clone());
+            jobs.set_protected(Arc::new(move || keep_list(&roots, &configured)));
+        }
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
         // A peer's writes never land in what this device's unfinished jobs use, and no job
         // starts on what a peer is writing here.
         if let Ok(connect) = &connect {
             connect.set_busy(jobs.uses_hook());
             jobs.set_external_busy(connect.writing_hook());
+            // A peer's replacing rename is refused as a job's replace is (holds the jobs weakly).
+            let weak = Arc::downgrade(&jobs);
+            connect.set_replace_check(Arc::new(move |path| match weak.upgrade() {
+                Some(jobs) => jobs.replace_check(path).map_err(|e| e.to_string()),
+                None => Err("Dump Forge is stopping".to_string()),
+            }));
+            // A peer shown one of this device's jobs may cancel it.
+            let weak = Arc::downgrade(&jobs);
+            connect.set_cancel(Arc::new(move |id| {
+                if let Some(jobs) = weak.upgrade() {
+                    jobs.cancel(id);
+                }
+            }));
         }
         Ok(Self {
             url: crate::console_url(local, opts.platform),
@@ -450,6 +506,7 @@ impl Server {
             uploads: Mutex::new(HashSet::new()),
             cores,
             connect,
+            notices,
             opts,
             #[cfg(test)]
             admit_pause: std::time::Duration::ZERO,
@@ -476,6 +533,8 @@ impl Server {
             Err(r) => return r,
         };
         if head.method == "POST" && head.path == http::CONNECT_UPLOAD {
+            // U8: auto rest mode waits while a browser's upload streams in.
+            let _awake = ps5_dump_forge_core::awake();
             let length = head.header("content-length").map(|_| head.length as u64);
             let query = head.query.clone();
             let mut body = http::BodyReader::new(stream, &mut head, UPLOAD_IDLE);
@@ -484,6 +543,7 @@ impl Server {
                 .unwrap_or_else(|r| r);
         }
         if head.method == "POST" && head.path == http::UPLOAD {
+            let _awake = ps5_dump_forge_core::awake();
             let length = head.header("content-length").map(|_| head.length as u64);
             let query = head.query.clone();
             let mut body = http::BodyReader::new(stream, &mut head, UPLOAD_IDLE);
@@ -564,6 +624,7 @@ impl Server {
             (true, "storage") => Ok(Response::json(&self.roots.storage())),
             (true, "host_tree") => self.host_tree(body),
             (true, "edit_check") => self.edit_check(body),
+            (true, "existing_targets") => self.existing_targets(body),
             #[cfg(target_env = "ps5")]
             (true, "debug_bench") if crate::debug::ENABLED => {
                 #[derive(Deserialize)]
@@ -604,6 +665,7 @@ impl Server {
                 false => Ok(self.quit()),
             },
             (true, "self_update") => self.self_update(body),
+            (true, "notifications") => self.set_notifications(body),
             (false, "connect/state") => Ok(Response::json(&self.connect()?.snapshot())),
             (false, "connect/download") => self.connect_download(&head.query),
             (true, route) if route.starts_with("connect/") => {
@@ -646,7 +708,20 @@ impl Server {
             "connect_url": format!("{}/#connect", self.url),
             // A bring-up build (`FORGE_DEBUG_API`): the page links its `/probe`.
             "debug": cfg!(target_env = "ps5") && option_env!("FORGE_DEBUG_API").is_some(),
+            // A console notice when a conversion, LZ4 job or transfer ends (the PS5 only).
+            "notifications": self.notices.on(),
         }))
+    }
+
+    /// `POST /api/notifications {"on": bool}`: job-end notices on or off, kept on the console.
+    fn set_notifications(&self, body: &[u8]) -> Reply {
+        #[derive(Deserialize)]
+        struct Arg {
+            on: bool,
+        }
+        let on = parse::<Arg>(body)?.on;
+        self.notices.set(on).map_err(|e| Response::error(500, e))?;
+        Ok(Response::json(&json!({ "on": self.notices.on() })))
     }
 
     /// `GET /api/qr`: the session's `url` as a QR code (SVG) for a phone to open. 404 when the
@@ -690,9 +765,12 @@ impl Server {
         if root.is_none() && self.opts.platform == Platform::Host {
             return Err(Response::error(400, "choose a folder to scan"));
         }
+        if let Some(r) = &root {
+            self.roots.confine(r).map_err(|e| Response::error(400, e))?;
+        }
         let found = self.capped(|| match &root {
             Some(r) => ps5_dump_forge_core::scan_library_folder(r),
-            None => ps5_dump_forge_core::scan_library(&self.roots.library()),
+            None => ps5_dump_forge_core::scan_library(&self.roots.current()),
         })?;
         Ok(Response::json(&ScanReply {
             scan: &found,
@@ -713,6 +791,9 @@ impl Server {
     /// while waiting for a slot is a 404 too); stopping cancels a scan under way.
     fn host_tree(&self, body: &[u8]) -> Reply {
         let arg: PathArg = parse(body)?;
+        self.roots
+            .confine(&arg.path)
+            .map_err(|e| Response::error(400, e))?;
         let listed = self.capped(|| {
             Ok::<_, std::convert::Infallible>(ps5_dump_forge_core::host_tree(
                 &arg.path,
@@ -748,6 +829,22 @@ impl Server {
         let check =
             self.capped(|| Ok::<_, std::convert::Infallible>(self.jobs.edit_check(&request)))?;
         Ok(Response::json(&check))
+    }
+
+    /// `{request}`: an extract's or transfer's targets that exist already (core's
+    /// `Jobs::existing_targets`, at the top level, on another device too), so the page asks
+    /// before it sends `replace`; an array of paths. It may ask a peer or a NAS, so it is
+    /// capped like an inspection. 400 for a request that is neither.
+    fn existing_targets(&self, body: &[u8]) -> Reply {
+        let request = parse::<StartArg>(body)?.request;
+        if request.extract.is_empty() && request.transfer.is_empty() {
+            return Err(Response::error(
+                400,
+                "bad request: only an extract or a transfer has targets to check",
+            ));
+        }
+        let targets = self.capped(|| self.jobs.existing_targets(&request))?;
+        Ok(Response::json(&targets))
     }
 
     /// Runs a core call that reads a source, at most [`MAX_INSPECTIONS`] at once; the rest
@@ -819,7 +916,14 @@ impl Server {
         std::thread::sleep(self.admit_pause);
         // The job has the password; the table (the page's job list) keeps none.
         request.archive_password = None;
-        lock(&self.table).admit(id, request);
+        if let Ok(connect) = &self.connect {
+            connect.job_started(id, &request);
+        }
+        // Done may have come first: the notice is sent once, here or by the event callback,
+        // after admission is released (a slow toast holds up no other start).
+        let ended = lock(&self.table).admit(id, request);
+        drop(_admission);
+        self.notices.send(ended);
         Ok(Response::json(&id))
     }
 
@@ -850,22 +954,9 @@ impl Server {
         Ok(Response::json(&done))
     }
 
-    /// What delete, move and discard never touch, nor any folder holding it: the browse roots,
-    /// configured and current, and on the PS5 Forge's own files (the self copy launch-on-open
-    /// starts, its lock, the tile's owner record).
+    /// [`keep_list`] of this server's roots.
     fn keep(&self) -> Vec<PathBuf> {
-        let mut keep = self.roots.current();
-        keep.extend(self.opts.roots.iter().cloned());
-        #[cfg(target_env = "ps5")]
-        keep.extend(
-            [
-                crate::self_copy::TARGET,
-                crate::self_copy::TARGET_LOCK,
-                crate::tile::OWNER_FILE,
-            ]
-            .map(PathBuf::from),
-        );
-        keep
+        keep_list(&self.roots, &self.opts.roots)
     }
 
     /// Deletes a file or folder for good (core's `Jobs::delete_path`; the page asks first).
@@ -883,8 +974,10 @@ impl Server {
     }
 
     /// Moves or renames a file or folder on its volume (core's `Jobs::move_path`): `to` never
-    /// replaced, `from` refused as `delete_path` refuses it (same `keep` list). Admission is
-    /// held, so no job or quit lands between the check and the rename.
+    /// replaced unless `replace` (a file over a file, a folder merged into a folder, the old
+    /// file refused as `delete_path` refuses it), `from` refused as `delete_path` refuses it
+    /// (same `keep` list). Admission is held, so no job or quit lands between the check and
+    /// the rename.
     fn move_path(&self, body: &[u8]) -> Reply {
         let arg: MoveArg = parse(body)?;
         let _admission = lock(&self.admission);
@@ -893,7 +986,7 @@ impl Server {
         }
         let keep = self.keep();
         self.jobs
-            .move_path(&arg.from, &arg.to, &keep)
+            .move_path(&arg.from, &arg.to, arg.replace, &keep)
             .map_err(deleted)?;
         Ok(Response::json(&()))
     }
@@ -1055,6 +1148,8 @@ impl Server {
         let (name, len) = (traces.zip_name().to_string(), traces.zip_len());
         let body = Box::new(move |out: &mut dyn std::io::Write| {
             let _streaming = streaming;
+            // U8: auto rest mode waits while the browser downloads it.
+            let _awake = ps5_dump_forge_core::awake();
             traces.write_zip(out)
         });
         Ok(Response::download("application/zip", &name, len, body))
@@ -1114,15 +1209,12 @@ impl Server {
     }
 
     /// Any folder (core's `list_dir`, `parent` `null` at a root); `null` lists the roots. At
-    /// most 10,000 entries (`truncated` says so). With `explorer` the roots are the Library's
-    /// (no `/mnt/shadowmnt`) and the folder is listed by core's `list_explorer` (on the PS5 a
-    /// path in ShadowMount+'s mount folder is 400; mounted images are marked).
+    /// most 10,000 entries (`truncated` says so). On the PS5 (by user request) only a folder at
+    /// or inside a root, `/data` or a drive plugged in (else 400). With `explorer` the folder is
+    /// listed by core's `list_explorer` (on the PS5 mounted images are marked).
     fn list_dir(&self, body: &[u8]) -> Reply {
         let arg = parse::<ListArg>(body)?;
-        let roots = match arg.explorer {
-            true => self.roots.library(),
-            false => self.roots.current(),
-        };
+        let roots = self.roots.current();
         let Some(path) = arg.path else {
             let entries: Vec<ListEntry> = roots
                 .iter()
@@ -1144,11 +1236,15 @@ impl Server {
             std::io::ErrorKind::InvalidInput => Response::error(400, format!("{path}: {e}")),
             _ => Response::error(500, format!("{path}: {e}")),
         };
+        (self.roots.confine(Path::new(&path))).map_err(|e| Response::error(400, e))?;
         let list = match arg.explorer {
             true => ps5_dump_forge_core::list_explorer,
             false => ps5_dump_forge_core::list_dir,
         };
         let mut listing = list(Path::new(&path)).map_err(failed)?;
+        // A link's entry carries its target's path: one resolving outside the roots (the PS5's
+        // system folders) is left out, as the roots are the only places shown.
+        (listing.entries).retain(|e| !e.link || self.roots.confine(&e.path).is_ok());
         if roots.contains(&listing.path) {
             listing.parent = None;
         }
@@ -1167,7 +1263,8 @@ impl Server {
     }
 
     /// `quit {"if_idle": true}` (a newer copy taking over): quits as `quit` does, but only when
-    /// no job is queued or running and no trace download is streaming; else 409.
+    /// no job is queued or running, no trace download is streaming and no paired device is
+    /// reading or writing files here; else 409.
     /// Admission within `IDLE_WAIT`, else a 409: a patch or delete holds it for long, and a
     /// late yes would act after the asker gave up (the newer copy's 3 s request, the page's
     /// minute).
@@ -1206,6 +1303,13 @@ impl Server {
                 return Err(Response::error(
                     409,
                     "Dump Forge is busy: a trace download is running",
+                ));
+            }
+            // A paired device's transfer reading or writing here would end mid-way.
+            if self.connect.as_ref().is_ok_and(|c| c.peers_active()) {
+                return Err(Response::error(
+                    409,
+                    "Dump Forge is busy: a paired device is reading or writing files here",
                 ));
             }
             self.stopping.store(true, Ordering::SeqCst);
@@ -1319,6 +1423,13 @@ struct ConnectArg {
     allow: bool,
 }
 
+/// `cancel_job`: a peer's job shown here.
+#[derive(Deserialize)]
+struct RemoteJobArg {
+    key_id: String,
+    job: JobId,
+}
+
 #[derive(Deserialize)]
 struct NasId {
     id: String,
@@ -1354,6 +1465,11 @@ impl Server {
                 let a: NasId = parse(body)?;
                 return Ok(Response::json(&c.nas_forget(&a.id).map_err(failed)?));
             }
+            // Asks a paired peer to cancel its job shown here; false when it isn't listed.
+            "cancel_job" => {
+                let a: RemoteJobArg = parse(body)?;
+                return Ok(Response::json(&c.cancel_remote_job(&a.key_id, a.job)));
+            }
             _ => {}
         }
         let a: ConnectArg = parse(body)?;
@@ -1387,7 +1503,8 @@ impl Server {
     /// `POST /api/connect/upload?dir=&name=` (percent-encoded; a phone's file): the raw body,
     /// exactly `Content-Length` bytes, as `<dir>/<name>` in an existing folder, through an
     /// exclusive `.part` beside it and a rename that never replaces; `{path}`. 409 for a name
-    /// that exists; refused once stopping.
+    /// that exists; refused once stopping. With `replace=1` (the user confirmed it) a file at
+    /// that name is replaced ([`Self::replaceable`], [`Self::place_replacing`]).
     fn connect_upload(&self, query: &str, length: Option<u64>, body: &mut dyn Read) -> Reply {
         let Some(length) = length else {
             return Err(Response::error(411, "bad request: needs Content-Length"));
@@ -1417,11 +1534,15 @@ impl Server {
             return Err(Response::error(404, text));
         }
         let target = dir.join(&name);
+        let replace = http::query_value(query, "replace").as_deref() == Some("1");
+        if replace {
+            self.replaceable(&target)?;
+        }
         if let Some(id) = http::query_value(query, "id") {
-            return self.connect_upload_chunk(&id, query, target, length, body);
+            return self.connect_upload_chunk(&id, query, target, replace, length, body);
         }
         let exists = |t: &Path| format!("{}: already exists", t.display());
-        if std::fs::symlink_metadata(&target).is_ok() {
+        if !replace && std::fs::symlink_metadata(&target).is_ok() {
             return Err(Response::error(409, exists(&target)));
         }
         let seq = UPLOAD_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -1435,6 +1556,9 @@ impl Server {
             copy_body(body, &mut file, length)?;
             file.sync_all()?;
             drop(file);
+            if replace {
+                return Ok(());
+            }
             ps5_dump_forge_core::rename_no_replace(&part, &target)
         })();
         if let Err(e) = copied {
@@ -1445,18 +1569,64 @@ impl Server {
                 _ => failed(e),
             });
         }
+        if replace {
+            self.place_replacing(&part, &target)?;
+        }
         Ok(Response::json(&json!({ "path": target })))
+    }
+
+    /// What a replacing upload (`replace=1`) is refused before its body is read: a link,
+    /// folder or special file at `target` (only a file goes over a file; 400), or a file an
+    /// unfinished job uses (409). Nothing there is fine: it becomes a new file. Core checks
+    /// again, with the rest of what Delete refuses, at the rename ([`Self::place_replacing`]).
+    fn replaceable(&self, target: &Path) -> Result<(), Response> {
+        let Ok(meta) = std::fs::symlink_metadata(target) else {
+            return Ok(());
+        };
+        let (kind, shown) = (meta.file_type(), target.display());
+        let why = if kind.is_symlink() {
+            format!("{shown} is a link: nothing is put in its place")
+        } else if kind.is_dir() {
+            format!("{shown} is a folder: a file is not put in its place")
+        } else if !kind.is_file() {
+            format!("{shown} is not a file or folder: nothing is put in its place")
+        } else if self.jobs.uses(target) {
+            let why =
+                format!("{shown} is in use by an unfinished job; wait for it or stop it first");
+            return Err(Response::error(409, why));
+        } else {
+            return Ok(());
+        };
+        Err(Response::error(400, why))
+    }
+
+    /// Puts a replacing upload's synced `.part` at `target`: core's `Jobs::move_path` with
+    /// replace and the same `keep` list, so a file there is replaced only as Delete would
+    /// delete it (not one a job uses, a kept path, on the PS5 a mounted image, a link, folder
+    /// or special file), in one rename, both folders synced. The `.part` is removed when it
+    /// fails; admission is held, so no job or quit lands between the check and the rename.
+    fn place_replacing(&self, part: &Path, target: &Path) -> Result<(), Response> {
+        let placed = {
+            let _admission = lock(&self.admission);
+            self.jobs.move_path(part, target, true, &self.keep())
+        };
+        placed.map_err(|e| {
+            let _ = std::fs::remove_file(part);
+            deleted(e)
+        })
     }
 
     /// One chunk of a parallel phone upload: `id` (the client's, 1–32 letters/digits), `offset`,
     /// `size` (the whole file's); `{done: false}`, or `{path, done: true}` for the chunk that
     /// completed it. `cancel=1` (empty body) drops the upload and its `.part`. A chunk that
-    /// fails drops the whole upload.
+    /// fails drops the whole upload. `replace` on the first chunk: the finished file replaces
+    /// one at `target` ([`Self::place_replacing`]).
     fn connect_upload_chunk(
         &self,
         id: &str,
         query: &str,
         target: PathBuf,
+        replace: bool,
         length: u64,
         body: &mut dyn Read,
     ) -> Reply {
@@ -1510,7 +1680,7 @@ impl Server {
                     if lock(&CHUNK_ENDED).iter().any(|e| e == id) {
                         return Err(Response::error(409, format!("upload {id} has ended")));
                     }
-                    if std::fs::symlink_metadata(&target).is_ok() {
+                    if !replace && std::fs::symlink_metadata(&target).is_ok() {
                         return Err(Response::error(409, exists(&target)));
                     }
                     let dir = target.parent().unwrap_or(Path::new("."));
@@ -1528,6 +1698,7 @@ impl Server {
                             part: part.clone(),
                             target: target.clone(),
                             size,
+                            replace,
                             offsets: HashSet::new(),
                             got: 0,
                             touched: Instant::now(),
@@ -1578,6 +1749,9 @@ impl Server {
             }
             file.sync_all()?;
             drop(file);
+            if c.replace {
+                return Ok(());
+            }
             ps5_dump_forge_core::rename_no_replace(&c.part, &c.target)
         })();
         if let Err(e) = finished {
@@ -1586,6 +1760,9 @@ impl Server {
                 std::io::ErrorKind::AlreadyExists => Response::error(409, exists(&c.target)),
                 _ => failed(e),
             });
+        }
+        if c.replace {
+            self.place_replacing(&c.part, &c.target)?;
         }
         Ok(Response::json(&json!({ "path": c.target, "done": true })))
     }
@@ -1617,6 +1794,8 @@ impl Server {
             .map_or("download".into(), |n| n.to_string_lossy());
         let len = meta.len();
         let body = Box::new(move |out: &mut dyn Write| {
+            // U8: auto rest mode waits while the browser downloads it.
+            let _awake = ps5_dump_forge_core::awake();
             std::io::copy(&mut file.take(len), out).map(|_| ())
         });
         Ok(Response::download(
@@ -1701,6 +1880,125 @@ mod tests {
     fn library_server(root: &Path) -> Arc<Server> {
         let opts = Options::new(0, vec![root.to_path_buf()], Platform::Host, |_: &str| {});
         Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap())
+    }
+
+    /// Job notices: on by default, turned off and on by `POST /api/notifications`, kept as a
+    /// `notifications.off` marker in the settings folder (a new server reads it), 500 when it
+    /// can't be written.
+    #[test]
+    fn notifications_setting_is_kept() {
+        let settings = dir("notices");
+        let start = |dir: &Path| {
+            let mut opts = Options::new(0, vec![std::env::temp_dir()], Platform::Host, |_| {});
+            opts.settings_dir = Some(dir.to_path_buf());
+            Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap())
+        };
+        let session = |server: &Arc<Server>| -> serde_json::Value {
+            serde_json::from_str(&server.session().text()).unwrap()
+        };
+        let first = start(&settings);
+        assert_eq!(session(&first)["notifications"], true);
+        assert_eq!(post(&first, "notifications", json!({})).status, 400);
+        let r = post(&first, "notifications", json!({"on": false}));
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(r.text(), r#"{"on":false}"#);
+        assert!(settings.join("notifications.off").is_file());
+        assert_eq!(session(&start(&settings))["notifications"], false);
+        let r = post(&first, "notifications", json!({"on": true}));
+        assert_eq!(r.text(), r#"{"on":true}"#);
+        assert!(!settings.join("notifications.off").exists());
+        assert_eq!(session(&start(&settings))["notifications"], true);
+        // A folder that can't be made: the error, and the setting as it was.
+        std::fs::write(settings.join("file"), b"").unwrap();
+        let broken = start(&settings.join("file"));
+        let r = post(&broken, "notifications", json!({"on": false}));
+        assert_eq!(r.status, 500, "{}", r.text());
+        assert_eq!(session(&broken)["notifications"], true);
+        // Memory only without a settings folder (tests).
+        let memory = Arc::new(server());
+        assert_eq!(
+            post(&memory, "notifications", json!({"on": false})).status,
+            200
+        );
+        assert_eq!(session(&memory)["notifications"], false);
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    /// The PS5 (by user request): listings, `host_tree` and a Library folder only at or inside
+    /// a root (`/data`, a link here, or a drive plugged in), else one 400 line; a root's
+    /// `parent` is `null`. Another device's path still goes to core. A computer is unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn a_ps5_lists_only_its_roots() {
+        // Under the build folder: a macOS temp dir is a refused system folder for a scan.
+        let tmp = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(format!("forge-api-reach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("user/data/games")).unwrap();
+        std::fs::create_dir_all(tmp.join("system")).unwrap();
+        let tmp = tmp.canonicalize().unwrap();
+        let (data, real) = (tmp.join("data"), tmp.join("user/data"));
+        std::os::unix::fs::symlink(&real, &data).unwrap();
+        // A link out to a system folder is left out of a listing; one inside the roots stays.
+        std::os::unix::fs::symlink(tmp.join("system"), real.join("out")).unwrap();
+        std::os::unix::fs::symlink(real.join("games"), real.join("in")).unwrap();
+        let opts = Options::new(0, vec![data.clone()], Platform::Ps5, |_: &str| {});
+        let server = Arc::new(Server::new(opts, "127.0.0.1:1".parse().unwrap()).unwrap());
+        let list = |path: &Path, explorer: bool| {
+            post(
+                &server,
+                "list_dir",
+                json!({ "path": path, "explorer": explorer }),
+            )
+        };
+        for explorer in [false, true] {
+            let r = post(
+                &server,
+                "list_dir",
+                json!({ "path": null, "explorer": explorer }),
+            );
+            let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
+            assert_eq!(v["entries"][0]["path"], json!(real), "{v}");
+            assert_eq!(v["entries"].as_array().unwrap().len(), 1, "{v}");
+            let r = list(&data, explorer);
+            assert_eq!(r.status, 200, "{}", r.text());
+            let v: serde_json::Value = serde_json::from_str(&r.text()).unwrap();
+            assert_eq!((&v["path"], &v["parent"]), (&json!(real), &json!(null)));
+            let names: Vec<&str> = (v["entries"].as_array().unwrap().iter())
+                .map(|e| e["name"].as_str().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"in") && !names.contains(&"out"),
+                "{names:?}"
+            );
+            assert_eq!(list(&data.join("games"), explorer).status, 200);
+            for p in [tmp.clone(), tmp.join("system"), data.join("../system")] {
+                let r = list(&p, explorer);
+                assert_eq!(r.status, 400, "{}: {}", p.display(), r.text());
+                let line = "is not on this console's storage or a plugged-in drive";
+                assert!(r.text().contains(line), "{}", r.text());
+            }
+        }
+        let outside = json!({ "path": tmp.join("system") });
+        assert_eq!(post(&server, "host_tree", outside).status, 400);
+        let r = post(&server, "host_tree", json!({ "path": data.join("games") }));
+        assert_eq!(r.status, 200, "{}", r.text());
+        let r = post(
+            &server,
+            "library_scan",
+            json!({ "root": tmp.join("system") }),
+        );
+        assert_eq!(r.status, 400, "{}", r.text());
+        let r = post(&server, "library_scan", json!({ "root": data }));
+        assert_eq!(r.status, 200, "{}", r.text());
+        // Another device's path is not this console's to judge (no such peer: core's 500).
+        assert_ne!(list(Path::new("flink://00ff"), false).status, 400);
+
+        let server = library_server(&real);
+        let r = post(&server, "list_dir", json!({ "path": tmp.join("system") }));
+        assert_eq!(r.status, 200, "{}", r.text());
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     /// Scan and cover: shapes, the configured roots, malformed bodies, the 2-at-once cap,
@@ -1877,6 +2175,7 @@ mod tests {
             edits: Vec::new(),
             extract: Vec::new(),
             transfer: Vec::new(),
+            replace: false,
             edit_rebuild: false,
             archive_password: None,
         });
@@ -2106,6 +2405,52 @@ mod tests {
         // A plain quit once stopping: `{}` and nothing more.
         let r = post(&server, "quit", json!({}));
         assert_eq!((r.status, r.after.is_none()), (200, true));
+    }
+
+    /// `quit {"if_idle": true}` while a paired device writes a file here: 409 (a newer copy
+    /// then says jobs are running), not stopping; `{}` once the file is finished (renamed).
+    #[test]
+    fn quit_if_idle_waits_for_a_peer_writing_here() {
+        let tmp = std::env::temp_dir().join(format!("forge-api-peer-quit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let share = tmp.join("share");
+        std::fs::create_dir_all(&share).unwrap();
+        let mut s = server();
+        let here =
+            crate::connect::Connect::start_rooted(&tmp.join("a"), 0, Some(share.clone())).unwrap();
+        let (port, key) = (here.state().device.port, here.me().key_id.clone());
+        s.connect = Ok(Arc::new(here));
+        let server = Arc::new(s);
+        let here = server.connect.as_ref().unwrap();
+        let peer = crate::connect::Connect::start_rooted(&tmp.join("b"), 0, None).unwrap();
+        let addr = format!("127.0.0.1:{port}");
+        let o = crate::connect::pair_for_test(&peer, here, &addr, true);
+        assert_eq!(o.state, "paired", "{o:?}");
+        let (mut rpc, _hs) = peer.session(&key).unwrap();
+        let h = rpc.call("create", json!({ "path": "f.part" })).unwrap()["handle"]
+            .as_u64()
+            .unwrap();
+
+        let idle = json!({ "if_idle": true });
+        let r = post(&server, "quit", idle.clone());
+        assert_eq!(r.status, 409);
+        assert!(
+            r.text()
+                .contains("a paired device is reading or writing files here"),
+            "{}",
+            r.text()
+        );
+        assert!(!server.stopping.load(Ordering::SeqCst));
+        rpc.call("close", json!({ "handle": h })).unwrap();
+        rpc.call("rename", json!({ "from": "f.part", "to": "f" }))
+            .unwrap();
+        let r = post(&server, "quit", idle);
+        assert_eq!((r.status, r.text()), (200, "{}".to_string()));
+
+        drop(rpc);
+        peer.shutdown();
+        here.shutdown();
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// `self_update`: the PS5's only; a newer `X.Y.Z` only; never while a job is queued or
@@ -2403,6 +2748,22 @@ mod tests {
             );
             assert!(r.starts_with("HTTP/1.1 404"), "{route}: {r}");
         }
+        // A peer's jobs shown here (none yet), and cancelling one of them.
+        assert!(state.contains("\"remote_jobs\":[]"), "{state}");
+        let post = |route: &str, body: &str| {
+            over_tcp(
+                &server,
+                format!(
+                    "POST /api/connect/{route} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+        };
+        let r = post("cancel_job", r#"{"key_id":"ab","job":3}"#);
+        assert!(r.starts_with("HTTP/1.1 200") && r.ends_with("false"), "{r}");
+        let r = post("cancel_job", r#"{"key_id":"ab"}"#);
+        assert!(r.starts_with("HTTP/1.1 400"), "{r}");
         assert!(get("/api/session").contains("/#connect"));
 
         let big: Vec<u8> = (0..http::BODY_MAX as u32 * 2 + 7)
@@ -2481,6 +2842,154 @@ mod tests {
         assert_eq!(reply[split + 4..], big[..]);
         assert!(get(&format!("/api/connect/download?path={dir}")).starts_with("HTTP/1.1 400"));
         server.connect.as_ref().unwrap().shutdown();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `existing_targets`: a transfer's and an extract's targets that exist, in order, each
+    /// once; 400 for a request that is neither or a malformed body; an error for an output
+    /// that isn't a folder.
+    #[test]
+    fn existing_targets_lists_what_is_there() {
+        let root = dir("existing");
+        std::fs::create_dir_all(root.join("src/sub")).unwrap();
+        std::fs::create_dir_all(root.join("out/sub")).unwrap();
+        for name in ["src/a.bin", "src/b.bin", "out/a.bin"] {
+            std::fs::write(root.join(name), b"x").unwrap();
+        }
+        let server = library_server(&root);
+        let out = root.join("out");
+        let transfer = json!({ "request": {
+            "source": "", "format": "folder", "output": out,
+            "transfer": [root.join("src/a.bin"), root.join("src/b.bin"), root.join("src/sub")],
+        }});
+        let r = post(&server, "existing_targets", transfer);
+        assert_eq!(r.status, 200, "{}", r.text());
+        let want = json!([out.join("a.bin"), out.join("sub")]).to_string();
+        assert_eq!(r.text(), want);
+        let extract = json!({ "request": {
+            "source": root.join("src"), "format": "folder", "output": out,
+            "extract": ["b.bin", "sub", "x/a.bin"],
+        }});
+        let r = post(&server, "existing_targets", extract);
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(
+            r.text(),
+            json!([out.join("sub"), out.join("a.bin")]).to_string()
+        );
+        let plain =
+            json!({ "request": { "source": root.join("src"), "format": "folder", "output": out }});
+        assert_eq!(post(&server, "existing_targets", plain).status, 400);
+        assert_eq!(post(&server, "existing_targets", json!({})).status, 400);
+        let file_out = json!({ "request": {
+            "source": "", "format": "folder", "output": root.join("out/a.bin"),
+            "transfer": [root.join("src/a.bin")],
+        }});
+        assert_eq!(post(&server, "existing_targets", file_out).status, 500);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `move_path`: an existing `to` refused without `replace` (nothing changed), taken over
+    /// with it: a file over a file, a folder merged into a folder.
+    #[test]
+    fn move_path_replaces_only_when_asked() {
+        let root = dir("move-replace");
+        std::fs::create_dir_all(root.join("a/d")).unwrap();
+        std::fs::create_dir_all(root.join("b/d")).unwrap();
+        std::fs::write(root.join("a/x.bin"), b"new").unwrap();
+        std::fs::write(root.join("b/x.bin"), b"old").unwrap();
+        std::fs::write(root.join("a/d/y.bin"), b"y").unwrap();
+        std::fs::write(root.join("b/d/z.bin"), b"z").unwrap();
+        let server = library_server(&root);
+        let arg = |from: &str, to: &str, replace: Option<bool>| {
+            let mut v = json!({ "from": root.join(from), "to": root.join(to) });
+            if let Some(r) = replace {
+                v["replace"] = json!(r);
+            }
+            v
+        };
+        for replace in [None, Some(false)] {
+            let r = post(&server, "move_path", arg("a/x.bin", "b/x.bin", replace));
+            assert_eq!(r.status, 400, "{}", r.text());
+            assert!(r.text().contains("nothing is replaced"), "{}", r.text());
+        }
+        assert_eq!(std::fs::read(root.join("b/x.bin")).unwrap(), b"old");
+        let r = post(&server, "move_path", arg("a/x.bin", "b/x.bin", Some(true)));
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(std::fs::read(root.join("b/x.bin")).unwrap(), b"new");
+        assert!(!root.join("a/x.bin").exists());
+        // A folder onto a folder merges; a file onto a folder is refused.
+        let r = post(&server, "move_path", arg("a/d", "b/d", Some(true)));
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert!(root.join("b/d/y.bin").is_file() && root.join("b/d/z.bin").is_file());
+        assert!(!root.join("a/d").exists());
+        std::fs::write(root.join("a/d"), b"f").unwrap();
+        let r = post(&server, "move_path", arg("a/d", "b/d", Some(true)));
+        assert_eq!(r.status, 400, "{}", r.text());
+        assert!(r.text().contains("is a folder"), "{}", r.text());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A phone upload with `replace=1`, single and chunked: a file there is replaced, a
+    /// missing one made; a folder or a link is refused (nothing left behind); without it
+    /// today's 409.
+    #[test]
+    fn phone_uploads_replace_a_file_only_when_asked() {
+        let root = dir("upload-replace");
+        std::fs::create_dir_all(root.join("d/folder")).unwrap();
+        std::fs::write(root.join("d/x.bin"), b"old").unwrap();
+        let server = library_server(&root);
+        let send = |name: &str, extra: &str, body: &[u8]| {
+            let dir = percent_encode(&root.join("d").to_string_lossy());
+            let query = format!("dir={dir}&name={}{extra}", percent_encode(name));
+            (server.connect_upload(&query, Some(body.len() as u64), &mut &body[..]))
+                .unwrap_or_else(|r| r)
+        };
+        let read = |name: &str| std::fs::read(root.join("d").join(name)).unwrap();
+        // Without replace: 409, nothing changed (single and chunked).
+        assert_eq!(send("x.bin", "", b"new").status, 409);
+        assert_eq!(
+            send("x.bin", "&id=rep0&offset=0&size=3", b"new").status,
+            409
+        );
+        assert_eq!(read("x.bin"), b"old");
+        // Single.
+        let r = send("x.bin", "&replace=1", b"new");
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(read("x.bin"), b"new");
+        let r = send("fresh.bin", "&replace=1", b"f");
+        assert_eq!(r.status, 200, "{}", r.text());
+        assert_eq!(read("fresh.bin"), b"f");
+        // Chunked: two whole chunks, then the short last one, the first asking to replace.
+        let c = UPLOAD_CHUNK as usize;
+        let file: Vec<u8> = (0..2 * c + 3).map(|i| (i % 249) as u8).collect();
+        let n = file.len();
+        for (from, to) in [(0, c), (2 * c, n), (c, 2 * c)] {
+            let extra = format!("&id=rep1&offset={from}&size={n}&replace=1");
+            let r = send("x.bin", &extra, &file[from..to]);
+            assert_eq!(r.status, 200, "{}", r.text());
+        }
+        assert_eq!(read("x.bin"), file);
+        // Refused onto a folder (400, its contents untouched) and onto a link.
+        std::fs::write(root.join("d/folder/in.bin"), b"in").unwrap();
+        for extra in ["&replace=1", "&replace=1&id=rep2&offset=0&size=1"] {
+            let r = send("folder", extra, b"z");
+            assert_eq!(r.status, 400, "{}", r.text());
+            assert!(r.text().contains("is a folder"), "{}", r.text());
+        }
+        assert_eq!(read("folder/in.bin"), b"in");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("d/fresh.bin"), root.join("d/link")).unwrap();
+            let r = send("link", "&replace=1", b"z");
+            assert_eq!(r.status, 400, "{}", r.text());
+            assert!(r.text().contains("is a link"), "{}", r.text());
+            assert_eq!(read("fresh.bin"), b"f");
+        }
+        let names: Vec<String> = (std::fs::read_dir(root.join("d")).unwrap())
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.iter().any(|n| n.ends_with(".part")), "{names:?}");
+        assert!(!lock(&CHUNKED).contains_key("rep2"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -29,6 +29,8 @@ pub mod ftp;
 mod host_tree;
 mod inspect;
 mod jobs;
+pub use awake::{Awake, awake};
+mod awake;
 mod library;
 mod library_roots;
 mod listing;
@@ -220,15 +222,24 @@ pub struct ConvertRequest {
     pub edit_rebuild: bool,
     /// Game paths (`/`-separated, relative) of files or folders to copy out of the source into
     /// `output`, an existing folder, each under its own last component; nothing there is
-    /// replaced (an extract job when not empty; `format` must be `Folder`).
+    /// replaced unless [`Self::replace`] (an extract job when not empty; `format` must be
+    /// `Folder`).
     #[serde(default)]
     pub extract: Vec<String>,
     /// Files or folders on this device, a peer (`flink://`) or a NAS (`smb://`) to copy into
     /// `output`, an existing folder on this device or a peer, each under its own name; nothing
-    /// there is replaced (a transfer job when not empty; `source` and `format` are ignored). A
-    /// transfer runs beside the one heavy job, one transfer at a time.
+    /// there is replaced unless [`Self::replace`] (a transfer job when not empty; `source` and
+    /// `format` are ignored). A transfer runs beside the one heavy job, one transfer at a time.
     #[serde(default)]
     pub transfer: Vec<PathBuf>,
+    /// For an extract or a transfer (the user confirmed it, [`Jobs::existing_targets`]): what
+    /// already exists at a target is replaced, a file onto a file, a folder onto a folder
+    /// merged (same-named files replaced, everything else there kept). A kind mismatch at any
+    /// level, and a replaced file [`Jobs::delete_path`] would refuse, fail preflight (on a peer
+    /// or a NAS, what this device's jobs use; a peer refuses the rest itself). Ignored for
+    /// every other job.
+    #[serde(default)]
+    pub replace: bool,
     /// For an archive source that needs one. Never serialized.
     #[serde(default, skip_serializing)]
     pub archive_password: Option<ArchivePassword>,
@@ -390,18 +401,24 @@ impl Jobs {
     }
 
     /// Moves or renames `from` to `to` on the same volume: `to` is a new name in an existing
-    /// folder, never replaced, and not inside `from`. `from` is refused as
+    /// folder, never replaced unless `replace`, and not inside `from`. `from` is refused as
     /// [`Jobs::delete_path`] refuses it (a link, a special file, a root, any of `protected` or
     /// a folder holding one, anything an unfinished job uses), and so is a `to` at, in or
     /// above what an unfinished job uses or a peer is writing, or an image with an interrupted edit's undo journal
-    /// beside it. Both folders are synced after; no job is admitted while it runs.
+    /// beside it. With `replace` (the user confirmed it) an existing `to` is taken over: a file
+    /// by a file in one rename (the old one refused as `delete_path` refuses it), a folder by a
+    /// folder merged (each entry moved, same-named files replaced, folders both hold merged,
+    /// everything else there kept, the emptied source folders removed); a kind mismatch at any
+    /// level refuses. Every check runs before the first rename; a failure part way says what
+    /// moved. Both folders are synced after; no job is admitted while it runs.
     pub fn move_path(
         &self,
         from: &Path,
         to: &Path,
+        replace: bool,
         protected: &[PathBuf],
     ) -> Result<(), DeleteError> {
-        self.inner.move_path(from, to, protected)
+        self.inner.move_path(from, to, replace, protected)
     }
 
     /// Whether an unfinished job reads or writes `path`, or anything inside or around it
@@ -419,11 +436,35 @@ impl Jobs {
         Arc::new(move |path| inner.uses(path))
     }
 
+    /// Why a file must not be put in place of `path` (a peer's replacing rename here): as a
+    /// job's replace is refused, so as [`Jobs::delete_path`] refuses it (a link, a folder, a
+    /// root, any of [`Jobs::set_protected`]'s paths, an interrupted edit's undo journal or its
+    /// image, anything at, in or around an unfinished job's paths or what a peer is writing
+    /// ([`Jobs::set_external_busy`]); on the PS5 ShadowMount+'s mount folder and the images it
+    /// has mounted). Nothing at `path` passes. A snapshot: a job may start right after.
+    pub fn replace_check(&self, path: &Path) -> Result<(), DeleteError> {
+        self.inner.replace_check(path)
+    }
+
     /// Sets what says another device is writing a path on this device (Connect's open write
     /// handles): a job using such a path is refused when it starts, and Delete and Move
     /// refuse it too. Like job admission, the external check is a snapshot.
     pub fn set_external_busy(&self, busy: Arc<dyn Fn(&Path) -> bool + Send + Sync>) {
         self.inner.set_external_busy(busy);
+    }
+
+    /// Sets what replacing never touches (an extract's or transfer's
+    /// [`ConvertRequest::replace`]), as `protected` is for [`Jobs::delete_path`]: asked once
+    /// per job, at its preflight. Unset, nothing beyond delete's other refusals.
+    pub fn set_protected(&self, protected: Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>) {
+        self.inner.set_protected(protected);
+    }
+
+    /// The targets of an extract or transfer `request` that exist already (each selection's,
+    /// at the top level; on another device too), for the UI to ask before it sends
+    /// [`ConvertRequest::replace`]. Reads only; an error for any other request.
+    pub fn existing_targets(&self, request: &ConvertRequest) -> anyhow::Result<Vec<PathBuf>> {
+        extract_paths::existing_targets(request)
     }
 
     /// Which way `request`'s edits can be applied, in place or by a rebuild ([`EditCheck`]),
@@ -551,6 +592,9 @@ pub struct Lz4Facts {
     /// touches it: a packed source (kept byte for byte), a non-AMPR title or an archive's
     /// unread index.
     pub index: Option<&'static str>,
+    /// `ampr_emu.index` against the files Patch writes, with the trace runtime installed:
+    /// `ok`, `stale`, `damaged` or `missing`. `None` in the same cases as [`Lz4Facts::index`].
+    pub trace_index: Option<&'static str>,
     /// Size of the trace journal (`ampr_commands.bin`), when present.
     pub journal_bytes: Option<u64>,
     /// With the journal and its `ampr_emu.index` both present: the name [`lz4_traces`] gives

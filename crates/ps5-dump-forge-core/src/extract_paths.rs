@@ -1,15 +1,19 @@
 //! Extract (a request with [`ConvertRequest::extract`]): files and folders of any source
 //! copied into an existing folder on this computer or a paired one (`flink://`), each under
 //! its own last component. Every
-//! check runs before the first byte is written; nothing there is ever replaced. Each file goes
-//! through an exclusive temporary name beside its target, synced, then renamed without
-//! replacing; a selected folder is created exclusively first. BLAKE3 while writing; verify
-//! checks each file's size, and with full verification re-reads and re-hashes it.
+//! check runs before the first byte is written; nothing there is replaced unless the request
+//! says [`ConvertRequest::replace`] (a file onto a file, a folder merged into a folder, each
+//! replaced file refused as Delete refuses it; on another device the device judges what it
+//! may replace, [`crate::remote::Remote::rename_replace`]). Each file goes through an
+//! exclusive temporary name beside its target, synced, then renamed without replacing (over
+//! the file it replaces); a selected folder is created exclusively first (one merged into is
+//! kept). BLAKE3 while writing; verify checks each file's size, and with full verification
+//! re-reads and re-hashes it.
 // ponytail: no rollback: a failure part way leaves the files already extracted (the error
 // says how many); each file itself is atomic. No U5 sync cadence on the PS5: each file is
 // synced once, whole.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +24,7 @@ use ps5upload_fpkg::source::{SourceFile, SourceTree};
 use crate::convert::{Kind, SourceStamp, open_source};
 use crate::finalize::{fsync_dir, make_dir_open};
 use crate::jobs::Ctx;
-use crate::lz4_patch::write_temp_new;
+use crate::lz4_patch::{write_temp, write_temp_new};
 use crate::preflight;
 use crate::remote::RemoteDir;
 use crate::{ConvertRequest, Format, JobReport, VerifyMode, VerifySummary};
@@ -196,7 +200,7 @@ fn destination_findings(
     root: &Path,
     selections: &[Selection],
     ctx: &Ctx,
-) -> Vec<String> {
+) -> (Vec<String>, Replacing) {
     let mut findings = Vec::new();
     // A device's paths compare as spelled (normalized, an SMB share's case folded: the device
     // resolves them), local ones canonical.
@@ -215,26 +219,53 @@ fn destination_findings(
             root.display()
         ));
     }
-    findings.extend(target_findings("extract", root, selections, ctx));
-    findings
+    let (found, replacing) = target_findings("extract", root, selections, req.replace, ctx);
+    findings.extend(found);
+    (findings, replacing)
+}
+
+/// What a request with [`ConvertRequest::replace`] replaces, as its preflight found it: the
+/// paths [`write`] builds.
+#[derive(Debug, Default)]
+pub(crate) struct Replacing {
+    /// Files renamed over.
+    files: HashSet<PathBuf>,
+    /// Folders merged into (kept, not made).
+    dirs: HashSet<PathBuf>,
 }
 
 /// The destination folder `root`'s checks (`what` leads each finding): nothing at any
-/// selection's name, the names it can hold, free space.
+/// selection's name (with `replace`, only what [`replace_findings`] passes),
+/// the names it can hold, free space.
 pub(crate) fn target_findings(
     what: &str,
     root: &Path,
     selections: &[Selection],
+    replace: bool,
     ctx: &Ctx,
-) -> Vec<String> {
+) -> (Vec<String>, Replacing) {
     let mut findings = Vec::new();
+    let mut replacing = Replacing::default();
     let peer = crate::remote::is_remote(root);
+    let mut kinds = Kinds::default();
     for s in selections {
         let target = root.join(&s.name);
-        if crate::net::exists(&target) {
+        if !crate::net::exists(&target) {
+            continue;
+        }
+        if !replace {
             findings.push(format!(
                 "{what}: {} already exists (never replaced)",
                 target.display()
+            ));
+        } else {
+            findings.extend(replace_findings(
+                what,
+                root,
+                s,
+                &mut replacing,
+                &mut kinds,
+                ctx,
             ));
         }
     }
@@ -275,7 +306,217 @@ pub(crate) fn target_findings(
             (checked.dest.as_ref()).map_or((true, false), |d| (d.folds_names, d.ascii_only));
         findings.extend(preflight::folder_names(&files, &dirs, folds, ascii_only));
     }
+    (findings, replacing)
+}
+
+/// What is at a target path, as [`replace_findings`] judges it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Found {
+    File,
+    Dir,
+    Link,
+    /// A FIFO, socket or device (or, on another device, a name that isn't UTF-8).
+    Other,
+}
+
+/// What is at paths here or on another device ([`Kinds::at`]); each remote folder is listed
+/// once, not stat'ed per entry (a merged folder of 10,000 files is 10,000 round trips else).
+#[derive(Default)]
+struct Kinds {
+    listed: HashMap<PathBuf, Result<Vec<crate::remote::RemoteEntry>, String>>,
+}
+
+impl Kinds {
+    /// What is at `path` (`None`: nothing), or why that can't be said. On another device an
+    /// entry whose name differs only in case is a refusal: the device may take the two names
+    /// for one (an SMB share does) or not, so neither a merge nor a new name is safe.
+    fn at(&mut self, path: &Path) -> Result<Option<Found>, String> {
+        use crate::remote::FlinkPath;
+        if !crate::remote::is_remote(path) {
+            return match path.symlink_metadata() {
+                Ok(meta) => {
+                    let t = meta.file_type();
+                    Ok(Some(if t.is_symlink() {
+                        Found::Link
+                    } else if t.is_dir() {
+                        Found::Dir
+                    } else if t.is_file() {
+                        Found::File
+                    } else {
+                        Found::Other
+                    }))
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(format!("{}: {e}", path.display())),
+            };
+        }
+        let at = FlinkPath::parse(path).map_err(|e| format!("{e:#}"))?;
+        let Some(parent) = at.parent() else {
+            return Ok(Some(Found::Dir));
+        };
+        let name = at.path.rsplit('/').next().unwrap_or(&at.path);
+        let entries = self.listed.entry(parent.url()).or_insert_with(|| {
+            (crate::remote::get_for(&parent).and_then(|r| r.list(&parent)))
+                .map_err(|e| format!("listing {}: {e}", parent.shown()))
+        });
+        let entries = entries.as_ref().map_err(Clone::clone)?;
+        if let Some(e) = entries.iter().find(|e| e.name == name) {
+            return Ok(Some(if e.link {
+                Found::Link
+            } else if e.special || e.bad_name {
+                Found::Other
+            } else if e.dir {
+                Found::Dir
+            } else {
+                Found::File
+            }));
+        }
+        match entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) {
+            Some(e) => Err(format!(
+                "{} is there as {}: the device may take the two names for one",
+                path.display(),
+                e.name
+            )),
+            None => Ok(None),
+        }
+    }
+}
+
+/// What selection `s` would replace in `root` (here or on another device), its target
+/// existing: a file onto a file, a folder onto a folder (merged: every folder and file inside
+/// checked too). A kind mismatch at any level is a finding, and so is a replaced file Delete
+/// would refuse ([`Ctx::replace_refusal`]; on another device only what this device's jobs use:
+/// a peer refuses the rest itself, at the rename); what passes goes into `replacing`.
+fn replace_findings(
+    what: &str,
+    root: &Path,
+    s: &Selection,
+    replacing: &mut Replacing,
+    kinds: &mut Kinds,
+    ctx: &Ctx,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    let top = root.join(&s.name);
+    // The selection's folders (destination-relative) that are missing or not a folder there:
+    // nothing below them exists to replace. Parents come first.
+    let mut absent: HashSet<String> = HashSet::new();
+    let parent_absent = |rel: &str, absent: &HashSet<String>| {
+        rel.rsplit_once('/')
+            .is_some_and(|(p, _)| absent.contains(p))
+    };
+    let mut entries: Vec<(String, PathBuf, bool)> = vec![(s.name.clone(), top.clone(), s.dir)];
+    if s.dir {
+        entries.extend(s.dirs.iter().map(|d| {
+            let rel = format!("{}/{d}", s.name);
+            (rel, top.join(d), true)
+        }));
+        entries.extend(s.files.iter().map(|f| {
+            let rel = s.target(&f.path);
+            let (parent, name) = rel.rsplit_once('/').unwrap_or(("", &rel));
+            let path = root.join(parent).join(name);
+            (rel, path, false)
+        }));
+    }
+    for (rel, path, dir) in entries {
+        if parent_absent(&rel, &absent) {
+            if dir {
+                absent.insert(rel);
+            }
+            continue;
+        }
+        let shown = path.display();
+        let kind = match kinds.at(&path) {
+            Ok(Some(kind)) => kind,
+            found => {
+                if let Err(e) = found {
+                    findings.push(format!("{what}: {e}"));
+                }
+                if dir {
+                    absent.insert(rel);
+                }
+                continue;
+            }
+        };
+        let mismatch = match (kind, dir) {
+            (Found::Link, _) => Some("is a link: nothing is put in its place"),
+            (Found::Dir, false) => Some("is a folder: a file is not put in its place"),
+            (Found::File, true) => Some("is a file: a folder is not put in its place"),
+            (Found::Other, _) => Some("is not a file or folder: nothing is put in its place"),
+            _ => None,
+        };
+        if let Some(why) = mismatch {
+            findings.push(format!("{what}: {shown} {why}"));
+            if dir {
+                absent.insert(rel);
+            }
+            continue;
+        }
+        // Every folder merged into is checked too: the top one's job check covers those inside
+        // it, but not ShadowMount+'s mount folder found further down (PS5).
+        if let Err(e) = ctx.replace_refusal(&path, dir) {
+            findings.push(format!("{what}: {e}"));
+            continue;
+        }
+        if dir {
+            replacing.dirs.insert(path);
+        } else {
+            replacing.files.insert(path);
+        }
+    }
     findings
+}
+
+/// One log line naming what was replaced (the first ten and a count of the rest).
+pub(crate) fn log_replaced(replaced: &[PathBuf], ctx: &Ctx) {
+    if replaced.is_empty() {
+        return;
+    }
+    let shown: Vec<String> = (replaced.iter().take(10))
+        .map(|p| p.display().to_string())
+        .collect();
+    let mut line = format!(
+        "replace: {} file{} replaced: {}",
+        replaced.len(),
+        if replaced.len() == 1 { "" } else { "s" },
+        shown.join(", ")
+    );
+    if replaced.len() > 10 {
+        line += &format!(" and {} more", replaced.len() - 10);
+    }
+    ctx.log(line);
+}
+
+/// The targets of an extract or transfer request that exist (each selection's, top level).
+pub(crate) fn existing_targets(req: &ConvertRequest) -> anyhow::Result<Vec<PathBuf>> {
+    let names: Vec<String> = if !req.transfer.is_empty() {
+        (req.transfer.iter())
+            .filter_map(|s| crate::transfer::name_of(s))
+            .collect()
+    } else if !req.extract.is_empty() {
+        (req.extract.iter())
+            .filter(|p| bad_path(p).is_none())
+            .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+            .collect()
+    } else {
+        bail!("only an extract or a transfer has targets to check");
+    };
+    // The folder itself first: a device that doesn't answer is an error, not "nothing there".
+    let root = if crate::remote::is_remote(&req.output) {
+        RemoteDir::open(&req.output)?.path().to_path_buf()
+    } else {
+        let meta = std::fs::metadata(&req.output)
+            .with_context(|| format!("opening {}", req.output.display()))?;
+        if !meta.is_dir() {
+            bail!("{} is not a folder", req.output.display());
+        }
+        req.output.clone()
+    };
+    let mut seen = HashSet::new();
+    Ok((names.into_iter())
+        .filter(|n| seen.insert(n.clone()))
+        .map(|n| root.join(n))
+        .filter(|t| crate::net::exists(t))
+        .collect())
 }
 
 pub(crate) fn preflight_failed(findings: Vec<String>) -> anyhow::Error {
@@ -315,7 +556,7 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
         None => dunce::canonicalize(&req.output)
             .with_context(|| format!("opening {}", req.output.display()))?,
     };
-    let findings = destination_findings(req, kind, &root, &selections, ctx);
+    let (findings, replacing) = destination_findings(req, kind, &root, &selections, ctx);
     ctx.check()?;
     if !findings.is_empty() {
         return Err(preflight_failed(findings));
@@ -339,19 +580,25 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
     });
     let mut written: Vec<(PathBuf, u64, blake3::Hash)> = Vec::with_capacity(count);
     let mut made = Vec::new();
+    let mut replaced = Vec::new();
     let mut done = 0u64;
-    let outcome = write(
+    let wrote = write(
         tree.as_mut(),
         &root,
         peer.as_mut(),
         &selections,
+        &replacing,
         total,
         &mut done,
-        &mut written,
-        &mut made,
+        &mut Written {
+            files: &mut written,
+            made: &mut made,
+            replaced: &mut replaced,
+        },
         ctx,
-    )
-    .and_then(|()| {
+    );
+    log_replaced(&replaced, ctx);
+    let outcome = wrote.and_then(|()| {
         ctx.progress("write", total, total);
         ctx.progress("verify", 0, 1);
         if !stamp.unchanged() {
@@ -402,21 +649,35 @@ fn make_dir(path: &Path) -> anyhow::Result<()> {
     make_dir_open(path).with_context(|| format!("opening up {}", path.display()))
 }
 
-/// Copies every selection into `root` (through `peer` when it is on one); `written` gets each
-/// finished file (its path, size and BLAKE3), `made` each selection folder made, `done` the
-/// bytes copied.
+/// What [`write`] has done so far.
+pub(crate) struct Written<'a> {
+    /// Each finished file: its path, size and BLAKE3.
+    pub(crate) files: &'a mut Vec<(PathBuf, u64, blake3::Hash)>,
+    /// Each selection folder made.
+    pub(crate) made: &'a mut Vec<PathBuf>,
+    /// Each file renamed over one that was there ([`Replacing`]).
+    pub(crate) replaced: &'a mut Vec<PathBuf>,
+}
+
+/// Copies every selection into `root` (through `peer` when it is on one), replacing only what
+/// `replacing` names; `out` records what was done, `done` the bytes copied.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write(
     tree: &mut dyn SourceTree,
     root: &Path,
     mut peer: Option<&mut RemoteDir>,
     selections: &[Selection],
+    replacing: &Replacing,
     total: u64,
     done: &mut u64,
-    written: &mut Vec<(PathBuf, u64, blake3::Hash)>,
-    made: &mut Vec<PathBuf>,
+    out: &mut Written<'_>,
     ctx: &Ctx,
 ) -> anyhow::Result<()> {
+    let Written {
+        files: written,
+        made,
+        replaced,
+    } = out;
     for s in selections {
         ctx.check()?;
         let target = root.join(&s.name);
@@ -429,30 +690,51 @@ pub(crate) fn write(
             bytes
         ));
         if let Some(dir) = peer.as_deref_mut() {
-            // Each folder made exclusively; the peer syncs each folder a file is renamed into.
+            // Each folder made exclusively (one merged into kept, parents first); the peer
+            // syncs each folder a file is renamed into.
             if s.dir {
-                dir.dir(&s.name)?;
-                made.push(target.clone());
+                if replacing.dirs.contains(&target) {
+                    dir.keep(&s.name);
+                } else {
+                    dir.dir(&s.name)?;
+                    made.push(target.clone());
+                }
                 for d in &s.dirs {
-                    dir.dir(&format!("{}/{d}", s.name))?;
+                    let rel = format!("{}/{d}", s.name);
+                    if replacing.dirs.contains(&target.join(d)) {
+                        dir.keep(&rel);
+                    } else {
+                        dir.dir(&rel)?;
+                    }
                 }
             }
             for file in &s.files {
                 let rel = s.target(&file.path);
+                let (parent, name) = rel.rsplit_once('/').unwrap_or(("", &rel));
+                let path = root.join(parent).join(name);
+                let replace = replacing.files.contains(&path);
                 let mut hasher = blake3::Hasher::new();
-                dir.write_new(&rel, &mut |out| {
+                dir.write(&rel, replace, &mut |out| {
                     copy(tree, file, out, &mut hasher, total, done, ctx)
                 })?;
+                if replace {
+                    replaced.push(path);
+                }
                 written.push((root.join(&rel), file.size, hasher.finalize()));
             }
             continue;
         }
         let mut synced = vec![root.to_path_buf()];
         if s.dir {
-            make_dir(&target)?;
-            made.push(target.clone());
-            for dir in &s.dirs {
-                make_dir(&target.join(dir))?;
+            // A folder merged into is kept; every other one is made exclusively.
+            if !replacing.dirs.contains(&target) {
+                make_dir(&target)?;
+                made.push(target.clone());
+            }
+            for dir in s.dirs.iter().map(|d| target.join(d)) {
+                if !replacing.dirs.contains(&dir) {
+                    make_dir(&dir)?;
+                }
             }
             synced.push(target.clone());
             synced.extend(s.dirs.iter().map(|d| target.join(d)));
@@ -465,8 +747,14 @@ pub(crate) fn write(
             let mut fill = |out: &mut File| -> io::Result<()> {
                 copy(tree, file, out, &mut hasher, total, done, ctx)
             };
-            write_temp_new(&dir, name, &mut fill)?;
-            written.push((dir.join(name), file.size, hasher.finalize()));
+            let path = dir.join(name);
+            if replacing.files.contains(&path) {
+                write_temp(&dir, name, &mut fill)?;
+                replaced.push(path.clone());
+            } else {
+                write_temp_new(&dir, name, &mut fill)?;
+            }
+            written.push((path, file.size, hasher.finalize()));
         }
         for dir in synced.iter().rev() {
             fsync_dir(dir).with_context(|| format!("syncing {}", dir.display()))?;

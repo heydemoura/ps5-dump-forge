@@ -633,6 +633,14 @@ pub(crate) fn plain_listing(listing: &[SourceFile], action: RuntimeAction) -> Ve
     files
 }
 
+/// The files Patch writes beside its index, with the tracing runtime installed.
+pub(crate) fn trace_listing(mut files: Vec<SourceFile>) -> Vec<SourceFile> {
+    // A folder patch's leftover temporary files are never indexed (`lz4_patch`).
+    files.retain(|f| !crate::lz4_patch::is_temp(&f.path));
+    put(&mut files, RUNTIME, runtime::TRACE.len() as u64);
+    files
+}
+
 /// `inner` as `files`, the `generated` ones served from memory; its empty folders that now
 /// hold a file are left out. `files` keeps the source's order (no sort): a solid archive is read
 /// front to back, and an entry it already went past starts its decode again.
@@ -689,32 +697,60 @@ pub(crate) fn index_state(
     tree: &mut dyn SourceTree,
     files: &[SourceFile],
 ) -> anyhow::Result<IndexState> {
+    Ok(index_states(tree, &[files])?.remove(0))
+}
+
+/// [`index_state`] against each of `listings`, the index read at most once (a remote source
+/// keeps no read).
+pub(crate) fn index_states(
+    tree: &mut dyn SourceTree,
+    listings: &[&[SourceFile]],
+) -> anyhow::Result<Vec<IndexState>> {
     let Some(size) = size_of(tree, INDEX) else {
-        return Ok(IndexState::Missing);
+        return Ok(listings.iter().map(|_| IndexState::Missing).collect());
     };
-    // Bounded before it is read: one that lists exactly `files` is about a fresh one's size, so
-    // anything bigger is `Stale`; one that could fit but is over the read cap is `Damaged`.
-    if size > index_bound(files) {
-        return Ok(IndexState::Stale);
+    // Its bytes and records (`None`: it doesn't read), once a listing needs them.
+    let mut read: Option<(Vec<u8>, Option<ps5_dump_forge_lz4::index::PathIndex>)> = None;
+    let mut states = Vec::with_capacity(listings.len());
+    let mut first_ok = None;
+    for files in listings {
+        // Bounded before it is read: one that lists exactly `files` is about a fresh one's size,
+        // so anything bigger is `Stale`; one that could fit but is over the read cap is `Damaged`.
+        if size > index_bound(files) {
+            states.push(IndexState::Stale);
+            continue;
+        }
+        if size > MAX_INDEX_CHECK {
+            states.push(IndexState::Damaged);
+            continue;
+        }
+        if read.is_none() {
+            let old = read_all(tree, INDEX, size)?;
+            let index = ps5_dump_forge_lz4::index::read_index(&old).ok();
+            read = Some((old, index));
+        }
+        let Some((old, Some(index))) = &read else {
+            states.push(IndexState::Damaged);
+            continue;
+        };
+        let want: BTreeSet<(&str, u64)> = files.iter().map(|f| (f.path.as_str(), f.size)).collect();
+        let have: BTreeSet<(&str, u64)> = (index.records.iter())
+            .map(|(p, s)| (p.as_str(), *s))
+            .collect();
+        states.push(if have != want {
+            IndexState::Stale
+        } else if first_ok.is_none() {
+            // Its bytes are moved in below, not copied.
+            first_ok = Some(states.len());
+            IndexState::Ok(Vec::new())
+        } else {
+            IndexState::Ok(old.clone())
+        });
     }
-    if size > MAX_INDEX_CHECK {
-        return Ok(IndexState::Damaged);
+    if let (Some(i), Some((old, _))) = (first_ok, read) {
+        states[i] = IndexState::Ok(old);
     }
-    let old = read_all(tree, INDEX, size)?;
-    let Ok(index) = ps5_dump_forge_lz4::index::read_index(&old) else {
-        return Ok(IndexState::Damaged);
-    };
-    let want: BTreeSet<(&str, u64)> = files.iter().map(|f| (f.path.as_str(), f.size)).collect();
-    let have: BTreeSet<(&str, u64)> = index
-        .records
-        .iter()
-        .map(|(p, s)| (p.as_str(), *s))
-        .collect();
-    Ok(if have == want {
-        IndexState::Ok(old)
-    } else {
-        IndexState::Stale
-    })
+    Ok(states)
 }
 
 /// The largest `ampr_emu.index` that could list exactly `files`: four times a fresh one's size

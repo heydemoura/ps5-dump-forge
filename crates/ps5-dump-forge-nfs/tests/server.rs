@@ -188,6 +188,17 @@ fn writable_folder() {
     s.rename_no_replace(&sub, &moved).unwrap();
     assert!(s.stat(&moved).unwrap().dir);
     assert_eq!(s.stat(&sub).unwrap_err().kind(), ErrorKind::NotFound);
+    // Replacing: the file over the file, never over a folder.
+    s.rename_replace(&b, &c).unwrap();
+    assert_eq!(s.stat(&b).unwrap_err().kind(), ErrorKind::NotFound);
+    assert_eq!(s.stat(&c).unwrap().size, data.len() as u64);
+    s.rename_no_replace(&c, &b).unwrap();
+    let f = s.create(&c).unwrap();
+    f.write_at(0, b"c").unwrap();
+    f.sync().unwrap();
+    drop(f);
+    assert!(s.rename_replace(&c, &moved).is_err(), "over a folder");
+    assert!(s.stat(&moved).unwrap().dir);
     s.remove(&b).unwrap();
     s.remove(&c).unwrap();
     assert_eq!(s.remove(&c).unwrap_err().kind(), ErrorKind::NotFound);

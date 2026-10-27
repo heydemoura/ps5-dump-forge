@@ -35,6 +35,7 @@ fn request(source: &Path, format: Format, output: &Path) -> ConvertRequest {
         edits: Vec::new(),
         extract: Vec::new(),
         transfer: Vec::new(),
+        replace: false,
         edit_rebuild: false,
         archive_password: None,
     }
@@ -184,7 +185,7 @@ fn a_game_on_a_share_inspects_converts_and_extracts() {
         "{check:?}"
     );
     assert!(jobs.delete_path(&game, &[]).is_err());
-    assert!(jobs.move_path(&game, &share.join("x"), &[]).is_err());
+    assert!(jobs.move_path(&game, &share.join("x"), false, &[]).is_err());
 
     // An image on the share opens through the image readers.
     if let Ok(dir) = std::env::var("FORGE_SMB_TEST_SHARE_DIR") {
@@ -294,6 +295,23 @@ fn outputs_onto_a_share_read_back_as_the_game() {
         .collect();
     expect.insert("eboot.bin".into(), want["eboot.bin"].clone());
     assert_eq!(got, expect);
+
+    // The same again, replacing (the user confirmed it): files over files, the folder merged.
+    let re = local.join("re");
+    std::fs::create_dir_all(re.join("Stub Game")).unwrap();
+    std::fs::write(re.join("Stub Game/eboot.bin"), b"new eboot").unwrap();
+    std::fs::write(re.join("Stub Game/extra.bin"), b"extra").unwrap();
+    std::fs::write(re.join("eboot.bin"), b"top").unwrap();
+    let mut req = request(Path::new(""), Format::Folder, &at("transfer"));
+    req.transfer = vec![re.join("Stub Game"), re.join("eboot.bin")];
+    let e = run(&jobs, &rx, req.clone()).unwrap_err();
+    assert!(e.contains("already exists (never replaced)"), "{e}");
+    req.replace = true;
+    run(&jobs, &rx, req).unwrap();
+    expect.insert("Stub Game/eboot.bin".into(), b"new eboot".to_vec());
+    expect.insert("Stub Game/extra.bin".into(), b"extra".to_vec());
+    expect.insert("eboot.bin".into(), b"top".to_vec());
+    assert_eq!(files(&here.0.join("transfer")), expect);
 
     // Nothing else left behind: no .part, no probe, no temporary name.
     let mut left: Vec<_> = std::fs::read_dir(&here.0)

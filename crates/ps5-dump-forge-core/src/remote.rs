@@ -75,20 +75,7 @@ pub trait Remote: Send + Sync {
     /// removed on any failure. A peer may do it all in one round trip, which is what makes many
     /// small files quick.
     fn put_new(&self, tmp: &FlinkPath, to: &FlinkPath, bytes: &[u8]) -> io::Result<()> {
-        let handle = self.create(tmp)?;
-        let done = (|| {
-            if !bytes.is_empty() {
-                self.write_at(handle, 0, bytes)?;
-            }
-            self.sync(handle)?;
-            self.close(handle)?;
-            self.rename_no_replace(tmp, to)
-        })();
-        if done.is_err() {
-            let _ = self.close(handle);
-            let _ = self.remove(tmp);
-        }
-        done
+        put(self, tmp, to, bytes, false)
     }
     /// Makes the folder `path` (its parent must exist; `AlreadyExists` when it does).
     fn mkdir(&self, path: &FlinkPath) -> io::Result<()>;
@@ -103,10 +90,43 @@ pub trait Remote: Send + Sync {
     fn close(&self, handle: u64) -> io::Result<()>;
     /// Renames on the same peer, never replacing `to` (`AlreadyExists`).
     fn rename_no_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()>;
+    /// Renames the file `from` on the same device over the file `to` (or to a free name),
+    /// never over a folder or a link: what an extract or transfer the user confirmed
+    /// replacing ([`crate::ConvertRequest::replace`]) puts in place.
+    fn rename_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()>;
     /// Removes the file `path` (the peer allows only files a job of this device created).
     fn remove(&self, path: &FlinkPath) -> io::Result<()>;
     /// Bytes free on the volume holding the folder `dir`.
     fn free_space(&self, dir: &FlinkPath) -> io::Result<u64>;
+}
+
+/// [`Remote::put_new`] in calls: `tmp` created, written, synced and closed, then renamed to
+/// `to` (over a file there when `replace`); `tmp` removed on any failure.
+fn put<R: Remote + ?Sized>(
+    remote: &R,
+    tmp: &FlinkPath,
+    to: &FlinkPath,
+    bytes: &[u8],
+    replace: bool,
+) -> io::Result<()> {
+    let handle = remote.create(tmp)?;
+    let done = (|| {
+        if !bytes.is_empty() {
+            remote.write_at(handle, 0, bytes)?;
+        }
+        remote.sync(handle)?;
+        remote.close(handle)?;
+        if replace {
+            remote.rename_replace(tmp, to)
+        } else {
+            remote.rename_no_replace(tmp, to)
+        }
+    })();
+    if done.is_err() {
+        let _ = remote.close(handle);
+        let _ = remote.remove(tmp);
+    }
+    done
 }
 
 fn registry() -> &'static RwLock<Option<Arc<dyn Remote>>> {
@@ -953,11 +973,19 @@ impl RemotePart {
 
     /// Renames the (verified, synced and closed) part to `output` on the peer, never over
     /// anything there.
-    pub(crate) fn publish(mut self, output: &Path) -> anyhow::Result<()> {
+    pub(crate) fn publish(self, output: &Path) -> anyhow::Result<()> {
+        self.publish_as(output, false)
+    }
+
+    /// [`RemotePart::publish`], over a file at `output` when `replace`.
+    fn publish_as(mut self, output: &Path, replace: bool) -> anyhow::Result<()> {
         let to = FlinkPath::parse(output)?;
-        self.remote
-            .rename_no_replace(&self.at, &to)
-            .with_context(|| format!("renaming {} to {}", self.at.shown(), to.shown()))?;
+        let renamed = if replace {
+            self.remote.rename_replace(&self.at, &to)
+        } else {
+            self.remote.rename_no_replace(&self.at, &to)
+        };
+        renamed.with_context(|| format!("renaming {} to {}", self.at.shown(), to.shown()))?;
         self.published = true;
         Ok(())
     }
@@ -1182,13 +1210,15 @@ impl ps5upload_fpkg::PkgOut for RemotePkgOut {
 
 /// `dir/name` on its peer as [`crate::lz4_patch::write_temp_new`] writes a local file: an
 /// exclusive temporary name beside it that `fill` writes, sent, synced and closed, then renamed
-/// without replacing (the peer syncs the folder). On any failure the temporary file is removed.
-/// What `fill` writes is held up to [`PUT_MAX`] bytes: a file that small goes in one
-/// [`Remote::put_new`]; a larger one is created at that point and streamed.
+/// without replacing (over a file there when `replace`; the peer syncs the folder). On any
+/// failure the temporary file is removed. What `fill` writes is held up to [`PUT_MAX`] bytes:
+/// a new file that small goes in one [`Remote::put_new`] (a replacing one in [`put`]'s calls);
+/// a larger one is created at that point and streamed.
 fn write_temp_new(
     remote: &Arc<dyn Remote>,
     dir: &FlinkPath,
     name: &str,
+    replace: bool,
     fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
 ) -> anyhow::Result<()> {
     let target = dir.join(name);
@@ -1204,8 +1234,10 @@ fn write_temp_new(
         Some((part, file)) => {
             file.finish()
                 .with_context(|| format!("writing {}", target.shown()))?;
-            part.publish(&target.url())
+            part.publish_as(&target.url(), replace)
         }
+        None if replace => put(remote.as_ref(), &tmp, &target, &out.held, true)
+            .with_context(|| format!("writing {}", target.shown())),
         None => remote
             .put_new(&tmp, &target, &out.held)
             .with_context(|| format!("writing {}", target.shown())),
@@ -1242,8 +1274,11 @@ impl Write for Spill<'_> {
 }
 
 /// A folder a job writes on a peer, as [`crate::extract::Dest`] writes a local `.part`:
-/// folders are made as needed (one already there that this job didn't make is an error: two
-/// names folded together, or something planted), each file through a temporary name.
+/// folders are made as needed (one already there that this job didn't make or [`keep`] is an
+/// error: two names folded together, or something planted), each file through a temporary
+/// name.
+///
+/// [`keep`]: RemoteDir::keep
 // ponytail: no rollback: a failure leaves the folders and the files finished before it (the
 // peer removes only this session's unrenamed files).
 pub(crate) struct RemoteDir {
@@ -1313,15 +1348,31 @@ impl RemoteDir {
         Ok(cur)
     }
 
+    /// The folder `rel`, already there, taken as one [`RemoteDir::dir`] made: a folder a job
+    /// merges into ([`crate::ConvertRequest::replace`]).
+    pub(crate) fn keep(&mut self, rel: &str) {
+        self.created.insert(rel.trim_matches('/').to_string());
+    }
+
     /// The new file `rel`, its folders made as needed, written by `fill`.
     pub(crate) fn write_new(
         &mut self,
         rel: &str,
         fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
     ) -> anyhow::Result<()> {
+        self.write(rel, false, fill)
+    }
+
+    /// [`RemoteDir::write_new`], over the file at `rel` when `replace`.
+    pub(crate) fn write(
+        &mut self,
+        rel: &str,
+        replace: bool,
+        fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
+    ) -> anyhow::Result<()> {
         let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel));
         let dir = self.dir(parent)?;
-        write_temp_new(&self.remote, &dir, name, fill)
+        write_temp_new(&self.remote, &dir, name, replace, fill)
     }
 
     /// The folder as written, read back from the peer.
@@ -1676,6 +1727,23 @@ pub(crate) mod tests {
             Ok(())
         }
 
+        fn rename_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()> {
+            let mut nodes = self.nodes.lock().unwrap();
+            // As the peer: a file only over a file, never over a folder or a link.
+            let link = self.links.lock().unwrap().contains(&to.path);
+            if matches!(nodes.get(&to.path), Some(None)) || link {
+                return Err(io::Error::other("not a file: nothing is put in its place"));
+            }
+            match nodes.get(&from.path) {
+                Some(Some(_)) => {}
+                Some(None) => return Err(io::Error::other("not a file")),
+                None => return Err(missing()),
+            }
+            let node = nodes.remove(&from.path).ok_or_else(missing)?;
+            nodes.insert(to.path.clone(), node);
+            Ok(())
+        }
+
         fn remove(&self, path: &FlinkPath) -> io::Result<()> {
             self.nodes
                 .lock()
@@ -1817,6 +1885,10 @@ pub(crate) mod tests {
 
         fn rename_no_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()> {
             self.of(from)?.rename_no_replace(from, to)
+        }
+
+        fn rename_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()> {
+            self.of(from)?.rename_replace(from, to)
         }
 
         fn remove(&self, path: &FlinkPath) -> io::Result<()> {

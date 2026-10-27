@@ -61,6 +61,7 @@ fn request(source: &Path, format: Format, output: &Path) -> ConvertRequest {
         edits: Vec::new(),
         extract: Vec::new(),
         transfer: Vec::new(),
+        replace: false,
         edit_rebuild: false,
         archive_password: None,
     }
@@ -2387,6 +2388,13 @@ fn lz4_patch_and_unpatch_an_image_in_place() {
         assert_eq!(std::fs::metadata(&image).unwrap().len(), report.bytes);
         assert!(report.bytes >= plain + (256 << 20) - (64 << 20), "{ext}");
         assert_eq!(facts_runtime(&image), ("forge_trace".to_string(), None));
+        let facts = inspect(&image).unwrap().lz4.unwrap();
+        assert_eq!(facts.index, Some("stale"));
+        assert_eq!(
+            facts.trace_index,
+            Some("ok"),
+            "the fresh Patch index fits the traced image"
+        );
 
         let (events, result) = run(in_place(&image, Lz4Mode::Unpatch));
         let report = result.unwrap();
@@ -3885,6 +3893,82 @@ fn extract_copies_files_and_folders_out_of_a_folder_or_an_image() {
         0,
         "nothing written"
     );
+}
+
+/// Asked first ([`Jobs::existing_targets`]) and confirmed (`replace`), Extract puts a file over
+/// a file and merges a folder into a folder; a kind mismatch at any level refuses it all.
+#[test]
+fn extract_replaces_what_exists_once_asked() {
+    let root = dir("extract-replace");
+    let src = root.join("src");
+    game(&src);
+    write(&src, "data/sub/deep.bin", b"deep");
+    let out = root.join("out");
+    write(&out, "eboot.bin", b"old eboot");
+    write(&out, "data/zero.bin", b"old zero");
+    write(&out, "data/mine.bin", b"keep");
+    let req = |out: &Path, replace: bool| {
+        let mut req = request(&src, Format::Folder, out);
+        req.extract = vec!["eboot.bin".into(), "data".into(), "sce_sys".into()];
+        req.replace = replace;
+        req
+    };
+    let jobs = Jobs::new(|_| {});
+    assert_eq!(
+        jobs.existing_targets(&req(&out, false)).unwrap(),
+        [out.join("eboot.bin"), out.join("data")]
+    );
+    let convert = request(&src, Format::Folder, &out);
+    assert!(jobs.existing_targets(&convert).is_err(), "not an extract");
+    assert!(
+        jobs.existing_targets(&req(&root.join("missing"), false))
+            .is_err()
+    );
+
+    // Without replace: refused as before, nothing written.
+    let before = snapshot(&out);
+    let err = run(req(&out, false)).1.unwrap_err();
+    assert!(
+        err.contains("eboot.bin already exists (never replaced)"),
+        "{err}"
+    );
+    assert_eq!(snapshot(&out), before);
+
+    let (events, result) = run(req(&out, true));
+    let report = result.unwrap();
+    assert_eq!(report.files, 5, "eboot, param.json, big, zero, deep");
+    assert_eq!(
+        std::fs::read(out.join("eboot.bin")).unwrap(),
+        std::fs::read(src.join("eboot.bin")).unwrap()
+    );
+    assert_eq!(std::fs::read(out.join("data/zero.bin")).unwrap(), b"");
+    assert_eq!(std::fs::read(out.join("data/mine.bin")).unwrap(), b"keep");
+    assert_eq!(
+        std::fs::read(out.join("data/sub/deep.bin")).unwrap(),
+        b"deep"
+    );
+    assert!(out.join("data/empty").is_dir() && out.join("sce_sys/param.json").is_file());
+    let logged = events.iter().any(
+        |e| matches!(e, Event::Log { line, .. } if line.starts_with("replace: 2 files replaced: ")),
+    );
+    assert!(logged, "{events:?}");
+
+    // A folder where a file goes, a file where a folder goes: refused, nothing written.
+    let other = root.join("other");
+    std::fs::create_dir_all(other.join("eboot.bin")).unwrap();
+    write(&other, "data/sub", b"a file");
+    let before = snapshot(&other);
+    let err = run(req(&other, true)).1.unwrap_err();
+    assert!(
+        err.contains("eboot.bin is a folder: a file is not put in its place"),
+        "{err}"
+    );
+    assert!(
+        err.contains("sub is a file: a folder is not put in its place"),
+        "{err}"
+    );
+    assert_eq!(snapshot(&other), before);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// Every name in `dir`, recursively, relative to it, sorted.

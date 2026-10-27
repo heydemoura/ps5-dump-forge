@@ -3,7 +3,8 @@
 //! per connection, and the page polls `GET /api/jobs` (no server push). The rules (limits,
 //! routes) are in ps5/README.md, "Web server".
 //!
-//! No protections, by decision: no pairing, no Host/Origin checks, no path confinement. It
+//! No protections, by decision: no pairing, no Host/Origin checks, no path confinement (but
+//! on the PS5 listings reach only `/data` and the drives plugged in, by user request). It
 //! behaves like the Tauri commands over HTTP, for anyone (and any web page in a browser) that
 //! can reach it on the network.
 
@@ -12,6 +13,8 @@ mod api;
 // the same service without the HTTP server.
 pub mod connect;
 pub mod connect_fs;
+// Jobs mirrored to the paired peers they use (read only there; the peer may cancel them).
+pub mod connect_jobs;
 // PS5 bring-up only (and only with FORGE_DEBUG_API set): never built for a desktop target.
 #[cfg(target_env = "ps5")]
 mod debug;
@@ -46,13 +49,16 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
+/// Forge's home folder on the PS5 (`ps5/entry.c`'s `FORGE_DIR`): the self copy, the tile's
+/// owner record, Connect's data and the settings the console keeps.
+pub const FORGE_DIR: &str = "/data/dumpforge";
+
 /// Where the PS5's file browser starts: `/data`, and each drive while a filesystem is mounted
-/// on it (re-checked each time, for hot-plugged drives); `/mnt/shadowmnt` while it exists:
-/// ShadowMountPlus mounts each image under it (`<stem>_<8 hex>`, `.ffpfsc` under `pfsc/`), so
-/// a mounted traced image can be picked as a folder.
-pub const PS5_ROOTS: [&str; 12] = [
+/// on it (re-checked each time, for hot-plugged drives). By user request they are all it
+/// reaches: a listing, and a paired device, refuses any other path (`paths::Roots::confine`);
+/// not `/mnt/shadowmnt` either (a mounted image's traces are downloaded from the image file).
+pub const PS5_ROOTS: [&str; 11] = [
     "/data",
-    "/mnt/shadowmnt",
     "/mnt/usb0",
     "/mnt/usb1",
     "/mnt/usb2",
@@ -85,8 +91,8 @@ pub enum Platform {
 
 pub struct Options {
     pub port: u16,
-    /// The file browser's starting points (`list_dir` with a `null` path); they confine
-    /// nothing.
+    /// The file browser's starting points (`list_dir` with a `null` path); on the PS5 also
+    /// all that listings and paired devices reach.
     pub roots: Vec<PathBuf>,
     pub platform: Platform,
     /// Shows the user a line: the URL, "can't close", "stopped".
@@ -108,6 +114,9 @@ pub struct Options {
     pub connect_dir: Option<PathBuf>,
     /// Connect's FLINK port: 9883, or `FORGE_FLINK_PORT` (local tests of two copies; 0 = any).
     pub connect_port: u16,
+    /// Where settings are kept (the job notifications' `notifications.off` marker); `None`
+    /// keeps them in memory only (tests). The CLI's `serve` passes [`FORGE_DIR`] on the PS5.
+    pub settings_dir: Option<PathBuf>,
 }
 
 impl Options {
@@ -132,6 +141,7 @@ impl Options {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(connect::PORT),
+            settings_dir: None,
         }
     }
 }

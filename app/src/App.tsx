@@ -3,7 +3,7 @@
 // "Stop Dump Forge" to the header (there's no window to close) and rebuilds the job list
 // from the server's.
 
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { api, APP_NAME, debugBuild, errorText, events, prettyDuration, runtimePlatform, useOffline, web, type RuntimePlatform } from "./api";
 import logo from "./assets/logo.png";
@@ -20,8 +20,8 @@ import { Storage } from "./Storage";
 import { stepTab, watchShoulders, type Step } from "./shoulders";
 import { UpdateToast } from "./UpdateToast";
 import { jobName, JobsCard } from "./JobList";
-import { jobsReducer, jobType, type Job, type JobType } from "./jobs";
-import { useOnlineCount } from "./useConnectState";
+import { jobsReducer, jobType, remoteJobs, type Job, type JobType } from "./jobs";
+import { useConnectState, useOnlineCount } from "./useConnectState";
 
 // Tabs: [Convert Edit] | LZ4 | Storage | Connect | About (the dividers are drawn only).
 type Tab = "convert" | "storage" | "lz4" | "edit" | "connect" | "formats";
@@ -36,7 +36,14 @@ export function App() {
   const [tab, setTab] = useState<Tab>(() => (location.hash === "#connect" ? "connect" : "convert"));
   const online = useOnlineCount();
   const [jobs, dispatch] = useReducer(jobsReducer, []);
+  // Paired peers' jobs that use this device's files (Connect's poll): listed and counted in their
+  // tab like this device's, never in the quit prompt (they don't stop with this device).
+  const remoteList = useConnectState().state?.remote_jobs;
+  const remoteRef = useRef<Job[]>([]);
+  const remote = useMemo(() => (remoteRef.current = remoteJobs(remoteList ?? [], remoteRef.current, Date.now())), [remoteList]);
   const [closing, setClosing] = useState<"ask" | "stopping" | "stopped" | "failed" | null>(null);
+  // The app's last close request: a paired device was reading or writing files here.
+  const [peerBusy, setPeerBusy] = useState(false);
   // Storage handoffs (Library, File explorer): a new id per action, so the same path is read again.
   const [editSel, setEditSel] = useState<SourceSelection | null>(null);
   const [convertSel, setConvertSel] = useState<SourceSelection | null>(null);
@@ -69,8 +76,9 @@ export function App() {
       events.log((e) => dispatch({ type: "log", e })),
       events.done((e) => dispatch({ type: "done", e })),
       // The quit prompt never opens behind a dialog (help, delete): those close as cancelled.
-      events.closeRequested(() => {
+      events.closeRequested((peer) => {
         if (!wasClosing.current && document.activeElement instanceof HTMLElement) quitOpener.current = document.activeElement;
+        setPeerBusy(peer);
         closeOverlays();
         setClosing((c) => c ?? "ask");
       }),
@@ -86,7 +94,7 @@ export function App() {
   // A tab's label with its counter: that tab's unfinished jobs (one white counter on every tab).
   const counted = (label: string, type: JobType) => {
     // A job whose request hasn't arrived yet (its events can beat `startJob`'s reply) has no type.
-    const n = unfinished.filter((j) => j.request && jobType(j.request) === type).length;
+    const n = [...unfinished, ...remote.filter((j) => !j.result)].filter((j) => j.request && jobType(j.request) === type).length;
     return (
       <>
         {label}
@@ -106,7 +114,8 @@ export function App() {
   // as its count counts them; each list kept mounted (open logs stay open). A job whose request
   // hasn't arrived yet has no type: listed nowhere yet.
   const jobsOf = (at: Tab) => {
-    const mine = jobs.filter((j) => j.request && jobType(j.request) === TAB_JOBS[at]);
+    // Newest first: this device's above the peers'.
+    const mine = [...remote, ...jobs].filter((j) => j.request && jobType(j.request) === TAB_JOBS[at]);
     return (
       mine.length > 0 && (
         <div className="screen jobs-screen">
@@ -309,7 +318,7 @@ export function App() {
             aria-labelledby={tabId("screen", "formats")}
             hidden={tab !== "formats"}
           >
-            <Formats />
+            <Formats shown={tab === "formats"} />
           </div>
         </main>
         {/* A newer release (checked once per start); inert with the screens under the quit prompt. */}
@@ -336,7 +345,7 @@ export function App() {
                 <h2 id="quit-title">{t.confirmStop(web)}</h2>
               </div>
               <p className="muted" id="quit-text">
-                {t.stopNote(web, ps5)}
+                {peerBusy && !web ? t.peerBusy : t.stopNote(web, ps5)}
               </p>
               <div className="row end">
                 <button autoFocus onClick={dismiss}>
@@ -367,6 +376,7 @@ export function App() {
                   ))}
                 </ul>
                 <p className="muted">{t.quitNote(web, unfinished.length)}</p>
+                {peerBusy && !web && <p className="muted">{t.peerBusy}</p>}
               </div>
               <div className="row end">
                 <button autoFocus onClick={dismiss}>

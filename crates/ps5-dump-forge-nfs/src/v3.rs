@@ -1093,6 +1093,15 @@ impl Nfs3 {
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
+        self.rename_replace(from, to)
+    }
+
+    /// RENAME of `from` to `to`, replacing a file there (the server renames as POSIX does,
+    /// which refuses to put a file over a folder).
+    pub fn rename_replace(&mut self, from: &str, to: &str) -> io::Result<()> {
+        let (from_dir, from_name) = self.parent(from, ErrorKind::ReadOnlyFilesystem)?;
+        let (to_dir, to_name) = self.parent(to, ErrorKind::AlreadyExists)?;
+        let (from_key, to_key) = (key(&components(from)?), key(&components(to)?));
         let renamed = self.retry_stale(|s| {
             let fd = s.handle(&from_dir)?;
             let td = s.handle(&to_dir)?;

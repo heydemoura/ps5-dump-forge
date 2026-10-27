@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use ps5_dump_forge_core::{ConvertRequest, Event, JobId};
+
 use ps5_dump_forge_flink::{
     Approver, Budget, Conn, Control, DEAD_AFTER, Frame, Handshake, MAX_BODY, MAX_CONTROL_BODY,
     MAX_RPC_BODY, Me, NOT_PAIRED, PairRequest, Receiver, Request, Response, Sender, Session,
@@ -342,6 +344,14 @@ pub(crate) struct Inner {
     me: Me,
     listen_error: Option<String>,
     peers: Mutex<Peers>,
+    /// `peers`' generation: bumped (under its lock) by each change a save must carry.
+    peers_gen: AtomicU64,
+    /// Held while peers.json is written (`save_peers`), never with `peers` waiting on it from
+    /// a lane: saves run one at a time, outside the `peers` lock. Holds the generation last
+    /// written, so an older snapshot never overwrites a newer one.
+    peers_saved: Mutex<u64>,
+    /// A save outside the lock failed: the next handshake saves again.
+    peers_dirty: AtomicBool,
     /// Saved NAS devices (`nas.rs`) and the ids that answered the last TCP probe.
     nas: Mutex<crate::nas::NasList>,
     nas_online: Mutex<HashSet<String>>,
@@ -361,20 +371,24 @@ pub(crate) struct Inner {
     conns: Mutex<HashMap<u64, Inbound>>,
     next_conn: AtomicU64,
     stop: AtomicBool,
-    /// What paired peers may list, read and write (canonical); `None`: nothing.
-    share_root: Option<PathBuf>,
+    /// What paired peers may list, read and write (canonical; on the PS5 only `/data` and the
+    /// drives plugged in within it); `None`: nothing.
+    share: Option<crate::connect_fs::Share>,
     /// Lane nonces taken (`serve_lane`).
     lane_nonces: Mutex<HashSet<[u8; 16]>>,
     /// Files peers read in place (`connect_fs`).
     reads: crate::connect_fs::Reads,
     /// Files peers write here (`connect_fs`).
     writes: crate::connect_fs::Writes,
+    /// Jobs mirrored both ways (`connect_jobs`).
+    jobs: crate::connect_jobs::Mirror,
 }
 
 pub struct Connect {
     inner: Arc<Inner>,
     threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
-    wake: Mutex<Option<mpsc::Sender<()>>>,
+    /// One per sleeping thread (prober, job pusher); dropped to stop them.
+    wake: Mutex<Vec<mpsc::Sender<()>>>,
     /// Forge discovery (UDP 8094): the passive responder and the Forge part of a search.
     discovery: crate::discovery::Discovery,
     /// The NAS (mDNS) part of a search.
@@ -411,11 +425,26 @@ impl Connect {
     /// any, for tests) and the prober. A listener that can't bind is reported in `state()`, not
     /// an error; only the data folder's files are.
     pub fn start(dir: &Path, port: u16) -> io::Result<Connect> {
-        Connect::start_rooted(dir, port, default_share_root())
+        // The PS5 (by user request): peers reach only `/data` and the drives plugged in.
+        let reach = cfg!(target_env = "ps5").then(|| {
+            let roots = crate::PS5_ROOTS.map(PathBuf::from);
+            crate::paths::Roots::new(crate::Platform::Ps5, &roots).0
+        });
+        Connect::start_confined(dir, port, default_share_root(), reach)
     }
 
     /// `start` with this device's share root (tests use a temporary folder).
     pub fn start_rooted(dir: &Path, port: u16, share_root: Option<PathBuf>) -> io::Result<Connect> {
+        Connect::start_confined(dir, port, share_root, None)
+    }
+
+    /// `start_rooted` with the PS5's reach within the share root (`None`: all of it).
+    pub(crate) fn start_confined(
+        dir: &Path,
+        port: u16,
+        share_root: Option<PathBuf>,
+        reach: Option<crate::paths::Roots>,
+    ) -> io::Result<Connect> {
         let identity = Identity::load_or_create(dir)?;
         let peers = Peers::load(dir)?;
         let nas = crate::nas::NasList::load(dir)?;
@@ -438,6 +467,9 @@ impl Connect {
             },
             listen_error,
             peers: Mutex::new(peers),
+            peers_gen: AtomicU64::new(0),
+            peers_saved: Mutex::new(0),
+            peers_dirty: AtomicBool::new(false),
             nas: Mutex::new(nas),
             nas_online: Mutex::default(),
             nas_seen: Mutex::default(),
@@ -450,10 +482,12 @@ impl Connect {
             conns: Mutex::default(),
             next_conn: AtomicU64::new(0),
             stop: AtomicBool::new(false),
-            share_root: share_root.and_then(|r| dunce::canonicalize(r).ok()),
+            share: (share_root.and_then(|r| dunce::canonicalize(r).ok()))
+                .map(|root| crate::connect_fs::Share::new(root, reach)),
             lane_nonces: Mutex::default(),
             reads: Default::default(),
             writes: Default::default(),
+            jobs: Default::default(),
         });
         crate::connect_fs::register(&inner);
         let mut threads = Vec::new();
@@ -469,6 +503,25 @@ impl Connect {
                 inner.probe_all();
                 while let Err(mpsc::RecvTimeoutError::Timeout) = sleep.recv_timeout(PROBE_EVERY) {
                     inner.probe_all();
+                }
+            }));
+        }
+        let (push_wake, push_sleep) = mpsc::channel();
+        {
+            let inner = inner.clone();
+            let every = crate::connect_jobs::PUSH_EVERY;
+            threads.push(std::thread::spawn(move || {
+                // U8: while a paired device reads or writes files here, auto rest mode waits
+                // as during this device's own jobs.
+                let mut awake: Option<ps5_dump_forge_core::Awake> = None;
+                while let Err(mpsc::RecvTimeoutError::Timeout) = push_sleep.recv_timeout(every) {
+                    inner.push_jobs(false);
+                    // Files kept for a lost writer to resume, past their time.
+                    inner.writes.sweep();
+                    let active = inner.peers_active();
+                    if active != awake.is_some() {
+                        awake = active.then(ps5_dump_forge_core::awake);
+                    }
                 }
             }));
         }
@@ -489,7 +542,7 @@ impl Connect {
         let connect = Connect {
             inner,
             threads: Mutex::new(threads),
-            wake: Mutex::new(Some(wake)),
+            wake: Mutex::new(vec![wake, push_wake]),
             discovery,
             lan: Arc::default(),
             lan_thread: Mutex::default(),
@@ -595,10 +648,14 @@ impl Connect {
         let mut peers = lock(&self.inner.peers);
         // Saved first: a pairing still in peers.json would be back after a restart.
         let mut next = peers.clone();
+        let secret = peers.get(key_id).and_then(Peer::pair_secret);
         if !next.forget(key_id) {
             return Ok(false);
         }
-        next.save(&self.inner.dir)?;
+        // Under the `peers` lock (rare, the user's): a failed save leaves it paired.
+        let version = self.inner.peers_gen.load(Ordering::SeqCst) + 1;
+        self.inner.save_peers(&next, version)?;
+        self.inner.peers_gen.store(version, Ordering::SeqCst);
         *peers = next;
         // Under the same lock as connection attribution: a handshake or Join that finishes
         // during Forget cannot register a connection after this sweep.
@@ -608,6 +665,11 @@ impl Connect {
             }
         }
         drop(peers);
+        // Its unfinished files can't be resumed any more.
+        if let Some(secret) = secret {
+            self.inner.writes.forget(secret);
+        }
+        self.inner.jobs.forget(key_id);
         lock(&self.inner.alive).remove(key_id);
         lock(&self.inner.found).remove(key_id);
         Ok(true)
@@ -726,6 +788,12 @@ impl Connect {
         self.inner.writes.set_busy(busy);
     }
 
+    /// What a peer's replacing rename here must pass first (core's `Jobs::replace_check`):
+    /// unset, only the checks Connect makes itself.
+    pub fn set_replace_check(&self, check: crate::connect_fs::ReplaceCheck) {
+        self.inner.writes.set_replace_check(check);
+    }
+
     /// What says a peer is writing a path here (a file it created and hasn't renamed), for
     /// core's `Jobs::set_external_busy`. Holds the service weakly (Connect holds the jobs' hook).
     pub fn writing_hook(&self) -> crate::connect_fs::Busy {
@@ -733,9 +801,47 @@ impl Connect {
         Arc::new(move |p| inner.upgrade().is_some_and(|i| i.writes.writing(p)))
     }
 
+    /// Whether a paired device is using files here: one it is writing (created, not renamed,
+    /// kept for a reattach included) or reading. Quitting would cut its transfer short.
+    pub fn peers_active(&self) -> bool {
+        self.inner.peers_active()
+    }
+
+    /// `peers_active` as a hook, for the app's quit check. Holds the service weakly.
+    pub fn activity_hook(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
+        let inner = Arc::downgrade(&self.inner);
+        Arc::new(move || inner.upgrade().is_some_and(|i| i.peers_active()))
+    }
+
     /// This service as core's `remote::Remote` (`start` registers one already).
     pub fn remote(&self) -> Arc<crate::connect_fs::ConnectRemote> {
         crate::connect_fs::ConnectRemote::new(&self.inner)
+    }
+
+    /// `Jobs::start` returned `id` for `request`: mirrored to the peers it uses
+    /// (`connect_jobs`).
+    pub fn job_started(&self, id: JobId, request: &ConvertRequest) {
+        self.inner.jobs.started(id, request);
+    }
+
+    /// Each of this device's job events, for the mirror.
+    pub fn job_event(&self, event: &Event) {
+        self.inner.jobs.event(event);
+    }
+
+    /// How a peer's cancel reaches this device's jobs.
+    pub fn set_cancel(&self, cancel: crate::connect_jobs::CancelHook) {
+        self.inner.jobs.set_cancel(cancel);
+    }
+
+    /// This device's user cancels a paired peer's job shown here; false when it isn't listed.
+    pub fn cancel_remote_job(&self, key_id: &str, job: JobId) -> bool {
+        self.inner.jobs.cancel_remote(key_id, job)
+    }
+
+    /// One push of this device's jobs now (the pusher runs one every `PUSH_EVERY`).
+    pub fn push_jobs(&self) {
+        self.inner.push_jobs(true);
     }
 
     /// Stops the listener, the prober and every inbound conn.
@@ -747,7 +853,9 @@ impl Connect {
             let _ = t.join();
         }
         i.stop.store(true, Ordering::SeqCst);
-        lock(&self.wake).take();
+        // Before the sessions end: their unfinished files go at once, not after a grace.
+        i.writes.stop();
+        lock(&self.wake).clear();
         // Wakes the blocked accept.
         let _ = TcpStream::connect_timeout(
             &SocketAddr::from(([127, 0, 0, 1], i.me.port)),
@@ -807,6 +915,13 @@ impl Inner {
         lock(&self.peers).get(key_id).and_then(Peer::pair_secret)
     }
 
+    /// The paired device's name, else its key id.
+    pub(crate) fn peer_name(&self, key_id: &str) -> String {
+        lock(&self.peers)
+            .get(key_id)
+            .map_or_else(|| key_id.to_string(), |p| p.name.clone())
+    }
+
     pub(crate) fn paired_session(&self, key_id: &str, session: &Session) -> bool {
         !self.stop.load(Ordering::SeqCst) && self.secret_of(key_id) == Some(session.secret)
     }
@@ -833,9 +948,27 @@ impl Inner {
         Ok(key)
     }
 
+    fn peers_active(&self) -> bool {
+        self.writes.active() || self.reads.active()
+    }
+
+    /// Writes `snapshot`, `peers` as of generation `version`, to peers.json, unless a newer one is
+    /// written already: one save at a time, and never an older snapshot over a newer one.
+    fn save_peers(&self, snapshot: &Peers, version: u64) -> io::Result<()> {
+        let mut saved = lock(&self.peers_saved);
+        if *saved >= version {
+            return Ok(());
+        }
+        snapshot.save(&self.dir)?;
+        *saved = version;
+        Ok(())
+    }
+
     /// A handshake succeeded, either way: a new pair secret is stored under the peer's key id
     /// (one entry per key id), a known peer's address, name and platform updated; saved when
-    /// any of those changed or `last_seen` moved a minute. It is online from now.
+    /// any of those changed or `last_seen` moved a minute. It is online from now. A pairing is
+    /// saved before it counts, under the `peers` lock; any other change after the lock is
+    /// released (every lane chunk and RPC takes it, and a sync can stall for seconds).
     fn record(&self, hs: &Handshake) -> io::Result<()> {
         let p = &hs.peer;
         let address = Some(SocketAddr::new(hs.remote.ip(), p.port).to_string());
@@ -872,12 +1005,27 @@ impl Inner {
                 return Err(io::Error::new(io::ErrorKind::PermissionDenied, NOT_PAIRED));
             }
         };
-        if save && let Err(e) = peers.save(&self.dir) {
-            // Memory keeps what peers.json says, or a restart would change who is paired.
-            *peers = before;
-            return Err(e);
+        if hs.new_secret.is_some() {
+            let version = self.peers_gen.load(Ordering::SeqCst) + 1;
+            if let Err(e) = self.save_peers(&peers, version) {
+                // Memory keeps what peers.json says, or a restart would change who is paired.
+                *peers = before;
+                return Err(e);
+            }
+            self.peers_gen.store(version, Ordering::SeqCst);
+            drop(peers);
+        } else if save || self.peers_dirty.swap(false, Ordering::SeqCst) {
+            let version = self.peers_gen.fetch_add(1, Ordering::SeqCst) + 1;
+            let snapshot = peers.clone();
+            drop(peers);
+            // An address, name or time seen: a failure doesn't fail the handshake (who is
+            // paired is unchanged); the next one saves again.
+            if self.save_peers(&snapshot, version).is_err() {
+                self.peers_dirty.store(true, Ordering::SeqCst);
+            }
+        } else {
+            drop(peers);
         }
-        drop(peers);
         lock(&self.alive).insert(p.key_id.clone(), Instant::now());
         Ok(())
     }
@@ -1081,6 +1229,35 @@ impl Inner {
         });
     }
 
+    /// This device's jobs to the paired peers they use, each on its own thread, so a peer that
+    /// can't be reached never holds back the others' pushes; a reply's cancels applied. A peer
+    /// whose last push is still going is skipped this round. `wait`: until every push ends.
+    fn push_jobs(self: &Arc<Self>, wait: bool) {
+        let paired = |k: &str| lock(&self.peers).get(k).is_some();
+        let root = self.share_root();
+        let pushes = self.jobs.due(&self.me.key_id, root, &paired);
+        let mut threads = Vec::new();
+        for push in pushes {
+            if !self.jobs.begin_push(&push.key_id) {
+                continue;
+            }
+            let inner = self.clone();
+            threads.push(std::thread::spawn(move || {
+                if !inner.stop.load(Ordering::SeqCst) {
+                    let r = (inner.open(&push.key_id))
+                        .and_then(|(c, _)| rpc(c, "jobs", push.body.clone()));
+                    if let Ok(reply) = r {
+                        inner.jobs.replied(&push, &reply);
+                    }
+                }
+                inner.jobs.end_push(&push.key_id);
+            }));
+        }
+        if wait {
+            threads.into_iter().for_each(|t| drop(t.join()));
+        }
+    }
+
     /// One inbound conn: a data lane when it opens with a `Join`, else a control conn: the
     /// handshake, then requests until the peer closes or goes silent for `DEAD_AFTER`.
     fn serve(&self, id: u64, stream: TcpStream) -> io::Result<()> {
@@ -1157,16 +1334,12 @@ impl Inner {
             match f.kind {
                 kind2::PING => conn.send_frame(&Frame::new(kind2::PONG, 0, Vec::new()))?,
                 kind2::REQUEST if crate::connect_fs::is_read(&f) => {
-                    return self.reads.serve(
-                        &mut conn,
-                        &sid,
-                        self.share_root.as_deref(),
-                        f,
-                        &allowed,
-                    );
+                    return self
+                        .reads
+                        .serve(&mut conn, &sid, self.share.as_ref(), f, &allowed);
                 }
                 kind2::REQUEST if crate::connect_fs::is_write(&f) => {
-                    let root = self.share_root.as_deref();
+                    let root = self.share.as_ref();
                     return (self.writes).serve(
                         &mut conn,
                         &session,
@@ -1203,12 +1376,17 @@ impl Inner {
         paired.then_some(session)
     }
 
+    /// The share root, canonical.
+    fn share_root(&self) -> Option<&Path> {
+        self.share.as_ref().map(|s| s.root.as_path())
+    }
+
     /// The RPC methods this device answers.
     fn answer(&self, hs: &Handshake, r: &Request) -> Result<Value, String> {
         if !self.paired_session(&hs.peer.key_id, &hs.session) {
             return Err(NOT_PAIRED.into());
         }
-        let root = self.share_root.as_deref();
+        let root = self.share.as_ref();
         let (reads, writes, me) = (&self.reads, &self.writes, &self.me.name);
         if let Some(a) = crate::connect_fs::answer(root, reads, writes, me, hs, r) {
             return a;
@@ -1219,8 +1397,13 @@ impl Inner {
                 "name": self.me.name,
                 "platform": self.me.platform,
                 "port": self.me.port,
-                "share_root": self.share_root.as_ref().map(|p| p.to_string_lossy()),
+                "share_root": self.share_root().map(|p| p.to_string_lossy()),
             })),
+            // The peer's jobs that use this device (`connect_jobs`); the ids to cancel.
+            "jobs" => {
+                let (me, root) = (&self.me.key_id, self.share_root());
+                self.jobs.received(&hs.peer.key_id, &r.body, me, root)
+            }
             m => Err(format!("unknown method {m}")),
         }
     }
@@ -1584,6 +1767,9 @@ impl Connect {
             "discovery": self.discovery(),
             "pending": pending,
             "outgoing": self.outgoing(),
+            "remote_jobs": self.inner.jobs.remote_jobs(&|key| {
+                lock(&self.inner.peers).get(key).map(|p| p.name.clone())
+            }),
         })
     }
 
@@ -1750,6 +1936,14 @@ fn code_state(code: &str) -> &'static str {
 
 /// `from` asks `to` (listening at `addr`) to pair; `to`'s user answers `allow` once both show
 /// the same check number. The request's outcome.
+#[cfg(test)]
+impl Connect {
+    /// The files peers write here.
+    pub(crate) fn writes(&self) -> &crate::connect_fs::Writes {
+        &self.inner.writes
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn pair_for_test(from: &Connect, to: &Connect, addr: &str, allow: bool) -> Outgoing {
     from.pair(addr).unwrap();
@@ -1969,6 +2163,68 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Handshakes recorded at once from many threads, each from a new address: every one saves
+    /// outside the `peers` lock, and peers.json ends as memory does (never an older snapshot
+    /// written last). A failed save is tried again by the next handshake.
+    #[test]
+    fn concurrent_records_leave_the_newest_peers_json() {
+        let dir = temp_dir("records");
+        let c = Connect::start(&dir, 0).unwrap();
+        let key = "k".repeat(32);
+        lock(&c.inner.peers).upsert(Peer {
+            key_id: key.clone(),
+            name: "pc".into(),
+            platform: "windows".into(),
+            address: None,
+            last_seen: 0,
+            secret: hex(&[7; 32]),
+        });
+        let hs = |port: u16| Handshake {
+            peer: ps5_dump_forge_flink::Hello {
+                v: 2,
+                key_id: key.clone(),
+                name: "pc".into(),
+                platform: "windows".into(),
+                port,
+                nonce: String::new(),
+            },
+            remote: "192.168.1.5:50000".parse().unwrap(),
+            new_secret: None,
+            session: ps5_dump_forge_flink::Session {
+                secret: [7; 32],
+                nonce_c: [0; 16],
+                nonce_s: [0; 16],
+            },
+        };
+        for round in 0..5u16 {
+            std::thread::scope(|s| {
+                for t in 0..8u16 {
+                    let hs = hs(1000 + round * 8 + t);
+                    let inner = &c.inner;
+                    s.spawn(move || inner.record(&hs).unwrap());
+                }
+            });
+            assert_eq!(Peers::load(&dir).unwrap(), *lock(&c.inner.peers));
+        }
+        // The race those threads may or may not hit, forced: a snapshot taken earlier, whose
+        // save comes last, is not written over the newer one.
+        let older = lock(&c.inner.peers).clone();
+        let v = c.inner.peers_gen.load(Ordering::SeqCst);
+        c.inner.record(&hs(999)).unwrap();
+        c.inner.save_peers(&older, v).unwrap();
+        assert_eq!(Peers::load(&dir).unwrap(), *lock(&c.inner.peers));
+        // A save that fails (the folder is a file now) is written by the next handshake, even
+        // one that changes nothing.
+        fs::remove_dir_all(&dir).unwrap();
+        fs::write(&dir, b"").unwrap();
+        c.inner.record(&hs(1)).unwrap();
+        fs::remove_file(&dir).unwrap();
+        c.inner.record(&hs(1)).unwrap();
+        assert_eq!(Peers::load(&dir).unwrap(), *lock(&c.inner.peers));
+        c.shutdown();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn peers_round_trip() {
         let dir = temp_dir("peers");
@@ -2060,7 +2316,12 @@ mod tests {
         let on_a = a.devices();
         assert_eq!(on_a.len(), 1);
         assert_eq!(on_a[0].address, at(&b));
-        assert_eq!(Peers::load(&dirs[0]).unwrap().peers[0].address, at(&b));
+        // Saved just after memory changes (outside the `peers` lock).
+        let wait = Instant::now() + Duration::from_secs(5);
+        while Peers::load(&dirs[0]).unwrap().peers[0].address != at(&b) {
+            assert!(Instant::now() < wait, "the new address was never saved");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(b.devices()[0].online);
         // Asking again while A has B saved: refused unasked (a claimed key id never replaces a
         // pairing); once A forgot B, pairing again keeps one entry on each side.

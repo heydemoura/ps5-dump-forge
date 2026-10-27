@@ -586,6 +586,12 @@ impl Session {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
+        self.rename_replace(from, to)
+    }
+
+    /// Renames the file `from` to `to` (`RNFR` + `RNTO`), over a file there: servers rename as
+    /// the filesystem does, which replaces a file and refuses a folder.
+    pub fn rename_replace(&self, from: &str, to: &str) -> io::Result<()> {
         let mut c = self.control();
         let (code, text) = c.cmd(&format!("RNFR {from}"))?;
         if code != 350 {
@@ -1552,6 +1558,20 @@ mod tests {
         );
         s.rename("games/eboot.bin", "games/renamed.bin").unwrap();
         assert_eq!(s.size("games/renamed.bin").unwrap(), 300_000);
+        // Replacing: over the file, never over a folder.
+        s.rename_replace("games/renamed.bin", "games/other")
+            .unwrap();
+        assert_eq!(s.size("games/other").unwrap(), 300_000);
+        assert_eq!(
+            kind(s.size("games/renamed.bin").map(drop)),
+            io::ErrorKind::NotFound
+        );
+        s.mkdir("games/sub").unwrap();
+        assert!(s.rename_replace("games/other", "games/sub").is_err());
+        assert!(s.stat("games/sub").unwrap().dir);
+        fs::remove_dir(server.root.join("games/sub")).unwrap();
+        s.rename("games/other", "games/renamed.bin").unwrap();
+        s.store("games/other").unwrap().finish().unwrap();
         s.remove("games/renamed.bin").unwrap();
         s.remove("games/other").unwrap();
         assert_eq!(s.list("games").unwrap(), vec![]);

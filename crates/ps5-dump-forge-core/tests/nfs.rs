@@ -36,6 +36,7 @@ fn request(source: &Path, format: Format, output: &Path) -> ConvertRequest {
         edits: Vec::new(),
         extract: Vec::new(),
         transfer: Vec::new(),
+        replace: false,
         edit_rebuild: false,
         archive_password: None,
     }
@@ -201,7 +202,7 @@ fn a_game_on_an_export_converts_here() {
     );
     assert!(jobs.delete_path(&game, &[]).is_err());
     assert!(
-        jobs.move_path(&game, &game.with_file_name("x"), &[])
+        jobs.move_path(&game, &game.with_file_name("x"), false, &[])
             .is_err()
     );
 }
@@ -263,6 +264,28 @@ fn outputs_onto_an_export_read_back_as_the_game() {
     let mut rest = want.clone();
     rest.remove("sce_sys/param.json");
     assert_eq!(got, rest);
+
+    // A transfer the user confirmed replacing: files over files, the folder merged.
+    let re = local.0.join("re");
+    std::fs::create_dir_all(re.join("folder")).unwrap();
+    std::fs::write(re.join("folder/eboot.bin"), b"new eboot").unwrap();
+    std::fs::write(re.join("folder/extra.bin"), b"extra").unwrap();
+    let mut req = request(Path::new(""), Format::Folder, &there);
+    req.transfer = vec![re.join("folder")];
+    let e = run(&jobs, &rx, req.clone()).unwrap_err();
+    assert!(e.contains("already exists (never replaced)"), "{e}");
+    req.replace = true;
+    run(&jobs, &rx, req).unwrap();
+    // Fetched back by a transfer (which reads no file as a game's).
+    let back = local.0.join("replaced-back");
+    std::fs::create_dir_all(&back).unwrap();
+    let mut req = request(Path::new(""), Format::Folder, &back);
+    req.transfer = vec![folder.clone()];
+    run(&jobs, &rx, req).unwrap();
+    let mut expect = want.clone();
+    expect.insert("eboot.bin".into(), b"new eboot".to_vec());
+    expect.insert("extra.bin".into(), b"extra".to_vec());
+    assert_eq!(files(&back.join("folder")), expect);
 
     // Nothing else left behind: no .part, no temporary name.
     let listing = list_dir(&there).unwrap();

@@ -449,9 +449,10 @@ export function Lz4(props: { jobs: Job[]; dispatch: (a: Action) => void }) {
         : lz4.runtime === "none" && lz4.imports_ampr
           ? t.installsRuntime(traceAct, shipped)
           : null;
+  const indexState = scenario === "trace" && traceAct === "patch" ? lz4?.trace_index : lz4?.index;
   const indexNote =
-    !blockReason && showButton && !packed && lz4?.index && lz4.index !== "ok"
-      ? t.freshIndex(lz4.index, scenario === "pack" ? "pack" : traceAct)
+    !blockReason && showButton && !packed && indexState && indexState !== "ok"
+      ? t.freshIndex(indexState, scenario === "pack" ? "pack" : traceAct)
       : null;
 
   return (

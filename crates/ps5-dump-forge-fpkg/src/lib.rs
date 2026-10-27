@@ -275,7 +275,7 @@ impl FpkgSource {
         let naps_file = OuterFile::map(&mut outer, &nodes[naps_ino], "naps_pkg_layout.dat")?;
         let mut blob = vec![0u8; naps_file.size as usize];
         naps_file.read(&mut outer, 0, &mut blob)?;
-        let layout = Layout::parse(blob, image.size, patch)?;
+        let layout = Layout::parse(blob, image.size)?;
 
         let meta_base = h.meta_base;
         let mount_size = match &layout {

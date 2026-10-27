@@ -381,6 +381,10 @@ tiles and tags. Two columns from 880px; Edit splits 1:2 from 1100px (its game ca
   the error box (always led by its title, then core's text; a cancelled edit's "cancelled; …" is a muted
   `.note-line` instead), or the size, file count and output path, then a `details.fold.verified`
   "Fast (Full) verification passed: N checks" (the checks inside, a fast one's coverage first).
+  A paired peer's job that uses this device's files (Connect's `remote_jobs`) is listed and counted in
+  its tab too, below this device's (`.job.remote`): greyed (80% and grey, all but its Cancel; `--muted`
+  stays 4.8:1), a `.tag.green` with the device's name, only Cancel while it runs (the same "Stop job?",
+  sent to that peer), no buttons once finished; never in the quit prompt.
 - **Rating chip** (`.chip.good` / `.ok` / `.bad`): the About tab's Compare formats rows (Console speed
   and Size on disk). Tint, icon and text together, every text ≥ 8.9:1.
 - **About tab** (`Formats.tsx`), three cards. **About** (full width; the head: info icon, title, the

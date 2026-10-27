@@ -511,17 +511,24 @@ fn lz4_facts(tree: &mut dyn SourceTree, findings: &mut Vec<String>) -> Option<Lz
     // As a plain conversion sees it (`lz4::plain`): a runtime it installs or replaces is
     // compared at the release runtime's size.
     let action = rt.action(imports_ampr, holds_packs);
-    let index = if holds_packs || action == RuntimeAction::Untouched {
-        None
+    let (index, trace_index) = if holds_packs || action == RuntimeAction::Untouched {
+        (None, None)
     } else {
         let files = crate::lz4::plain_listing(tree.files(), action);
-        match crate::lz4::index_state(tree, &files) {
-            Ok(IndexState::Ok(_)) => Some("ok"),
-            Ok(IndexState::Stale) => Some("stale"),
-            Ok(IndexState::Damaged) => Some("damaged"),
-            Ok(IndexState::Missing) => Some("missing"),
-            Err(_) => None,
-        }
+        let traced = crate::lz4::trace_listing(files.clone());
+        let name = |state: &IndexState| match state {
+            IndexState::Ok(_) => "ok",
+            IndexState::Stale => "stale",
+            IndexState::Damaged => "damaged",
+            IndexState::Missing => "missing",
+        };
+        // One read of the index for both comparisons.
+        let states = crate::lz4::index_states(tree, &[&files, &traced]);
+        let (index, trace_index) = match &states {
+            Ok(s) => (Some(name(&s[0])), Some(name(&s[1]))),
+            Err(_) => (None, None),
+        };
+        (index, trace_index)
     };
     // Only an AMPR title's runtime is the user's concern (`lz4::Runtime::action`).
     let name = |a: RuntimeAction| match a {
@@ -548,6 +555,7 @@ fn lz4_facts(tree: &mut dyn SourceTree, findings: &mut Vec<String>) -> Option<Lz
         pack_runtime_action: name(rt.action(imports_ampr, !holds_packs)),
         runtime_version: rt.version,
         index,
+        trace_index,
         journal_bytes,
         traces_zip: (journal_bytes.is_some() && size(tree, INDEX).is_some()).then(|| {
             let param = size(tree, "sce_sys/param.json")

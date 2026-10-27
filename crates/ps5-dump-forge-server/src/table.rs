@@ -1,12 +1,16 @@
 //! What `GET /api/jobs` shows: every unfinished job and the last finished ones, built from
 //! core's events. Core can emit a job's events, `Done` included, before `Jobs::start`
 //! returns its id, so an entry is made by its first event and the request merged in later.
+//! A job's end notice (`notice::ended`) comes from whichever of the two is last.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use ps5_dump_forge_core::{ConvertRequest, Edit, Event, JobId};
 use serde_json::{Value, json};
+
+use crate::notice::Ended;
 
 const FINISHED: usize = 32;
 const LOG_LINES: usize = 200;
@@ -25,12 +29,17 @@ struct Entry {
     stages: Vec<String>,
     progress: Option<Value>,
     done: Option<Value>,
+    /// When `Done` was recorded.
+    finished_at: Option<Instant>,
+    /// `Done`'s result: the report's output, or the error.
+    outcome: Option<Result<PathBuf, String>>,
     log: VecDeque<String>,
     log_total: u64,
 }
 
 impl Table {
-    pub fn record(&mut self, event: &Event) {
+    /// Keeps `event`; a `Done` of an admitted job gives its end notice, if any.
+    pub fn record(&mut self, event: &Event) -> Option<Ended> {
         let (Event::Stages { job, .. }
         | Event::Progress { job, .. }
         | Event::Log { job, .. }
@@ -46,23 +55,37 @@ impl Table {
                 entry.log.push_back(line.clone());
                 entry.log_total += 1;
             }
-            Event::Done { .. } => {
+            Event::Done { result, .. } => {
                 entry.done = serde_json::to_value(event).ok();
+                entry.finished_at = Some(Instant::now());
+                let outcome = result
+                    .as_ref()
+                    .map(|r| r.output.clone())
+                    .map_err(Clone::clone);
+                let ended =
+                    (entry.request.as_ref()).and_then(|r| crate::notice::ended(r, &outcome));
+                entry.outcome = Some(outcome);
                 self.finished.push_back(*job);
                 if self.finished.len() > FINISHED
                     && let Some(old) = self.finished.pop_front()
                 {
                     self.jobs.remove(&old);
                 }
+                return ended;
             }
         }
+        None
     }
 
     /// `Jobs::start` returned `job` for `request`.
     // ponytail: an entry already dropped from history would come back here, but that needs 32
     // jobs to finish while `start` runs, and admission (held across it) caps them at 8.
-    pub fn admit(&mut self, job: JobId, request: ConvertRequest) {
-        self.jobs.entry(job).or_default().request = Some(request);
+    /// A job whose `Done` came first gives its end notice here, if any.
+    pub fn admit(&mut self, job: JobId, request: ConvertRequest) -> Option<Ended> {
+        let entry = self.jobs.entry(job).or_default();
+        let ended = (entry.outcome.as_ref()).and_then(|o| crate::notice::ended(&request, o));
+        entry.request = Some(request);
+        ended
     }
 
     /// The unfinished jobs' ids and outputs (an in-place job's is its source, whose `.part`
@@ -98,20 +121,32 @@ impl Table {
 
     /// By id; a job shows once its request is known.
     pub fn snapshot(&self) -> Vec<Value> {
-        self.jobs
-            .iter()
-            .filter_map(|(id, e)| {
-                Some(json!({
-                    "id": id,
-                    "request": e.request.as_ref()?,
-                    "stages": e.stages,
-                    "progress": e.progress,
-                    "done": e.done,
-                    "log": e.log,
-                    "log_total": e.log_total,
-                }))
-            })
+        (self.jobs.iter())
+            .filter_map(|(id, e)| e.json(*id))
             .collect()
+    }
+
+    /// `snapshot` of the jobs unfinished or finished less than `keep` ago (Connect mirrors
+    /// them to the peers they use).
+    pub fn recent(&self, keep: Duration) -> Vec<Value> {
+        (self.jobs.iter())
+            .filter(|(_, e)| e.finished_at.is_none_or(|t| t.elapsed() < keep))
+            .filter_map(|(id, e)| e.json(*id))
+            .collect()
+    }
+}
+
+impl Entry {
+    fn json(&self, id: JobId) -> Option<Value> {
+        Some(json!({
+            "id": id,
+            "request": self.request.as_ref()?,
+            "stages": self.stages,
+            "progress": self.progress,
+            "done": self.done,
+            "log": self.log,
+            "log_total": self.log_total,
+        }))
     }
 }
 
@@ -156,6 +191,7 @@ mod tests {
             edits: Vec::new(),
             extract: Vec::new(),
             transfer: Vec::new(),
+            replace: false,
             edit_rebuild: false,
             archive_password: None,
         }
@@ -244,5 +280,60 @@ mod tests {
         );
         let snap = serde_json::to_string(&t.snapshot()).unwrap();
         assert!(snap.contains("/o/y") && !snap.contains("Secret1"), "{snap}");
+    }
+
+    fn done(job: JobId, result: Result<&str, &str>) -> Event {
+        Event::Done {
+            job,
+            result: result
+                .map(|output| ps5_dump_forge_core::JobReport {
+                    output: output.into(),
+                    bytes: 0,
+                    files: 0,
+                    checks: Vec::new(),
+                    verify: ps5_dump_forge_core::VerifySummary {
+                        mode: ps5_dump_forge_core::VerifyMode::Fast,
+                        checked_bytes: 0,
+                        total_bytes: 0,
+                        samples: 0,
+                        seed: 0,
+                    },
+                })
+                .map_err(str::to_string),
+        }
+    }
+
+    /// The end notice comes once, from whichever of `admit` and `Done` is last; none for an
+    /// edit, an extract or a cancel.
+    #[test]
+    fn end_notice_once_whichever_comes_last() {
+        use crate::notice::{Ended, JobKind};
+        let mut t = Table::default();
+        // Done before admission (core can emit it before `Jobs::start` returns).
+        assert_eq!(t.record(&done(1, Ok("/o/b.exfat"))), None);
+        assert_eq!(
+            t.admit(1, request("/o/a.exfat")),
+            Some(Ended {
+                kind: JobKind::Convert,
+                ok: true,
+                name: "b.exfat".into(),
+            })
+        );
+        // Admitted first: the Done gives it, its name from the request when it failed.
+        assert_eq!(t.admit(2, request("/o/c.ffpkg")), None);
+        let failed = t.record(&done(2, Err("no room")));
+        assert_eq!(
+            failed.map(|e| (e.ok, e.name)),
+            Some((false, "c.ffpkg".into()))
+        );
+        // Cancelled, or an extract: nothing.
+        t.admit(3, request("/o/d"));
+        assert_eq!(t.record(&done(3, Err("cancelled"))), None);
+        t.record(&done(4, Ok("/o")));
+        let extract = ConvertRequest {
+            extract: vec!["sce_sys".into()],
+            ..request("/o")
+        };
+        assert_eq!(t.admit(4, extract), None);
     }
 }

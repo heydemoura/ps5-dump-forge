@@ -94,6 +94,10 @@ export interface Transport {
   debug(): boolean;
   /** Where the backend runs: the app is always "host"; the http build asks the server. */
   platform(): Promise<"host" | "ps5">;
+  /** PS5 job-end notices from the server session; null in the app or on a host server. */
+  notifications(): Promise<boolean | null>;
+  /** Save that choice; null in the app. */
+  setNotifications(on: boolean): Promise<boolean | null>;
   /** Patch a game folder in place for LZ4 tracing (api.ts `Lz4Patch`). Its own function: the
    * Tauri command takes `path`, the route `source`. */
   lz4Patch<T>(source: string): Promise<T>;
@@ -127,13 +131,15 @@ export interface Transport {
    * with its bare id. Rejects with the service's error string. */
   connect<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   /** http build: a browser file into the server's folder `dir` as `name` (Connect's phone
-   * upload); resolves with its path. The app rejects. */
+   * upload); resolves with its path. `replace` (the user confirmed it): a file at that name is
+   * replaced. The app rejects. */
   connectUpload(
     dir: string,
     name: string,
     file: File,
     onProgress?: (sent: number, total: number) => void,
     signal?: AbortSignal,
+    replace?: boolean,
   ): Promise<string>;
   /** http build: the URL that downloads the server's file `path`; the app: null. */
   connectDownloadUrl(path: string): string | null;

@@ -163,18 +163,20 @@ const PARALLEL = 4;
 
 /** Connect's phone upload: `file` into the server's folder `dir` as `name` (`POST
  * /api/connect/upload?dir=&name=&id=&offset=&size=`, `PARALLEL` chunks in flight; the server puts
- * them together by offset); resolves with the file's path. A failure or abort cancels the rest
- * and drops the server's part (`cancel=1`). */
+ * them together by offset); resolves with the file's path. `replace` (the user confirmed it) adds
+ * `replace=1` to every chunk: a file already at that name is replaced. A failure or abort cancels
+ * the rest and drops the server's part (`cancel=1`). */
 export async function connectUpload(
   dir: string,
   name: string,
   file: File,
   onProgress?: (sent: number, total: number) => void,
   signal?: AbortSignal,
+  replace = false,
 ): Promise<string> {
   if (signal?.aborted) throw "aborted";
   const id = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
-  const base = `/api/connect/upload?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}&id=${id}`;
+  const base = `/api/connect/upload?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}&id=${id}${replace ? "&replace=1" : ""}`;
   const offsets: number[] = [];
   for (let at = 0; at < file.size || offsets.length === 0; at += CHUNK) offsets.push(at);
   const sent = new Map<number, number>();
@@ -257,6 +259,7 @@ function postFile(
 
 let address: string | null = null;
 let platform: "host" | "ps5" | null = null;
+let notifications: boolean | null = null;
 let version: string | null = null;
 let debugBuild = false;
 
@@ -284,6 +287,8 @@ export async function serverSession(): Promise<{ separator: string | null; addre
     // Only the server's own word counts (never the browser's OS or URL); a valid one is kept.
     const plat = (s as { platform?: unknown } | null)?.platform;
     if (plat === "host" || plat === "ps5") platform = plat;
+    const on = (s as { notifications?: unknown } | null)?.notifications;
+    if (typeof on === "boolean") notifications = on;
     const ver = (s as { version?: unknown } | null)?.version;
     if (typeof ver === "string") version = ver;
     debugBuild = (s as { debug?: unknown } | null)?.debug === true;
@@ -299,6 +304,21 @@ export async function serverPlatform(): Promise<"host" | "ps5"> {
   if (platform === null) await serverSession();
   if (platform === null) throw text("noPlatform");
   return platform;
+}
+
+/** The About switch's value from the PS5 session, read afresh (another viewer may have changed
+ * it); absent on a host or an older server. */
+export async function serverNotifications(): Promise<boolean | null> {
+  notifications = null;
+  await serverSession();
+  return platform === "ps5" ? notifications : null;
+}
+
+/** Save the About switch and use the server's answer as its new value. */
+export async function setServerNotifications(on: boolean): Promise<boolean> {
+  const answer = await call<{ on: boolean }>("notifications", { on });
+  if (typeof answer?.on !== "boolean") throw new Error("Invalid notification setting reply");
+  return answer.on;
 }
 
 /** The update the page may offer: the PS5's payload (`ps5.elf`) at the session's version; null

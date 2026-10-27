@@ -16,7 +16,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   flag (a cancelled job's error is `cancelled`, or `cancelled; ` + what else failed or stays when that is
   more than the cancel), `catch_unwind`), `.part` + atomic no-replace
   rename (`finalize.rs`; macOS exFAT, Linux NFS and FUSE have none: check, then rename; FreeBSD: hard link where the folder has
-  them, U3), BLAKE3 verification (`verify.rs`: 8 MiB slice hashes on a pool of up to 8 threads, fast sample
+  them, U3), `awake.rs` (`awake()`: one refcounted U8 guard for jobs, paired peers, browser
+  uploads/downloads and LZ4 folder patch), BLAKE3 verification (`verify.rs`: 8 MiB slice hashes on a pool of up to 8 threads, fast sample
   or full), `inspect.rs` (cover, firmware, backport firmware from executables, embedded DLC; default and
   generated output names), `prefetch.rs` (read-ahead thread), `delete.rs` (Edit's and Storage's delete,
   Storage's move; `in_use`, the job-path guard), `listing.rs` (`list_dir`; `list_explorer`, the PS5 explorer's ShadowMount+ rule), `library_roots.rs` (PS5 filesystem classifier, the chosen-folder refusal
@@ -26,9 +27,9 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   the undo journal, verify, commit or roll back; the rebuild dispatch and `edit_check`'s two halves),
   `edit_folder.rs` (a folder edit job, applied directly), `host_tree.rs` (`host_tree`: a host file or
   folder as `Edited` will scan it, for the UI's preview), `extract_paths.rs` (an Extract job: chosen
-  files and folders of any source copied out), `remote.rs` (every path on another device: the `Remote`
+  files and folders of any source copied out; `existing_targets`, `replace_findings`), `remote.rs` (every path on another device: the `Remote`
   trait (stat, list, read_at, read_checked, put_new, mkdir, create, write_at, sync, close,
-  rename_no_replace, remove, free_space), `Scheme` `Flink`/`Ftp`/`Smb`/`Nfs` (`flink://<key_id>`,
+  rename_no_replace, rename_replace (a file over a file; Replace), remove, free_space), `Scheme` `Flink`/`Ftp`/`Smb`/`Nfs` (`flink://<key_id>`,
   `ftp://`, `smb://`, `nfs://<host[:port]>`; `prefix`, `default_port` 21/445/2049, `authority`,
   `host_port`), `get_for` (a paired peer: the `Remote` Connect registers (`set`); a server: its core
   adapter), `FlinkPath` (any scheme; `within`: scheme, device, ASCII case-folded on SMB), `is_remote`,
@@ -64,7 +65,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `recover`, `journal_path`; `Syncs` hooks (core passes FreeBSD's `sync_retry`). The format crates depend
   on it for types, so they never depend on core.
 - `crates/ps5-dump-forge-fpkg`: streaming `.pkg` reader (`FpkgSource`), CNT entries merged with the
-  inner filesystem; `lih.rs` reads a patch package (`\x7FLIH`) as the package it patches (Patch packages
+  inner filesystem; Kraken blocks decoded by the vendored `kraken_image` (PFSv3 byte shuffles undone,
+  `SHUFFLES`; vendor patch 0029); `lih.rs` reads a patch package (`\x7FLIH`) as the package it patches (Patch packages
   below).
 - `crates/ps5-dump-forge-lz4`: ampr_emu asset packs: AMPRPAK4 manifest + AMPRDAT3 volume writer and
   reader (unpack view as a `SourceTree`), AMPRIDX3 and AMPRCMD1 (journal) readers, pack rules (`rules.rs`),
@@ -82,12 +84,13 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   is a guest login), `wire.rs` (framing, credits, 1 MiB reads, HMAC-SHA256 signing when required),
   `rpc.rs` (srvsvc NetShareEnumAll: disk shares), `lib.rs` (`Session::connect`, `shares`, `list`, `stat`,
   `open` → `File::read_at`; writes (by user decision: a share is an output too): `create_file` (exclusive),
-  `mkdir`, `rename` (never replaces), `remove` (files), `free_space`, `File::write_at`/`flush`).
+  `mkdir`, `rename` (never replaces), `rename_replace` (ReplaceIfExists 1: a file over a file; Replace),
+  `remove` (files), `free_space`, `File::write_at`/`flush`).
   Glue: `core/src/smb.rs`. ponytail: no SMB 3.x, encryption, DFS, reconnect or
   pipelining, response signatures not verified, no NTLM MIC.
 - `crates/ps5-dump-forge-ftp`: own blocking plain-FTP client (RFC 959 + FEAT, MLSD/SIZE/MDTM/REST, EPSV;
   passive, binary; user + password or anonymous): `Session` (list, stat, reads, mkdir, rename (check, then
-  `RNTO`), remove, `can_rewrite` (a `REST` + `STOR` probe)), `Writer` (any offset, `REST` to go back);
+  `RNTO`), `rename_replace` (`RNTO` with no check; the server's filesystem refuses a folder), remove, `can_rewrite` (a `REST` + `STOR` probe)), `Writer` (any offset, `REST` to go back);
   `fake.rs` (feature `fake`) a test server (`kick` closes every control connection, as an idle timeout
   does). A `421` reply is `ConnectionAborted` (the server is closing); a `550` to `MLST` is `NotFound` unless it
   says it was refused. Glue: `core/src/ftp.rs`. ponytail:
@@ -100,7 +103,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   WRITE UNSTABLE + COMMIT with the verifier checked, CREATE GUARDED), `v4.rs` (EXCHANGE_ID,
   CREATE_SESSION with one slot, SEQUENCE in every COMPOUND, OPEN/CLOSE, the server's granted sizes and
   ops honoured), `lib.rs` (`Session`: `exports`, `stat`, `list`, `read_at`, `mkdir`, `create` →
-  `File::write_at`/`sync` (never replaces), `rename_no_replace`, `remove` (files only), `free_space`;
+  `File::write_at`/`sync` (never replaces), `rename_no_replace`, `rename_replace` (RENAME over a file, never a folder;
+  Replace), `remove` (files only), `free_space`;
   absolute server paths). Glue: `core/src/nfs.rs`. ponytail: one connection per session, requests
   serialized, no reconnect; cached handles live 3 s; an idle v4.1 session may expire (dropped, reconnected).
 - `crates/ps5-dump-forge-cli`: binary `ps5-dump-forge` (`inspect`, `convert`, `lz4-patch`, `lz4-unpatch`, `serve`), JSON-lines events.
@@ -257,7 +261,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   builder writes it after its SDK filtering (below), so leftovers it drops can't fail preflight. A packed source
   gets the runtime action and keeps its index, manifest, journal and logs byte for byte; a replaced runtime then
   differs from the manifest's loose record, which `reader::unpack` lets pass for `RUNTIME` only. `Lz4Facts.index` (`ok`/`stale`/`damaged`/`missing`; `None` when packed, when the
-  action is `Untouched`, or for an archive's index over 16 MiB) is that comparison; Edit's game facts, Convert, the LZ4
+  action is `Untouched`, or for an archive's index over 16 MiB) is that comparison; `trace_index` uses Patch's
+  output with the trace runtime's size, for the LZ4 tab's Patch note and a traced game's tile. Edit's game facts, Convert, the LZ4
   tab and the CLI say a conversion refreshes it.
 - The recommended trace path is a traced `.ffpkg` mounted `image_rw=`, then **Download traces** (http build
   only; the desktop app points at Pack): `GET /api/lz4_traces?source=` streams one STORED zip
@@ -266,8 +271,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   (`Lz4Traces`; `write_zip`/`zip_len`) in 1 MiB chunks, never whole in memory. `core/src/zip.rs` is the
   one zip layout, writer and reader (flag bit 3 + data descriptors, ZIP64 only past 0xFFFFFFFF). Every
   read re-checks a `SourceStamp` (the image file, or a folder's trace files: length, mtime, identity) and
-  fails on any change, so the body ends short of `Content-Length`. `/mnt/shadowmnt` is a PS5 root so the
-  mounted image's folder can be picked too. Patching a folder stays offered, though a folder patched in
+  fails on any change, so the body ends short of `Content-Length`. A mounted image's traces come from the
+  image file (`/mnt/shadowmnt` isn't listed on the PS5, by user request). Patching a folder stays offered, though a folder patched in
   place failed to launch on the console (CE-107750-0, cause unknown) where a Forge `.ffpkg` did.
   Both upstream runtimes (release, trace) are embedded with `include_bytes!`, pinned by SHA-256; the trace
   runtime is swapped for the release one on every plain conversion and Pack (above). Unpatch
@@ -341,16 +346,42 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
      image ShadowMount+ has mounted (`edit_job::smp_mounts`) and, while it has any, a folder holding an
      image of a mounted stem (walked, links not followed, 200,000 entries); fails closed.
      Moving or renaming (the File explorer's Rename and Move to; core `Jobs::move_path(from, to,
-     protected)` → `DeleteError`, `delete::move_`; server `POST /api/move_path` `{from, to}` → `null`, same
-     codes and `keep` list; Tauri `move_path` `{from, to}`): `from` refused as delete refuses it; `to` a
-     plain name in an existing folder, never replaced (`rename_no_replace`; a case-only rename uses a plain
-     rename), not inside `from`, on the same volume (by `st_dev`, or EXDEV: "can't move between drives"),
+     replace, protected)` → `DeleteError`, `delete::move_`; server `POST /api/move_path` `{from, to,
+     replace?}` → `null`, same codes and `keep` list; Tauri `move_path` `{from, to, replace?}`): `from`
+     refused as delete refuses it; `to` a plain name in an existing folder, never replaced unless `replace`
+     (Replace, below; else `rename_no_replace`, "already exists; nothing is replaced"; a case-only rename
+     uses a plain rename), not inside `from`, on the same volume (by `st_dev`, or EXDEV: "can't move between drives"),
      not at, in or above an unfinished job's paths (Busy); an image with an undo journal beside it (or one
      at the new name) refused. Both folders synced. No copy, no new folder, no upload (by user decision).
   4. Edits (the Edit tab, below): a request with non-empty `ConvertRequest.edits` is an edit job, which
      changes its source (`output` and `format` ignored; `JobReport.output` is the source). A folder is
      changed directly (no rollback); an image is edited in place by its format's editor behind an undo
      journal, or rebuilt beside and renamed over it (`edit_rebuild`), as exception 2 replaces an image.
+- Replace after confirmation (by user decision): File Transfer jobs, the phone upload
+  (`/api/connect/upload`), Edit's Extract and the File explorer's Rename and Move to refuse a name
+  already there, as before; once the user confirms, they put the new one in its place. Opt-in per request
+  (`ConvertRequest.replace`, `move_path`'s `replace`, the upload's `replace=1`); without it behaviour and
+  messages are unchanged. The UI asks first by a read-only check, never by an error's text: core
+  `Jobs::existing_targets(&ConvertRequest)` (an extract's or transfer's top-level targets that exist, on
+  a peer or NAS too; Tauri `existing_targets {request}`, server `POST /api/existing_targets {request}`,
+  the 2-read cap), `list_dir` for Rename/Move and the upload; then one dialog (`app/src/replace.tsx`
+  `confirmReplace`: "N items already exist there", the folder, at most 10 names + "and N more", Cancel
+  focused, Replace). Only a file onto a file, and a folder onto a folder, which merges (same-named files
+  replaced, everything else there kept, by user decision); a kind mismatch at any level, a link or a
+  special file is a finding ("<path> is a folder: a file is not put in its place", "... is a file ...",
+  "... is a link ..."); the upload answers 400 for one (409 a job using it) and the web UI leaves such
+  a file out and says so (`uploadSkipped`). A replaced
+  file is refused as Delete refuses it (`delete::replace_refusal`: `delete::check`, an undo journal
+  beside its image; a merged folder only at, in or above another unfinished job's paths;
+  `Jobs::set_protected` gives a job delete's `protected` list: server `keep_list`, app the home folder);
+  on a peer or NAS only this device's jobs are checked here, the device judges the rest. Each file
+  still goes through its exclusive temporary name, synced, then renamed over the old one
+  (`std::fs::rename`, `Remote::rename_replace`; never remove-then-rename); a merged folder is kept, not
+  re-created. Free space counts every byte written (the replaced files aren't credited). One log line
+  `replace: N files replaced: …` (first 10 + a count). A move with replace: a file over a file in one
+  rename, a folder merged entry by entry (every check first, then the moves, the emptied source folders
+  removed; a failure part way says "N of M entries were moved before it and stay"). ponytail: checked at
+  preflight; a target changed between the check and its rename isn't seen.
 - Edit tab (after Convert; it replaced Inspect, by user decision; `app/src/Edit.tsx`): left a compact game card
   (`SourceCard compact`, smaller than the other tabs' by user decision: columns 1fr:2fr from 1100px, 56px
   cover, title ID and version tiles, findings; folds Game facts, param.json, Details; Delete in its head,
@@ -421,7 +452,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     `Inspection.interrupted_edit` (a journal beside the image) is noted on the card. Room for the journal
     beside the image is a preflight finding (`undo journal:`).
   - **Refused** (preflight findings, nothing written; every offender listed): any LZ4 option,
-    `remove_backport`, an archive, an LZ4-packed game ("unpack it first"), a bad game path (relative,
+    `remove_backport`, an archive, in an LZ4-packed game a change to its packs (below), a bad game path (relative,
     `/`-separated, no empty/`.`/`..` part, no `\`), a source on a NAS or a peer (browsed and extracted from
     only), an op that doesn't apply, an `Add.from` on a NAS or that is missing,
     a link, not a file or folder, the image itself or inside the source folder (by identity), names the
@@ -431,6 +462,13 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     by `st_dev`; fails closed; checked in both modes at scan and again before writing or replacing), and a
     source folder or image at or inside `/mnt/shadowmnt` (a mounted game; `edit_job::smp_inside`). Host
     files are stamped when listed (identity, size, mtime) and checked on every read: a change fails the job.
+  - **LZ4-packed game** (by user decision, `edit_job::Packs`): edited like any other, only its packs locked:
+    an op naming, or an edit removing or resizing, the manifest, `.crc`, `.runtime`, a volume it names or
+    `ampr_emu.index` (its records match the manifest's by file id), and anything at or under a packed path
+    (or a file at a folder of one) is a finding. The runtime, journal, logs, `eboot.bin` and every loose file
+    may change. No fresh index and, into a `.pkg`, nothing left out. ponytail: the index stays as it is, and
+    ampr_emu answers `/app0` lookups from it, so a file added, resized or removed through AMPR keeps its old
+    entry (a note line says so); `reader::unpack` lets a loose record's file be missing or resized.
   - **AMPR** (a title whose `eboot.bin` imports libSceAmpr or that holds `ampr_emu.index`; `edit_job::fold`,
     shared by folder edits): an edit that touches the index itself, or changes the (path, size) set while the
     index doesn't already list exactly the edited files (`index_state`), writes a fresh `ampr_emu.index` (a
@@ -479,15 +517,16 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     `ConvertRequest.extract` (game paths), `format` folder, `output` that folder, no edits; any source
     `open_source` opens (folder, every image, `.pkg`, archives), no game-root checks. Each selection lands
     under its last component (`data/movies` → `<output>/movies/…`). Refused before a byte is written: a
-    bad or unknown path, two selections with one name, one inside another, a target that exists (never
-    replaced), an output that is missing, not a folder, inside the game folder or (PS5) at or inside
+    bad or unknown path, two selections with one name, one inside another, a target that exists (unless
+    the user confirmed Replace, above: `existing_targets` asked first, then `replace`), an output that is missing, not a folder, inside the game folder or (PS5) at or inside
     `/mnt/shadowmnt`, names the destination
     can't hold, no room (+ 1 MiB), an edit, `edit_rebuild`, `lz4` or `lz4_in_place`. Stages `scan`, `preflight`, `write`, `verify`;
     each file streamed in 8 MiB reads through an exclusive temporary name beside it, synced, renamed
-    without replacing; BLAKE3 while writing; verify checks sizes (full: re-reads and re-hashes). No
+    without replacing (over the file it replaces); BLAKE3 while writing; verify checks sizes (full: re-reads and re-hashes). No
     rollback (ponytail): a failure or cancel deletes this job's temporary files and says "N of M files were
     extracted before it and stay" (none finished: "<folder> was created and stays"). It reads the source as it is on disk; with changes pending a muted line
-    says so. Job row: tag **Extract**, error box "Can't extract:". Server and Tauri: nothing new (`start_job`).
+    says so. Job row: tag **Extract**, error box "Can't extract:". Server and Tauri: `start_job`, and `existing_targets`
+    before it.
   - **Additional content** (by user decision): a source with no `eboot.bin` at its root and a
     `sce_sys/param.json` that parses to a title ID (a DLC, an update or another package) is a source class,
     not a finding (`GameInfo`/`Inspection`/`LibraryEntry.additional_content`; without param.json or a
@@ -505,7 +544,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
     (`0x40`, unread), and between FIH and CNT the outer blocks the update changed. FIH and CNT describe the
     whole patched package, so `lih::View` places each stored block by its SHA3 in `imagedigs` and serves
     that package; any other block is the base game's (`IN_BASE` error). Its layout descriptor carries
-    `0x060000` for the ublock size (accepted for a patch only; vendor patch 0027: no nibble checks then). The tree walk skips
+    `00 00 06` where plain builds carry `00 00 04` (any other value skips the records' nibble checks; vendor patches 0027, 0028). The tree walk skips
     directories and inodes the patch doesn't carry, and only files every block of which it carries are
     listed (the container's always); `details` names what is left out. `Inspection.patch`: an orange
     **Patch** tag on the source card; Edit browses and extracts only (`edit.patchNote`; edits refused in
@@ -536,7 +575,7 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   a chosen root that is a link is resolved first, links inside the walk are never followed,
   `/mnt/shadowmnt` is refused.
   - **Roots**: on a computer the user chooses one folder (no automatic discovery). On the PS5 the server's
-    `Roots::library()`: the current browse roots minus `/mnt/shadowmnt` (no duplicate of a mounted image),
+    `Roots::current()`: `/data` and each drive while mounted (the browse roots; no `/mnt/shadowmnt`),
     classified by FreeBSD `statfs` (`MNT_LOCAL` and ufs, msdosfs, exfat, exfatfs, bfs, nullfs, cd9660,
     udf, zfs).
   - **Refused folders** (`scan_library_folder` errors, so the app and the server agree; one list,
@@ -591,7 +630,9 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   shared with the Library, so it never scans home by itself) or the server's roots (the http build); with
   neither (no home, or the start fails to list) the choose-a-folder panel; on the PS5 the server's browse
   roots (`list_dir` `null`; nothing to change there). Row actions: Rename (pencil; inline `NameInput`, F2),
-  Move to (the folder picker from the folder shown; `<picked>/<name>`; its own folder refused), Delete
+  Move to (the folder picker from the folder shown; `<picked>/<name>`; its own folder refused; for both a
+  name of the same kind already there is replaced, a folder merged, once the user confirms (Replace,
+  above); `NameInput` still refuses one of the other kind, a link or a mounted image), Delete
   (`confirmDelete`, its file, image and archive variants by extension; Delete key, "fn+Delete" in a Mac's
   tip), a ⋯ menu (`ChooseMenu` with `buttonLabel`) of Edit and Convert for a
   folder or an image/archive by extension (the Library's `SourceSelection` hand-off), open a folder. A rename or move also
@@ -604,14 +645,17 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   lists (a spinner only past 150 ms); Refresh is `aria-disabled` + `aria-busy` until its answer.
   Core `list_dir(path) -> Listing {path, parent, entries: [{name, path, dir, size, link, mounted}],
   truncated}` (`listing.rs`, at most 10,000 entries; links resolved, a dangling one as itself);
-  server `POST /api/list_dir` `{path}` (`null` lists the roots; `parent` `null` at a root); Tauri
+  server `POST /api/list_dir` `{path}` (`null` lists the roots; `parent` `null` at a root; on the PS5, by user
+  request, a path not at or inside `/data` or a mounted drive, resolved, is 400, as for `host_tree` and a
+  Library folder: `paths::Roots::confine`; a link whose target is outside them is left out of a listing);
+  Tauri
   `list_dir {path}` (`parent` is the filesystem's: the UI stops Up at its root), `move_path` and
   `delete_path` refuse (`from` and `to`) what the Library refuses as a chosen folder (core `folder_refusal`,
   its message).
   Delete and move refuse an undo journal (`*.forge-undo`) while its image is there, and move refuses
   a new name that would read as one ("open that image in Edit"). Paths are `dunce`-canonical (Windows `C:\x`, not `\\?\C:\x`; server roots too).
-  The explorer sends `explorer: true` (the Picker doesn't: LZ4 traces need `/mnt/shadowmnt`): the server's
-  roots are `Roots::library()` and core's `list_explorer` lists; on the PS5 it hides ShadowMount+'s mount
+  The explorer sends `explorer: true` (the Picker doesn't): the server's roots are the same and core's
+  `list_explorer` lists; on the PS5 it hides ShadowMount+'s mount
   folder (a path in it is 400, entries resolving into it left out) and marks `mounted` images (a
   **Mounted** tag, and once above the list a note saying why; Edit/Convert only). Elsewhere it is `list_dir` (Tauri ignores the flag).
 - Connect (the tab after Storage, `app/src/Connect.tsx`; server `connect.rs`, also run by the Tauri app at
@@ -722,7 +766,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   outputs too (ponytail: an offline one included); the desktop app has no NAS source button (removed by user
   request): a NAS game is picked on its tab while the NAS is online).
   **A peer's files** (by user decision: streamed, never copied first): `flink://<key_id>/<path>`, relative to the
-  peer's share root (`/`; a Windows PC its home folder's drive, by user request), read in place like a NAS (core `remote.rs`, `net.rs`;
+  peer's share root (`/`; a Windows PC its home folder's drive, by user request; on the PS5, by user request,
+  only `/data` and mounted drives within it: `/` lists `data`, and `mnt` while a drive is mounted), read in place like a NAS (core `remote.rs`, `net.rs`;
   `connect_fs::ConnectRemote` registered with `core::remote::set` by `Connect::start`, server and Tauri alike):
   Convert, inspect, covers, `list_dir` (`flink://<key_id>` is the share root), Edit's browse, Extract and
   Add, transfers. Outputs may be on a peer too: an image as a `.part` there (`RemotePart`), verified by reading
@@ -743,10 +788,19 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   Refused for a peer path: `.pkg`/archive
   sources ("copy it to this device first"), editing a peer's game, LZ4 patch/in place/traces, delete and
   move. Peer side (`connect_fs.rs`): RPCs `stat`, `fs_list`, `read_open`/`read_close`, `mkdir`, `create`,
-  `sync`, `close`, `rename`, `remove`, `free`, every path confined to the share root (`join_checked`, the
-  parent canonicalized inside it, links never followed, special files and non-UTF-8 names marked so the
-  reader refuses them); writes only to files this session created (exclusive, then a no-replace rename),
-  unrenamed ones removed when the session ends; a path its own unfinished jobs use is refused ("in use by a
+  `sync`, `close`, `rename` (`replace: true`: over a regular file only, never a folder, link or special
+  file, nor another peer's unrenamed file, and refused as this device's own replace is
+  (`Connect::set_replace_check(jobs.replace_check)`: jobs, protected paths, ShadowMount+, an undo journal);
+  an older peer ignores it and refuses the taken name), `remove`, `free` (on the PS5 where its folder
+  leads must be reachable too), every path confined to the share root (`join_checked`, the
+  parent canonicalized inside it, then on the PS5 `Roots::reach`: `/data` or a mounted drive, `/` and `/mnt`
+  for stat and list only; all in `locate`), links never followed, special files and non-UTF-8 names marked so the
+  reader refuses them); writes only to files this session created (exclusive, then a no-replace rename, or with
+  `replace` one over a file),
+  unrenamed ones kept 60 s (`KEPT_FOR`) once the session ends, then removed (at once when the service stops
+  or the pairing is forgotten here); `reattach {path}` → `{handle, size, open}` moves such a file (kept, or
+  still held by another session) to the calling session, for the pairing that created it only, once its
+  writes in flight end (a per-file gate; the old session's later writes are refused); a path its own unfinished jobs use is refused ("in use by a
   job on <name>"; `Connect::set_busy(jobs.uses_hook())`), so is (PS5) one at or inside `/mnt/shadowmnt`
   (`core::out::refusal`; ponytail: no destination probe per peer write), and its jobs refuse a path a peer is writing
   (`Jobs::set_external_busy(connect.writing_hook())`); Delete and Move refuse that path too (a move's
@@ -758,6 +812,31 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `DataHead.stat`) and `Remote::put_new` (a lane `put {tmp, path}`: created, written, synced, renamed; the
   writer holds a file in memory until it passes 8 MiB); a 10k-file game moved ~2.3x faster on the console.
   The peer's RPCs are answered as soon as they finish (no polling).
+  Transfers survive a stall (by user request, after a ~30 GB transfer between a PC and the PS5 stopped mid-way): while a
+  lane's read, write or `put` works the disk, the peer sends a `Ping` on the lane every `PING_EVERY`
+  (`pinging`; the lane reader skips them), so a disk stall past FLINK's 12 s silence limit doesn't end the
+  lane. A created file whose session is lost resumes (`ConnectRemote::resuming`): a fresh session
+  `reattach`es it and the write, sync, close or rename runs again there (a write from its offset;
+  positional, so a piece sent twice is the same bytes, and BLAKE3 is computed as written; a reattached file
+  shorter than the writes acknowledged is removed and the loss stands), at most 3 times
+  (`RESUMES`) within 60 s, each logged to the serve log ("connect: reconnected to <device>, resuming /<path>
+  at <offset>"). A `put` is asked once more, whole, under a fresh temporary name, on a checked (else fresh) session; a `to` already
+  holding exactly those bytes is the first one landed. An older peer sends no lane pings and answers
+  `reattach` `unknown method`: the loss fails the job as before. peers.json is written outside the `peers`
+  lock, which every lane chunk and RPC takes (`save_peers`: one save at a time, never an older snapshot over
+  a newer; a pairing or Forget is saved under it before it counts; a failed address or last-seen save is
+  written by the next handshake). While a paired device reads or writes files here (`Connect::peers_active`:
+  a read open, or a file it created and hasn't renamed, kept ones included) the PS5 holds off auto rest
+  mode as during its own jobs (core `awake()`, a process-wide count held by jobs, Connect, the browser's
+  uploads and downloads and `lz4_patch`/`lz4_unpatch`: `sceSystemServicePowerTick` at once, then every 30 s),
+  `quit {"if_idle": true}` answers 409 "Dump Forge is busy: a paired device is reading or writing files
+  here", and the desktop app's close asks first as for its own jobs (`QuitHeld`, `peerBusy`).
+  **Jobs mirrored** (`connect_jobs.rs`): a job using a paired peer's files (any `flink://<key_id>` among its
+  source, output, transfer, added files, LZ4 profile or traces) is pushed to that peer every 2 s (`jobs` RPC, each
+  peer on its own thread, with the run's `instance`: job ids restart at 1, so another run's cancel marks go; this
+  device's paths spelled `flink://`, the peer's own as its local paths; kept 30 s after it ends, dropped there after
+  10 s without a push or on Forget) and shown there read only (`snapshot`'s `remote_jobs`): its user may only cancel
+  it (`connect/cancel_job`, Tauri `connect_cancel_job`), answered in the next push's reply.
   **File Transfer** (by user decision, a modal; a device's **Send** opens it with the destination picker
   at that device's root): **What to send** picks sources (Choose files / Choose a folder, any device: this
   one, a peer or a NAS; a whole device, share or drive refused) and **Send to** a destination folder (this
@@ -765,18 +844,22 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   online), each side with a device switch while one is online (switching drops that side's choice, so
   does its device going offline), and Start queues a **transfer job** (the dialog closes)
   (`ConvertRequest.transfer`, core `transfer.rs`; peer to peer relayed through this device; stages scan,
-  preflight, write, verify as Extract; a nameless root refused; no rollback: "N of M files were copied before
+  preflight, write, verify as Extract; Start asks `existing_targets` first and a name there is replaced
+  only once the user confirms (Replace, above); a nameless root refused; no rollback: "N of M files were copied before
   it and stay", or, with none finished, "<folder> was created and stays"; a peer's link is never read). Transfers run in a second slot beside the one heavy job (convert, edit, LZ4, extract): at
   most one of each, each FIFO; a job whose paths are at, in or above an unfinished job's of the other kind
   is refused at start ("<path> is in use by another job", or "is being written by another device"). The
   old send/fetch/transfers/cancel/remote_list (routes, Tauri commands, the list) are gone (by user
   decision). Chunks of 8 MiB dealt round robin to 8 lanes on every platform (by user decision, as
   ps5upload; one big file uses them all), the PS5's sockets (FLINK and HTTP) at the largest buffers its
-  kernel takes (`flink::tune_buffers`); no resume (ponytail). Phones: the Connect tab's QR opens
+  kernel takes (`flink::tune_buffers`); a lost session resumes the file (above), nothing more: no resume after
+  those 3 tries or 60 s, a restart or a Forget (ponytail; Retry starts the job again). Phones: the Connect tab's QR opens
   `<url>/#connect`; the web build's **Upload to this device** / **Download from this device** move the
   browser's files (disabled in the PS5's own browser, which can't pick files): files one at a time into a
   folder picked on this device (progress, Cancel; Close, Escape and a click outside don't cut it; a failure
-  or Cancel says "N of M files were uploaded and stay on this device"), a file of this device saved by the
+  or Cancel says "N of M files were uploaded and stay on this device"; a file already there replaced
+  only once the user confirms, `replace=1` on every chunk, put in place through `Jobs::move_path` with
+  replace: Replace, above), a file of this device saved by the
   browser. Uploads go in 8 MiB chunks, 4 requests at once in a browser (by user decision; FLINK between devices keeps its 8 lanes; a browser runs about 6 per host and the page's polls need room; `connectUpload` in
   `http-client.ts`, `id=&offset=&size=` on `POST /api/connect/upload`, assembled by offset in one `.part`):
   35 MB/s to the PS5 where one request does 28. Both phone upload modes refuse a destination at or
@@ -822,7 +905,10 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   edge ring) and its type's tag: Edit blue (`--edit-*`), LZ4 yellow, Transfer green (`--transfer-*`,
   "Can't transfer:"). Each of those tabs counts its type's unfinished (queued + running) jobs in its label,
   after the name (`.count`, white on every tab, by user decision, hidden from screen readers, which read
-  "N active"; Connect counts transfers).
+  "N active"; Connect counts transfers). A failed job's row has **Retry** (by user request; `JobList.tsx`
+  `canRetry`): it starts the same request again as a new job; not for a cancelled one, a peer's mirrored job
+  or an edit (Edit's Apply keeps the changes after a failure); an Extract or a transfer asks about names
+  already there again first (`askReplace`, Replace above), since a failed copy leaves files behind.
 - Names are never renamed: bad names (non-NFC, exFAT/PFS case collisions, forbidden chars, non-ASCII
   in PFS) fail preflight with every offender listed.
 - `.pkg` is built with `BuildRequest::production` only (plaintext `PPRPLAIN-NOAUTH!`, Kraken);
@@ -837,7 +923,8 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   `common.tsx`), and in running text in bold (`Prose`); paths and file names keep the extension. The debug
   FPKG is labelled `fpkg`; its files, the `Format`/`Kind` id and the CLI flag stay `pkg`. Format copy and
   the About tab's formats table (`app/src/Formats.tsx`) follow ShadowMountPlus 1.7's README and release notes.
-  About (by user decision): the About card (the language select in its head, no introduction line) holds
+  About (by user decision): the About card (the language select in its head, no introduction line; on the
+  PS5 web build, a saved job-end notification switch below the features) holds
   the feature list (`formats.features`: bold name + a few words, the user's text) as one grid of nine
   tiles in three sets: Convert, Transfer, Edit / Streamed, Archives, USB and SD cards / LZ4 "with smart
   healing", Storage (Library + File explorer), Safe; `Formats.tsx` maps the icons by position, so every
@@ -869,11 +956,16 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   paths stay LTR) with Latin digits (`numbers`), and its Latin file names and paths are wrapped in
   LRI…PDI (U+2066/U+2069) so the bidi algorithm can't reorder them. Durations are whole messages per
   language (`duration`). The server's PS5 notifications (started, port in use, stopped, can't
-  close (jobs running), not taken over; `crates/ps5-dump-forge-server/src/notice.rs`) follow the console's language
+  close (jobs running), not taken over, a Convert, LZ4 or Transfer job done or failed (switchable on
+  About); `crates/ps5-dump-forge-server/src/notice.rs`; by user decision a job's end is a system toast
+  (`sceNotificationSend`, ShadowMountPlus's JSON shape, Forge's icon at
+  `/user/data/dumpforge/notify-icon.png`), the plain notice its fallback, every other notice stays plain)
+  follow the console's language
   (`sceSystemServiceParamGetInt` LANG, mapped to the UI's languages, else English); English elsewhere.
 - No settings and no config file: the UI keeps choices in memory until it closes (Connect's pairings,
-  above, are the service's own state), except the UI language, which `localStorage` keeps (`forge.lang`; by user decision; unreadable storage falls back to
-  the system languages). Defaults: Convert's target
+  above, are the service's own state), except the UI language (`forge.lang` in `localStorage`; unreadable
+  storage falls back to the system languages) and the PS5 About notification switch (kept by the server
+  on the console as `notifications.off`; by user decision). Defaults: Convert's target
   fpkg (`.pkg`), exfat for a `.pkg` source (by user decision; picker order Folder, fpkg, exfat, ffpkg, ffpfsc,
   ffpfs), ffpkg inside a `.ffpfsc` (by user decision), at zlib
   level 6, all cores for compression (`serve`: cores − 1; PS5: its 5 CPUs − 2), `.pkg` Kraken level `fast` (also `balanced`,
@@ -915,13 +1007,14 @@ write safety); `docs/LZ4.md` the LZ4 user guide.
   reloads through AppCache; the old server never stops itself. Any newly loaded copy, of any version (by user
   decision: older and the same too), that finds Forge on the port closes it when idle and takes over
   (handover: `quit {"if_idle": true}` for one with session `handover: true`; for v0.1.1 and older, a `GET
-  /api/jobs` with every job `done` first, then a plain `quit`; a running job always refuses: "Can't close
-  Dump Forge - some jobs are still running."; details in `ps5/README.md`). `serve` on a computer (`host`): no update check.
+  /api/jobs` with every job `done` first, then a plain `quit`; a running job, or (`if_idle`) a paired device
+  reading or writing files here, always refuses: "Can't close Dump Forge - some jobs are still running."; details in `ps5/README.md`). `serve` on a computer (`host`): no update check.
 - PS5 payload: one plain `.elf`, no PKG, no signing (updates: above, or replace the file). FreeBSD 11 ABI via
   `--cfg libc_unstable_freebsd_version="11"` (the env var is ignored by libc ≥ 0.2.187) and struct-size
   asserts in the CLI. `panic=abort`.
 - The server has **no protections** by user decision: no pairing, token, Host/Origin/CSRF checks or path
-  confinement. Don't re-add them (Connect's pairing guards FLINK on 9883 only, not the HTTP routes,
+  confinement (except, by user request, on the PS5: listings, `host_tree`, a Library folder and the peer
+  side reach only `/data` and mounted drives). Don't re-add them (Connect's pairing guards FLINK on 9883 only, not the HTTP routes,
   `/api/connect/*` included). Its delete and move routes (`delete_path`, Edit's and Storage's;
   `move_path`, the File explorer's; by user decision) refuse only what exception 3 lists (`edit_discard` removes a staging folder by the same rules); the
   page's question is UI, not authentication. `edit_upload` writes only under a source's staging folder.

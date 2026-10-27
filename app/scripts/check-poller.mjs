@@ -7,6 +7,35 @@
 import assert from "node:assert/strict";
 
 const c = await import("../src/http-client.ts");
+
+// The About setting comes from the PS5 session, read afresh each time (another viewer may have
+// changed it); a successful POST uses the server's answer.
+{
+  const oldFetch = globalThis.fetch;
+  const sent = [];
+  let saved = false;
+  globalThis.fetch = async (url, options) => {
+    sent.push([url, options.method, options.body]);
+    if (url === "/api/session") return { status: 200, json: async () => ({ platform: "ps5", notifications: saved }) };
+    if (url === "/api/notifications") {
+      saved = JSON.parse(options.body).on;
+      return { status: 200, json: async () => ({ on: saved }) };
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  try {
+    assert.equal(await c.serverNotifications(), false);
+    assert.equal(await c.setServerNotifications(true), true);
+    saved = false; // another viewer turned them off
+    assert.equal(await c.serverNotifications(), false);
+    assert.deepEqual(sent.map(([url, method]) => [url, method]), [["/api/session", "GET"], ["/api/notifications", "POST"], ["/api/session", "GET"]]);
+    assert.equal(JSON.parse(sent[1][2]).on, true);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+  console.log("http-client notifications: ok (PS5 session and saved reply)");
+}
+
 const got = [];
 for (const e of ["jobs://restore", "job://stages", "job://progress", "job://log", "job://done"]) await c.listen(e, (p) => got.push([e, p]));
 const take = () => got.splice(0);

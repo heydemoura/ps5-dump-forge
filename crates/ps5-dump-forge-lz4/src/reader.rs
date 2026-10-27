@@ -9,7 +9,7 @@ use ps5upload_fpkg::source::{SourceFile, SourceTree};
 use ps5upload_fpkg::{Error, Result};
 
 use crate::format::*;
-use crate::{CRC_SIDECAR, MANIFEST, PROFILE, RUNTIME, RuntimeProfile};
+use crate::{CRC_SIDECAR, MANIFEST, PROFILE, RuntimeProfile};
 
 /// Runtime source defaults (not proof of the release blobs' build overrides).
 pub const MAX_MANIFEST_BYTES: u64 = 512 << 20;
@@ -505,9 +505,9 @@ fn read_exact<T: SourceTree + ?Sized>(tree: &mut T, path: &str, size: u64) -> Re
 }
 
 /// Opens the packs of `tree`: the manifest with every runtime check, every volume header, and
-/// the CRC sidecar and runtime profile when present. Fails if a loose record's file is missing
-/// or has the wrong size (the runtime's size is not checked), or a packed path is also a
-/// physical file.
+/// the CRC sidecar and runtime profile when present. Fails if a packed path is also a physical
+/// file (or folder). A loose record's file may be missing or of another size: the runtime
+/// reads loose files from the disk as they are, so an edited packed game still unpacks.
 pub fn unpack<T: SourceTree + ?Sized>(mut inner: Box<T>) -> Result<Unpacked<T>> {
     let sizes: HashMap<String, u64> = inner
         .files()
@@ -573,22 +573,10 @@ pub fn unpack<T: SourceTree + ?Sized>(mut inner: Box<T>) -> Result<Unpacked<T>> 
                 f.path
             )));
         }
+        // A loose record only lists the file: the runtime opens it from the disk as it is
+        // and never checks its size, so an edit (or a conversion's runtime swap) may change
+        // or remove it.
         if !f.packed() {
-            match sizes.get(&f.path) {
-                Some(&n) if n == f.size => {}
-                // A conversion replaces a packed game's runtime with the bundled one (by user
-                // decision), keeping the manifest and index byte for byte.
-                // The console never checks the runtime's own record (it is loaded before AMPR
-                // serves a file).
-                Some(_) if f.path == RUNTIME => {}
-                Some(&n) => {
-                    return Err(bad(format!(
-                        "loose {} is {n} bytes, the manifest says {}",
-                        f.path, f.size
-                    )));
-                }
-                None => return Err(bad(format!("loose {} is missing", f.path))),
-            }
             continue;
         }
         if physical.contains(&f.path.to_ascii_lowercase()) {
@@ -773,7 +761,7 @@ mod tests {
     use crate::volume_name;
     use crate::writer::testkit::*;
     use crate::writer::{PAGE, VOLUME_CAP};
-    use crate::{JOURNAL, PackSpec};
+    use crate::{JOURNAL, PackSpec, RUNTIME};
 
     type Entries = Vec<(&'static str, Vec<u8>, Option<PackSpec>)>;
 
@@ -838,9 +826,18 @@ mod tests {
     }
 
     #[test]
-    fn loose_records_must_match_and_packed_paths_must_not_exist() {
-        assert!(err(tree(|f| drop(f.remove("eboot.bin")))).contains("missing"));
-        assert!(err(tree(|f| drop(f.insert("eboot.bin".into(), vec![0; 301])))).contains("301"));
+    fn loose_records_may_change_and_packed_paths_must_not_exist() {
+        let u = unpack(Box::new(tree(|f| drop(f.remove("eboot.bin"))))).unwrap();
+        assert!(!u.files().iter().any(|f| f.path == "eboot.bin"));
+        let u = unpack(Box::new(tree(|f| {
+            drop(f.insert("eboot.bin".into(), vec![0; 301]))
+        })))
+        .unwrap();
+        assert!(
+            u.files()
+                .iter()
+                .any(|f| f.path == "eboot.bin" && f.size == 301)
+        );
         let both = err(tree(|f| drop(f.insert("DATA/A.bin".into(), vec![0]))));
         assert!(both.contains("both packed and a physical"), "{both}");
         let dir = err(tree(|f| drop(f.insert("data/a.bin/x".into(), vec![0]))));

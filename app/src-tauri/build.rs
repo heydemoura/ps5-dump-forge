@@ -8,6 +8,7 @@ const COMMANDS: &[&str] = &[
     "library_cover",
     "host_tree",
     "edit_check",
+    "existing_targets",
     "default_output",
     "generated_output",
     "start_job",
@@ -38,6 +39,7 @@ const COMMANDS: &[&str] = &[
     "connect_remote_list",
     "connect_nas_save",
     "connect_nas_forget",
+    "connect_cancel_job",
     "connect_payload_install",
     "connect_payload_send",
 ];

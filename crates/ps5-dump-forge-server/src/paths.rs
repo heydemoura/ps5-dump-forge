@@ -1,20 +1,30 @@
-//! The roots: where the file browser starts (`list_dir` with a `null` path). They confine
-//! nothing; every path a request names goes to core as given, as in the Tauri app.
+//! The roots: where the file browser starts (`list_dir` with a `null` path). On a computer
+//! they confine nothing; every path a request names goes to core as given, as in the Tauri
+//! app. On the PS5 (by user request) listings and paired devices reach only them: `/data`
+//! and each drive while it is mounted ([`Roots::confine`], [`Roots::reach`]).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::Platform;
 
-/// ShadowMountPlus's folder of mount points: a plain folder, listed whenever it exists.
-const SHADOWMNT: &str = "/mnt/shadowmnt";
 /// The PS5's internal storage, whose free space the Library shows.
 const DATA: &str = "/data";
+
+/// Each root with the path it was named by (`/data` may resolve elsewhere).
+type Named = Vec<(PathBuf, PathBuf)>;
 
 pub(crate) struct Roots {
     list: Vec<Candidate>,
     ps5: bool,
     /// `statfs`; tests replace it.
     statfs: fn(&Path) -> Option<Mount>,
+    /// [`Self::now`] kept this long for a paired device's calls ([`Self::reach`],
+    /// [`Self::above`]): a transfer asks for every file; 0 in tests.
+    ttl: Duration,
+    cached: Mutex<Option<(Instant, Named)>>,
 }
 
 struct Candidate {
@@ -22,8 +32,8 @@ struct Candidate {
     /// The canonical path, pinned at startup. On the PS5 a candidate that doesn't exist then
     /// is resolved each time it is used, and so is every drive.
     pinned: Option<PathBuf>,
-    /// A PS5 drive (`/mnt/usbN`, `/mnt/extN`, any `/mnt/...` but [`SHADOWMNT`]): its folder
-    /// exists with nothing plugged in, so it is listed only while a filesystem is mounted on it.
+    /// A PS5 drive (`/mnt/usbN`, `/mnt/extN`, any `/mnt/...`): its folder exists with nothing
+    /// plugged in, so it is listed only while a filesystem is mounted on it.
     drive: bool,
 }
 
@@ -54,7 +64,7 @@ impl Roots {
         let mut notes = Vec::new();
         let mut list = Vec::new();
         for path in candidates {
-            let drive = ps5 && path.starts_with("/mnt") && path != Path::new(SHADOWMNT);
+            let drive = ps5 && path.starts_with("/mnt");
             let candidate = |pinned| Candidate {
                 path: path.clone(),
                 pinned,
@@ -72,18 +82,21 @@ impl Roots {
                 Err(why) => notes.push(format!("not serving {}: {why}", path.display())),
             }
         }
-        (Self { list, ps5, statfs }, notes)
+        (
+            Self {
+                list,
+                ps5,
+                statfs,
+                ttl: Duration::from_secs(1),
+                cached: Mutex::new(None),
+            },
+            notes,
+        )
     }
 
     /// The roots that exist now (drives: that are mounted now), canonical, each once.
     pub fn current(&self) -> Vec<PathBuf> {
-        self.collect(false)
-    }
-
-    /// [`Self::current`] without ShadowMountPlus's folder (its mounts are the images already
-    /// listed from their files), for the Library's scan.
-    pub fn library(&self) -> Vec<PathBuf> {
-        self.collect(true)
+        self.now().into_iter().map(|(_, root)| root).collect()
     }
 
     /// The PS5's internal storage (`statfs` of `/data`): `None` on a computer, or when
@@ -99,14 +112,21 @@ impl Roots {
         })
     }
 
-    fn collect(&self, skip_shadowmnt: bool) -> Vec<PathBuf> {
-        let shadow = Path::new(SHADOWMNT);
-        let shadow_canon = shadow.canonicalize().ok();
-        let mut roots = Vec::new();
+    /// [`Self::now`], at most `ttl` old.
+    fn recent(&self) -> Vec<(PathBuf, PathBuf)> {
+        let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, roots)) = cached.as_ref().filter(|(at, _)| at.elapsed() < self.ttl) {
+            return roots.clone();
+        }
+        let roots = self.now();
+        *cached = Some((Instant::now(), roots.clone()));
+        roots
+    }
+
+    /// [`Self::current`], each with the path it was named by (`/data` may resolve elsewhere).
+    fn now(&self) -> Vec<(PathBuf, PathBuf)> {
+        let mut roots: Vec<(PathBuf, PathBuf)> = Vec::new();
         for c in &self.list {
-            if skip_shadowmnt && c.path == shadow {
-                continue;
-            }
             let root = match &c.pinned {
                 Some(root) => root.is_dir().then(|| root.clone()),
                 None if self.ps5 => pin(&c.path)
@@ -114,13 +134,142 @@ impl Roots {
                     .filter(|r| !c.drive || mounted(r, (self.statfs)(r))),
                 None => None,
             };
-            let hidden =
-                |r: &PathBuf| skip_shadowmnt && (r == shadow || shadow_canon.as_ref() == Some(r));
-            if let Some(root) = root.filter(|r| !hidden(r) && !roots.contains(r)) {
-                roots.push(root);
+            if let Some(root) = root.filter(|r| roots.iter().all(|(_, x)| x != r)) {
+                roots.push((c.path.clone(), root));
             }
         }
         roots
+    }
+
+    /// The PS5's rule for a path a request names (`list_dir`, `host_tree`, a Library folder):
+    /// at or inside a root now, resolved as far as it exists (the rest as typed, never `..`).
+    /// A computer, and another device's path (`smb://`, `flink://`, ...), pass. `Err`: the
+    /// one line a 400 carries.
+    pub fn confine(&self, path: &Path) -> Result<(), String> {
+        if !self.ps5 || ps5_dump_forge_core::net::is_network(path) {
+            return Ok(());
+        }
+        let now = self.now();
+        match resolve(path) {
+            Some(real) if now.iter().any(|(_, root)| real.starts_with(root)) => Ok(()),
+            _ => Err(outside(path)),
+        }
+    }
+
+    /// The PS5's rule for a paired device's path `p` (its folder resolved, its own name not):
+    /// at or inside a root now, a root's own path as named giving the canonical one (so a
+    /// linked `/data` reads as the folder); with `browse` (stat, list) also a folder above a
+    /// root (`/`; `/mnt` while a drive is mounted). A computer: `p` as it is.
+    pub fn reach(&self, p: &Path, browse: bool) -> Result<PathBuf, String> {
+        if !self.ps5 {
+            return Ok(p.to_path_buf());
+        }
+        let now = self.recent();
+        // The snapshot may be a second old: a write under a drive asks that drive again, so
+        // nothing lands in the mount point of one just unplugged (browsing may be stale).
+        let still = |named: &PathBuf, root: &Path| {
+            browse
+                || !(self.list.iter()).any(|c| c.drive && c.path == *named)
+                || mounted(root, (self.statfs)(root))
+        };
+        if let Some((named, root)) = now.iter().find(|(named, _)| named == p) {
+            return match still(named, root) {
+                true => Ok(root.clone()),
+                false => Err(outside(p)),
+            };
+        }
+        if let Some((named, root)) = now.iter().find(|(_, root)| p.starts_with(root)) {
+            return match still(named, root) {
+                true => Ok(p.to_path_buf()),
+                false => Err(outside(p)),
+            };
+        }
+        match browse && now.iter().any(|(named, _)| named.starts_with(p)) {
+            true => Ok(p.to_path_buf()),
+            false => Err(outside(p)),
+        }
+    }
+
+    /// On the PS5, for a folder above the roots, the names in it that lead to one: all a
+    /// paired device's listing of it keeps. `None`: list everything.
+    pub fn above(&self, dir: &Path) -> Option<Vec<OsString>> {
+        if !self.ps5 {
+            return None;
+        }
+        let now = self.recent();
+        if now.iter().any(|(_, root)| dir.starts_with(root)) {
+            return None;
+        }
+        let mut names: Vec<OsString> = Vec::new();
+        for (named, _) in &now {
+            let next = named.strip_prefix(dir).ok().and_then(|r| r.iter().next());
+            if let Some(name) = next.filter(|n| !names.iter().any(|x| x == n)) {
+                names.push(name.to_owned());
+            }
+        }
+        Some(names)
+    }
+}
+
+#[cfg(all(test, unix))]
+impl Roots {
+    /// PS5 roots for tests, `(path, drive)` each, resolved on each use, with a fake `statfs`.
+    pub(crate) fn fake(list: &[(PathBuf, bool)], statfs: fn(&Path) -> Option<Mount>) -> Roots {
+        let list = (list.iter())
+            .map(|(path, drive)| Candidate {
+                path: path.clone(),
+                pinned: None,
+                drive: *drive,
+            })
+            .collect();
+        Roots {
+            list,
+            ps5: true,
+            statfs,
+            ttl: Duration::ZERO,
+            cached: Mutex::new(None),
+        }
+    }
+}
+
+/// A fake `statfs` for tests: a `mounted` file in a folder makes it a mount point.
+#[cfg(all(test, unix))]
+pub(crate) fn fake_statfs(p: &Path) -> Option<Mount> {
+    let on = match p.join("mounted").exists() {
+        true => p.to_path_buf(),
+        false => p.parent()?.to_path_buf(),
+    };
+    Some(Mount {
+        on,
+        blocks: 1,
+        total: 0,
+        free: 0,
+    })
+}
+
+/// The refusal of a path off the PS5's storage.
+fn outside(p: &Path) -> String {
+    format!(
+        "{} is not on this console's storage or a plugged-in drive",
+        p.display()
+    )
+}
+
+/// `path` canonical as far as it exists, the rest appended as named; `None` for a relative
+/// path or one whose missing part holds `..`.
+fn resolve(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(mut real) = dunce::canonicalize(at) {
+            real.extend(rest.iter().rev());
+            return Some(real);
+        }
+        rest.push(at.file_name()?);
+        at = at.parent()?;
     }
 }
 
@@ -252,19 +401,6 @@ mod tests {
         let usb = tmp.join("usb0");
         std::fs::create_dir_all(&usb).unwrap();
         let usb = usb.canonicalize().unwrap();
-        // A fake `statfs`: a `mounted` file in the folder makes it a mount point.
-        let fake = |p: &Path| {
-            let on = match p.join("mounted").exists() {
-                true => p.to_path_buf(),
-                false => p.parent()?.to_path_buf(),
-            };
-            Some(Mount {
-                on,
-                blocks: 1,
-                total: 0,
-                free: 0,
-            })
-        };
         let drive = Candidate {
             path: usb.clone(),
             pinned: None,
@@ -273,7 +409,9 @@ mod tests {
         let roots = Roots {
             list: vec![drive],
             ps5: true,
-            statfs: fake,
+            statfs: fake_statfs,
+            ttl: Duration::ZERO,
+            cached: Mutex::new(None),
         };
         assert!(roots.current().is_empty());
         std::fs::write(usb.join("mounted"), b"").unwrap();
@@ -282,13 +420,83 @@ mod tests {
         assert!(roots.current().is_empty());
         std::fs::remove_dir_all(&tmp).unwrap();
 
-        // `/mnt/...` candidates are drives on the PS5 only, and never pinned; ShadowMountPlus's
-        // folder isn't one.
-        let mnt = [PathBuf::from("/mnt/usb0"), PathBuf::from(SHADOWMNT)];
+        // `/mnt/...` candidates are drives on the PS5 only, and never pinned.
+        let mnt = [PathBuf::from("/mnt/usb0"), PathBuf::from("/data")];
         let (roots, _) = Roots::new(Platform::Ps5, &mnt);
         assert!(roots.list[0].drive && roots.list[0].pinned.is_none());
         assert!(!roots.list[1].drive);
         let (roots, _) = Roots::new(Platform::Host, &mnt);
         assert!(roots.list.iter().all(|c| !c.drive));
+    }
+
+    /// The cached roots serve browsing, but a write under a drive unplugged since asks it again.
+    #[test]
+    fn a_write_never_reaches_a_drive_unplugged_since_the_cache() {
+        let tmp = std::env::temp_dir().join(format!("forge-reach-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let usb = tmp.join("usb0");
+        std::fs::create_dir_all(&usb).unwrap();
+        let usb = usb.canonicalize().unwrap();
+        std::fs::write(usb.join("mounted"), b"").unwrap();
+        let mut roots = Roots::fake(&[(usb.clone(), true)], fake_statfs);
+        roots.ttl = Duration::from_secs(600);
+        let file = usb.join("f.bin");
+        assert_eq!(roots.reach(&file, false), Ok(file.clone()));
+        std::fs::remove_file(usb.join("mounted")).unwrap();
+        assert!(roots.reach(&file, false).is_err());
+        assert!(roots.reach(&usb, false).is_err());
+        assert_eq!(roots.reach(&file, true), Ok(file.clone()));
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    /// The PS5's reach: `/data` (a link here) and a drive while mounted; nothing else, also not
+    /// through a link inside a root. A computer reaches everything.
+    #[test]
+    fn ps5_reaches_only_data_and_mounted_drives() {
+        let tmp = std::env::temp_dir().join(format!("forge-reach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("user/data/game")).unwrap();
+        std::fs::create_dir_all(tmp.join("mnt/usb0")).unwrap();
+        std::fs::create_dir_all(tmp.join("mnt/usb1")).unwrap();
+        std::fs::create_dir_all(tmp.join("system")).unwrap();
+        let tmp = tmp.canonicalize().unwrap();
+        let (data, real) = (tmp.join("data"), tmp.join("user/data"));
+        std::os::unix::fs::symlink(&real, &data).unwrap();
+        std::os::unix::fs::symlink(tmp.join("system"), real.join("out")).unwrap();
+        let (usb0, usb1) = (tmp.join("mnt/usb0"), tmp.join("mnt/usb1"));
+        let roots = Roots::fake(
+            &[(data.clone(), false), (usb0.clone(), true), (usb1, true)],
+            fake_statfs,
+        );
+        let ok = |p: &Path| roots.confine(p).is_ok();
+        assert!(ok(&data) && ok(&real.join("game")) && ok(&data.join("game/new/file")));
+        assert!(!ok(&tmp) && !ok(&tmp.join("system")) && !ok(&tmp.join("mnt")));
+        // A link inside a root that leads out, a `..` past what exists, a relative path.
+        assert!(!ok(&real.join("out")) && !ok(&data.join("out/x")));
+        assert!(!ok(&data.join("new/../../../system")) && !ok(Path::new("data")));
+        assert!(!ok(&usb0) && ok(Path::new("flink://0123/anything")));
+        let err = roots.confine(&tmp.join("system")).unwrap_err();
+        assert!(err.ends_with("is not on this console's storage or a plugged-in drive"));
+        std::fs::write(usb0.join("mounted"), b"").unwrap();
+        assert!(ok(&usb0.join("games")));
+
+        // A paired device: `/data` as named reads as its folder; above the roots only browsed,
+        // listing just the way to them (`mnt` only while a drive is mounted).
+        assert_eq!(roots.reach(&data, false).unwrap(), real);
+        assert!(roots.reach(&tmp, true).is_ok() && roots.reach(&tmp, false).is_err());
+        assert!(roots.reach(&tmp.join("system"), true).is_err());
+        assert!(roots.reach(&tmp.join("mnt/usb1"), true).is_err());
+        let names = |d: &Path| roots.above(d).map(|v| v.into_iter().collect::<Vec<_>>());
+        assert_eq!(names(&tmp), Some(vec!["data".into(), "mnt".into()]));
+        assert_eq!(names(&tmp.join("mnt")), Some(vec!["usb0".into()]));
+        assert_eq!(names(&real), None);
+        std::fs::remove_file(usb0.join("mounted")).unwrap();
+        assert_eq!(names(&tmp), Some(vec!["data".into()]));
+        assert!(roots.reach(&tmp.join("mnt"), true).is_err());
+
+        let (host, _) = Roots::new(Platform::Host, std::slice::from_ref(&real));
+        assert!(host.confine(&tmp.join("system")).is_ok() && host.above(&tmp).is_none());
+        assert_eq!(host.reach(&tmp, false).unwrap(), tmp);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 }
