@@ -19,9 +19,17 @@ use ps5_dump_forge_server::connect::{self, Connect};
 use ps5_dump_forge_server::payload;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-/// Emitted to the UI when a close or quit was held back because jobs are running.
-/// The UI asks the user and calls `quit_app` on confirmation.
+/// Emitted to the UI when a close or quit was held back because jobs are running or a paired
+/// device is using files here (payload `{"peer": bool}`, `QuitHeld`). The UI asks the user and
+/// calls `quit_app` on confirmation.
 const CLOSE_REQUESTED: &str = "close-requested";
+
+/// Why a close or quit waits for the user's answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QuitHeld {
+    /// A paired device is reading or writing files here: quitting cuts its transfer short.
+    peer: bool,
+}
 
 /// Our own Quit menu item (macOS), so Cmd+Q goes through the running-jobs check.
 #[cfg(target_os = "macos")]
@@ -41,6 +49,8 @@ struct AppState {
     /// Connect's service (FLINK 9883 + discovery on UDP 8094; no HTTP listener), started at
     /// setup and shut down at exit; `Err` says why it isn't running.
     connect: Result<Arc<Connect>, String>,
+    /// Whether a paired device is reading or writing files here (`Connect::activity_hook`).
+    peers_active: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl AppState {
@@ -49,7 +59,12 @@ impl AppState {
             let app = app.clone();
             let running = self.running.clone();
             let outputs = self.outputs.clone();
+            // Mirrored to the paired peers a job uses (Connect holds no strong link back).
+            let connect = self.connect.as_ref().ok().cloned();
             let jobs = Jobs::new(move |event| {
+                if let Some(c) = &connect {
+                    c.job_event(&event);
+                }
                 let name = match &event {
                     Event::Stages { .. } => "job://stages",
                     Event::Progress { .. } => "job://progress",
@@ -68,6 +83,9 @@ impl AppState {
             if let Ok(connect) = &self.connect {
                 jobs.set_external_busy(connect.writing_hook());
             }
+            // An extract or transfer that replaces (the user confirmed it) never takes the home
+            // folder, as Delete and Move keep it.
+            jobs.set_protected(Arc::new(|| std::env::home_dir().into_iter().collect()));
             jobs
         })
     }
@@ -77,14 +95,16 @@ impl AppState {
         self.quitting.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Quit when idle: closes admission and returns `true`; else `false`.
-    fn try_quit(&self) -> bool {
+    /// Quit when idle (no job of this app's, no paired device using files here): closes
+    /// admission; else what holds it back.
+    fn try_quit(&self) -> Result<(), QuitHeld> {
         let mut quitting = self.quitting();
-        if self.running.load(Ordering::SeqCst) > 0 {
-            return false;
+        let peer = (self.peers_active)();
+        if peer || self.running.load(Ordering::SeqCst) > 0 {
+            return Err(QuitHeld { peer });
         }
         *quitting = true;
-        true
+        Ok(())
     }
 
     /// Cancel every job and wait for its cleanup (a no-op before the first job).
@@ -159,6 +179,17 @@ async fn edit_check(app: AppHandle, request: ConvertRequest) -> Result<EditCheck
     .await
 }
 
+/// An extract's or transfer's targets that exist already (core's `Jobs::existing_targets`:
+/// each selection's, top level, on a peer or NAS too), so the UI asks before it sends
+/// `replace`. Reads only.
+#[tauri::command]
+async fn existing_targets(app: AppHandle, request: ConvertRequest) -> Result<Vec<PathBuf>, String> {
+    blocking(app, move |app, state| {
+        state.jobs(app).existing_targets(&request).map_err(err)
+    })
+    .await
+}
+
 /// One Library card's cover: a PNG data URL, or `None`.
 #[tauri::command]
 async fn library_cover(app: AppHandle, path: PathBuf) -> Result<Option<String>, String> {
@@ -210,9 +241,12 @@ async fn start_job(app: AppHandle, request: ConvertRequest) -> Result<JobId, Str
         if *quitting {
             return Err("PS5 Dump Forge is quitting".to_string());
         }
-        let id = catch_unwind(AssertUnwindSafe(|| state.jobs(app).start(request)))
+        let id = catch_unwind(AssertUnwindSafe(|| state.jobs(app).start(request.clone())))
             .map_err(|_| "the job runner failed to start the job".to_string())?;
         state.running.fetch_add(1, Ordering::SeqCst);
+        if let Ok(connect) = &state.connect {
+            connect.job_started(id, &request);
+        }
         drop(quitting);
         Ok(id)
     })
@@ -283,11 +317,18 @@ async fn delete_path(app: AppHandle, path: PathBuf) -> Result<(), String> {
 }
 
 /// Moves or renames a file or folder on its drive (core's `Jobs::move_path`): `to` never
-/// replaced, `from` refused as `delete_path` refuses it (the home folder protected), and
-/// either in a folder the Library refuses (`folder_refusal`). Under the quit lock, like
-/// `delete_path`.
+/// replaced unless `replace` (the user confirmed it: a file over a file, a folder merged into
+/// a folder, the old file refused as `delete_path` refuses it), `from` refused as
+/// `delete_path` refuses it (the home folder protected), and either in a folder the Library
+/// refuses (`folder_refusal`). Under the quit lock, like `delete_path`.
 #[tauri::command]
-async fn move_path(app: AppHandle, from: PathBuf, to: PathBuf) -> Result<(), String> {
+async fn move_path(
+    app: AppHandle,
+    from: PathBuf,
+    to: PathBuf,
+    replace: Option<bool>,
+) -> Result<(), String> {
+    let replace = replace.unwrap_or(false);
     blocking(app, move |app, state| {
         if let Some(why) = [from.as_path(), to.as_path()]
             .into_iter()
@@ -300,7 +341,7 @@ async fn move_path(app: AppHandle, from: PathBuf, to: PathBuf) -> Result<(), Str
             return Err("PS5 Dump Forge is quitting".to_string());
         }
         let keep: Vec<PathBuf> = std::env::home_dir().into_iter().collect();
-        let done = state.jobs(app).move_path(&from, &to, &keep);
+        let done = state.jobs(app).move_path(&from, &to, replace, &keep);
         drop(quitting);
         done.map_err(|e| e.to_string())
     })
@@ -520,11 +561,13 @@ async fn quit_app(app: AppHandle) -> Result<(), String> {
 
 /// Close, Cmd+Q or last window gone: `true` to quit now (idle), else the UI asks first.
 fn request_quit(app: &AppHandle) -> bool {
-    let idle = app.try_state::<AppState>().is_none_or(|s| s.try_quit());
-    if !idle {
-        let _ = app.emit(CLOSE_REQUESTED, ());
+    match app.try_state::<AppState>().map_or(Ok(()), |s| s.try_quit()) {
+        Ok(()) => true,
+        Err(held) => {
+            let _ = app.emit(CLOSE_REQUESTED, serde_json::json!({ "peer": held.peer }));
+            false
+        }
     }
-    idle
 }
 
 /// The default macOS menu, except that Quit is ours: the predefined one sends
@@ -860,6 +903,12 @@ async fn connect_state(app: AppHandle) -> Result<serde_json::Value, String> {
     connect_call(app, |c| Ok(c.snapshot())).await
 }
 
+/// Asks a paired peer to cancel its job shown here; false when it isn't listed.
+#[tauri::command(rename_all = "snake_case")]
+async fn connect_cancel_job(app: AppHandle, key_id: String, job: JobId) -> Result<bool, String> {
+    connect_call(app, move |c| Ok(c.cancel_remote_job(&key_id, job))).await
+}
+
 /// Asks the device at `address` to pair; `connect_state`'s `outgoing` follows it.
 #[tauri::command(rename_all = "snake_case")]
 async fn connect_pair(app: AppHandle, address: String) -> Result<(), String> {
@@ -1019,13 +1068,36 @@ fn main() {
                     (handle.try_state::<AppState>())
                         .is_some_and(|s| s.jobs.get().is_some_and(|jobs| jobs.uses(path)))
                 }));
+                // A peer's replacing rename is refused as a job's replace is (the home folder
+                // kept): the runner is made if none is yet, which sets what it protects.
+                let handle = app.handle().clone();
+                connect.set_replace_check(Arc::new(move |path| {
+                    match handle.try_state::<AppState>() {
+                        Some(s) => (s.jobs(&handle).replace_check(path)).map_err(|e| e.to_string()),
+                        None => Err("PS5 Dump Forge is starting; try again".to_string()),
+                    }
+                }));
+                // A peer shown one of this device's jobs may cancel it.
+                let handle = app.handle().clone();
+                connect.set_cancel(Arc::new(move |id| {
+                    if let Some(state) = handle.try_state::<AppState>()
+                        && let Some(jobs) = state.jobs.get()
+                    {
+                        jobs.cancel(id);
+                    }
+                }));
             }
+            let peers_active = match &connect {
+                Ok(c) => c.activity_hook(),
+                Err(_) => Arc::new(|| false),
+            };
             app.manage(AppState {
                 jobs: OnceLock::new(),
                 running: Arc::default(),
                 quitting: Mutex::new(false),
                 outputs: Arc::default(),
                 connect,
+                peers_active,
             });
 
             // The drag and drop handler stays on (Tauri 2's default): the Edit tab hears
@@ -1065,6 +1137,7 @@ fn main() {
             library_cover,
             host_tree,
             edit_check,
+            existing_targets,
             default_output,
             generated_output,
             start_job,
@@ -1091,6 +1164,7 @@ fn main() {
             connect_discover_stop,
             connect_nas_save,
             connect_nas_forget,
+            connect_cancel_job,
             connect_payload_install,
             connect_payload_send,
         ])
@@ -1121,4 +1195,32 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The quit check hears the peers' hook as it hears this app's jobs.
+    #[test]
+    fn a_peer_using_files_here_holds_a_quit_back() {
+        let busy = Arc::new(AtomicBool::new(true));
+        let hook = busy.clone();
+        let state = AppState {
+            jobs: OnceLock::new(),
+            running: Arc::default(),
+            quitting: Mutex::new(false),
+            outputs: Arc::default(),
+            connect: Err("not started".into()),
+            peers_active: Arc::new(move || hook.load(Ordering::SeqCst)),
+        };
+        assert_eq!(state.try_quit(), Err(QuitHeld { peer: true }));
+        assert!(!*state.quitting());
+        state.running.store(1, Ordering::SeqCst);
+        busy.store(false, Ordering::SeqCst);
+        assert_eq!(state.try_quit(), Err(QuitHeld { peer: false }));
+        state.running.store(0, Ordering::SeqCst);
+        assert_eq!(state.try_quit(), Ok(()));
+        assert!(*state.quitting());
+    }
 }

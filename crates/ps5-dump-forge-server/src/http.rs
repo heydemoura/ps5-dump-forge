@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 pub(crate) const HEAD_MAX: usize = 16 * 1024;
 pub(crate) const BODY_MAX: usize = 1024 * 1024;
-/// The body cap of the two routes that take a whole edit list (`start_job`, `edit_check`): a
-/// dropped folder in the web build is one `add` per file, about 200 bytes each.
+/// The body cap of the routes that take a whole request (`start_job`, `edit_check`,
+/// `existing_targets`): a dropped folder in the web build is one `add` per file, about 200
+/// bytes each, and a transfer lists every path it sends.
 pub(crate) const JOB_BODY_MAX: usize = 8 * 1024 * 1024;
 /// A route whose body has no size limit: streamed to disk, never held in memory.
 pub(crate) const UPLOAD: &str = "/api/edit_upload";
@@ -307,7 +308,9 @@ pub(crate) fn parse_head(bytes: &[u8]) -> Result<Head, Response> {
         head.length = length.parse().unwrap_or(usize::MAX);
         let cap = match (head.method.as_str(), head.path.as_str()) {
             ("POST", UPLOAD | CONNECT_UPLOAD) => None,
-            ("POST", "/api/start_job" | "/api/edit_check") => Some((JOB_BODY_MAX, "8 MiB")),
+            ("POST", "/api/start_job" | "/api/edit_check" | "/api/existing_targets") => {
+                Some((JOB_BODY_MAX, "8 MiB"))
+            }
             _ => Some((BODY_MAX, "1 MiB")),
         };
         if let Some((max, text)) = cap
@@ -706,7 +709,7 @@ mod tests {
             ))
             .map(|h| h.length)
         };
-        for path in ["/api/start_job", "/api/edit_check"] {
+        for path in ["/api/start_job", "/api/edit_check", "/api/existing_targets"] {
             assert_eq!(post(path, JOB_BODY_MAX), Ok(JOB_BODY_MAX), "{path}");
             assert_eq!(post(path, JOB_BODY_MAX + 1).err(), Some(413), "{path}");
         }

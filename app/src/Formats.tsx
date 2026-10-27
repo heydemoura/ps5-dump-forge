@@ -1,11 +1,11 @@
 // About: the features, then one comparison of the targets and the plain folder (console speeds
 // from ShadowMountPlus 1.7's README and release notes; the LZ4 packed folder's from its
 // upstream authors, labelled as theirs), then the credits; the language selector sits in the
-// About card's head. Nothing here talks to Rust.
+// About card's head. On the PS5, one switch saves job notices through the server.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { APP_NAME, type Format } from "./api";
+import { APP_NAME, jobNotifications, type Format } from "./api";
 import { CardHead, FormatPill, Prose } from "./common";
 import { getChoice, type Lang, LANGS, setLang, useMessages } from "./i18n";
 import { Icon, type IconName } from "./icons";
@@ -39,7 +39,7 @@ export type Row = { tagline: string; cells: [string, string] };
 type Feature = [string, string];
 export type Features = [Feature, Feature, Feature, Feature, Feature, Feature, Feature, Feature, Feature];
 
-export function Formats() {
+export function Formats(props: { shown: boolean }) {
   const t = useMessages().formats;
   return (
     <div className="screen">
@@ -63,6 +63,7 @@ export function Formats() {
             </li>
           ))}
         </ul>
+        <NotificationSwitch shown={props.shown} />
       </section>
 
       <section className="card" aria-labelledby="f-title">
@@ -118,6 +119,54 @@ export function Formats() {
           <li>{t.unrar}</li>
         </ul>
       </section>
+    </div>
+  );
+}
+
+/** The console keeps this one choice for jobs started here; read again each time About shows
+ * (another viewer may have changed it). */
+function NotificationSwitch({ shown }: { shown: boolean }) {
+  const t = useMessages().formats;
+  const [on, setOn] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!shown) return;
+    let live = true;
+    void jobNotifications.get().then((value) => {
+      if (live) setOn(value);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [shown]);
+
+  if (on === null) return null;
+  const change = (next: boolean) => {
+    if (busy) return;
+    const previous = on;
+    setOn(next);
+    setBusy(true);
+    setFailed(false);
+    void jobNotifications.set(next).then((saved) => {
+      if (saved === null) throw new Error("Notification setting unavailable");
+      setOn(saved);
+    }).catch(() => {
+      setOn(previous);
+      setFailed(true);
+    }).finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="field notifications">
+      <label className="switch">
+        <input type="checkbox" className="visually-hidden" checked={on}
+          // Not `disabled`: a focused control that turns disabled drops focus to the page.
+          aria-disabled={busy || undefined}
+          onChange={(e) => change(e.target.checked)} />
+        <span className="switch-track" aria-hidden="true" />
+        <span>{t.notifications}<span className="muted hint">{t.notificationsHint}</span></span>
+      </label>
+      {failed && <p className="bad" role="alert">{t.notificationsFailed}</p>}
     </div>
   );
 }

@@ -137,6 +137,21 @@ fn writes_new_files_and_never_replaces() {
         std::io::ErrorKind::AlreadyExists
     );
     assert_eq!(s.stat(&share, &done).unwrap().size, body.len() as u64);
+    // Replacing: the file over the file, never over a folder.
+    s.rename_replace(&share, &tmp, &done).unwrap();
+    assert_eq!(s.stat(&share, &done).unwrap().size, 1);
+    assert_eq!(
+        s.stat(&share, &tmp).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    let sub = format!("{dir}/sub");
+    s.mkdir(&share, &sub).unwrap();
+    s.create_file(&share, &tmp).unwrap();
+    assert!(
+        s.rename_replace(&share, &tmp, &sub).is_err(),
+        "over a folder"
+    );
+    assert!(s.stat(&share, &sub).unwrap().dir);
     for f in [&tmp, &done] {
         s.remove(&share, f).unwrap();
     }
@@ -148,6 +163,6 @@ fn writes_new_files_and_never_replaces() {
     // The client removes files only: the share's folder on this machine, when given, loses the
     // emptied one.
     if let Ok(local) = std::env::var("FORGE_SMB_TEST_SHARE_DIR") {
-        std::fs::remove_dir(std::path::Path::new(&local).join(format!("{dir}-gone"))).unwrap();
+        std::fs::remove_dir_all(std::path::Path::new(&local).join(format!("{dir}-gone"))).unwrap();
     }
 }

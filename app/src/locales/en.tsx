@@ -48,6 +48,7 @@ const en = {
     /** Stop's question while no job runs (web: the payload; else the app, its jobs just finished). */
     confirmStop: (web: boolean): string => (web ? "Stop Dump Forge?" : "Quit PS5 Dump Forge?"),
     stopNote: (web: boolean, ps5: boolean): string => (!web ? "No job is running." : ps5 ? "To start it again, open the Dump Forge tile on the PS5." : "To start it again, run the same ps5-dump-forge serve command again."),
+    peerBusy: "A paired device is reading or writing files on this computer. Quitting stops its transfer.",
     quit: "Quit",
     github: (name: string) => `${name} on GitHub`,
     queued: "queued",
@@ -156,6 +157,9 @@ const en = {
       ".rar archives are read with the bundled UnRAR library by Alexander Roshal (extract only, under the UnRAR license).",
     language: "Language",
     system: "System",
+    notifications: "Notify when a job finishes",
+    notificationsHint: "Shows on the console for Convert, LZ4 and Transfer jobs.",
+    notificationsFailed: "Couldn't change notifications.",
   },
   // Edit.tsx
   edit: {
@@ -387,9 +391,13 @@ const en = {
     cancelling: "Cancelling…",
     queued: "Queued",
     dismiss: "Dismiss",
+    retry: "Retry",
+    retrying: "Starting",
     stopJob: "Stop job?",
     cancel: "Cancel",
     stopHint: "Press Stop job? again within 4 seconds to stop it.",
+    remoteLabel: (name: string, device: string) => `${name}, a job on ${device}`,
+    remoteTitle: (device: string) => `Runs on ${device} and uses this device's files: you can only cancel it here`,
     from: "from ",
     left: (d: string) => `${d} left`,
     inStep: (time: string) => `${time} in this step`,
@@ -785,6 +793,16 @@ const en = {
     fileTitle: "Delete this file?",
     fileText: "The file will be deleted for good: no Trash, no undo.",
   },
+  // replace.tsx
+  replace: {
+    title: (n: number) =>
+      plural(n, { one: `${num(n)} item already exists there`, other: `${num(n)} items already exist there` }),
+    inFolder: (folder: ReactNode): ReactNode => <>In {folder}:</>,
+    more: (n: number) => `and ${num(n)} more`,
+    text: "Replace puts the new ones in their place: the old files are gone for good, no Trash, no undo. A folder onto a folder of the same name is merged: its files with the same names are replaced, everything else there stays.",
+    cancel: "Cancel",
+    replace: "Replace",
+  },
   // password.tsx
   password: {
     title: "This archive needs a password",
@@ -1020,6 +1038,8 @@ const en = {
     uploadPick: "Choose files to upload",
     uploading: (name: string, i: number, n: number) => `Uploading ${name} (${num(i)} of ${num(n)})`,
     uploaded: "Upload finished",
+    /** Files not uploaded: a folder or link of the same name is in the folder chosen. */
+    uploadSkipped: (names: string) => `Not uploaded, a folder or link of that name is there: ${names}.`,
     uploadedBefore: (done: number, n: number) =>
       plural(done, {
         one: `${num(done)} of ${num(n)} files was uploaded and stays on this device.`,
@@ -1048,7 +1068,7 @@ const en = {
       "Connect links Dump Forge on your PS5 and computers on the same network.",
       "To pair, run Autodiscovery and choose Pair under Nearby, or type an address under Add a device, then allow it on the other device. Allow it only when both screens show the same check number.",
       "A NAS (SMB, FTP, NFS) is added the same way. Paired devices and NAS devices are game sources and outputs; their games aren't edited there.",
-      "File Transfer copies files and folders between any of them. A name that already exists there is refused.",
+      "File Transfer copies files and folders between any of them. A name that already exists there is replaced only after you confirm.",
     ] as string[],
     helpSecurity: "Nothing sent between devices is encrypted: anyone on your network can read it. A saved NAS password is kept on this device unencrypted. Use Connect on your home network only.",
     installTitle: "Dump Forge on PS5",

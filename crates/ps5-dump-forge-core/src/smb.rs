@@ -300,19 +300,13 @@ impl Remote for Smb {
     }
 
     fn rename_no_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()> {
-        let (share, old) = below_share(from)?;
-        let (to_share, new) = below_share(to)?;
-        if from.key_id != to.key_id || !share.eq_ignore_ascii_case(to_share) {
-            return Err(io::Error::new(
-                io::ErrorKind::CrossesDevices,
-                format!(
-                    "{} -> {}: can't move between shares",
-                    from.shown(),
-                    to.shown()
-                ),
-            ));
-        }
+        let (share, old, new) = same_share(from, to)?;
         self.with(from, |s| s.rename(share, old, new))
+    }
+
+    fn rename_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()> {
+        let (share, old, new) = same_share(from, to)?;
+        self.with(from, |s| s.rename_replace(share, old, new))
     }
 
     fn remove(&self, path: &FlinkPath) -> io::Result<()> {
@@ -324,6 +318,26 @@ impl Remote for Smb {
         let (share, rest) = in_share(dir)?;
         self.with(dir, |s| s.free_space(share, rest))
     }
+}
+
+/// `from`'s share and both paths below it, when `to` is on the same share of the same server.
+fn same_share<'a>(
+    from: &'a FlinkPath,
+    to: &'a FlinkPath,
+) -> io::Result<(&'a str, &'a str, &'a str)> {
+    let (share, old) = below_share(from)?;
+    let (to_share, new) = below_share(to)?;
+    if from.key_id != to.key_id || !share.eq_ignore_ascii_case(to_share) {
+        return Err(io::Error::new(
+            io::ErrorKind::CrossesDevices,
+            format!(
+                "{} -> {}: can't move between shares",
+                from.shown(),
+                to.shown()
+            ),
+        ));
+    }
+    Ok((share, old, new))
 }
 
 fn no_upload(handle: u64) -> io::Error {

@@ -1316,4 +1316,156 @@ mod tests {
         // The runtime is never swapped: there is none, and none is installed.
         assert!(!root.join(ps5_dump_forge_lz4::RUNTIME).exists());
     }
+
+    /// An AMPR game packed into LZ4 packs by a conversion: `dir/packed`.
+    fn packed_game(dir: &Path) -> PathBuf {
+        let text: Vec<u8> = (0..300_000)
+            .map(|i| b"compressible text "[i % 18])
+            .collect();
+        let src = game(
+            &dir.join("src"),
+            AMPR_EBOOT,
+            &[("data/assets/level1.bin", &text)],
+        );
+        let out = dir.join("packed");
+        let req: ConvertRequest = serde_json::from_value(serde_json::json!({
+            "source": src, "format": "lz4", "output": out
+        }))
+        .unwrap();
+        let emit: Box<dyn Fn(Event) + Send + Sync> = Box::new(|_| {});
+        let cancel = AtomicBool::new(false);
+        crate::convert::run(&req, &Ctx::new(1, &emit, &cancel)).unwrap();
+        out
+    }
+
+    /// The pack files and `ampr_emu.index` of a packed folder, with their bytes.
+    fn packs(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
+        (snapshot(root).into_iter())
+            .filter(|(p, _)| p.starts_with("ampr_assets") || p == INDEX)
+            .collect()
+    }
+
+    #[test]
+    fn a_packed_game_edits_all_but_its_packs() {
+        let dir = crate::test_dir("edit-folder-packed");
+        let root = packed_game(&dir);
+        let manifest = std::fs::read(root.join(ps5_dump_forge_lz4::MANIFEST)).unwrap();
+        let manifest = ps5_dump_forge_lz4::reader::open_manifest(&manifest).unwrap();
+        let packed: Vec<&str> = (manifest.files.iter())
+            .filter(|f| f.packed())
+            .map(|f| f.path.as_str())
+            .collect();
+        assert!(packed.contains(&"data/assets/level1.bin"), "{packed:?}");
+        let locked = packs(&root);
+        assert!(locked.len() >= 4, "{locked:?}");
+        put(
+            &dir,
+            "host/eboot.bin",
+            b"\x7fELF a new eboot importing libSceAmpr.sprx",
+        );
+        put(&dir, "host/runtime.sprx", b"another runtime");
+        put(&dir, "host/new.bin", b"a new loose file");
+        let runtime = ps5_dump_forge_lz4::RUNTIME;
+        let req = request(
+            &root,
+            vec![
+                add(&dir.join("host/eboot.bin"), "eboot.bin"),
+                add(&dir.join("host/runtime.sprx"), runtime),
+                add(&dir.join("host/new.bin"), "data/new.bin"),
+            ],
+        );
+        assert_eq!(check(&req), EditCheck::default());
+        let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = logs.clone();
+        run_with(&req, move |e, _| {
+            if let Event::Log { line, .. } = e {
+                seen.lock().unwrap().push(line.clone());
+            }
+        })
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(
+            packs(&root),
+            locked,
+            "the packs and index stay byte for byte"
+        );
+        assert_eq!(
+            std::fs::read(root.join(runtime)).unwrap(),
+            b"another runtime"
+        );
+        assert_eq!(
+            std::fs::read(root.join("data/new.bin")).unwrap(),
+            b"a new loose file"
+        );
+        let logs = logs.lock().unwrap();
+        assert!(
+            logs.iter().any(|l| l.contains("the game is packed")),
+            "{logs:?}"
+        );
+        // The edited game still unpacks: loose records may change.
+        let tree = ScannedFolder::scan(&root, &AtomicBool::new(false)).unwrap();
+        let mut unpacked = ps5_dump_forge_lz4::reader::unpack(Box::new(tree)).unwrap();
+        assert_eq!(
+            unpacked.read("data/assets/level1.bin").unwrap().len(),
+            300_000
+        );
+        assert!(unpacked.files().iter().any(|f| f.path == "data/new.bin"));
+    }
+
+    #[test]
+    fn a_packed_game_refuses_edits_of_its_packs() {
+        let dir = crate::test_dir("edit-folder-packed-refused");
+        let root = packed_game(&dir);
+        put(&dir, "host.bin", b"host");
+        let host = dir.join("host.bin");
+        let volume = ps5_dump_forge_lz4::volume_name(0);
+        let before = snapshot(&root);
+        let changed = |p: &str| format!("{p} is part of the LZ4 packs: edits can't change it");
+        let cases: Vec<(Vec<Edit>, String)> = vec![
+            (
+                vec![Edit::Delete {
+                    path: volume.clone(),
+                }],
+                changed(&volume),
+            ),
+            (
+                vec![add(&host, ps5_dump_forge_lz4::MANIFEST)],
+                changed(ps5_dump_forge_lz4::MANIFEST),
+            ),
+            (
+                vec![Edit::Rename {
+                    from: INDEX.into(),
+                    to: "old.index".into(),
+                }],
+                changed(INDEX),
+            ),
+            (
+                vec![add(&host, ps5_dump_forge_lz4::PROFILE)],
+                changed(ps5_dump_forge_lz4::PROFILE),
+            ),
+            (
+                vec![add(&host, "DATA/assets/Level1.bin")],
+                "DATA/assets/Level1.bin is packed in the LZ4 packs: edits can't add a file there"
+                    .into(),
+            ),
+            (
+                vec![add(&host, "data/assets/level1.bin/x")],
+                "data/assets/level1.bin/x is under data/assets/level1.bin".into(),
+            ),
+            (
+                vec![add(&host, "data/assets")],
+                "data/assets is a folder in the LZ4 packs".into(),
+            ),
+        ];
+        for (edits, want) in cases {
+            let req = request(&root, edits);
+            let err = format!("{:#}", run_with(&req, |_, _| {}).unwrap_err());
+            assert!(err.contains(&want), "{want}: {err}");
+            let check = check(&req);
+            assert!(
+                check.in_place.iter().any(|f| f.contains(&want)),
+                "{check:?}"
+            );
+            assert_eq!(snapshot(&root), before);
+        }
+    }
 }

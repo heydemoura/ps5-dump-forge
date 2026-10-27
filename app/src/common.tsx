@@ -811,7 +811,8 @@ function Lz4Tile({ facts }: { facts: Lz4Facts }) {
   if (!facts.imports_ampr) notes.push(t.noAmpr);
   const runtime = facts.imports_ampr ? runtimeAction(facts) : null;
   if (runtime) notes.push(runtime);
-  if (facts.index && facts.index !== "ok") notes.push(t.index[facts.index]);
+  const index = tileIndex(facts);
+  if (index && index !== "ok") notes.push(t.index[index]);
   const look = facts.packed
     ? " neon packed"
     : facts.manifest_error !== null
@@ -844,16 +845,23 @@ function runtimeAction(f: Lz4Facts): string | null {
   return f.runtime === "other" && f.runtime_version ? t.runtimeAction("keep", f.runtime_version) : null;
 }
 
+/** The index state the tile reports: a traced game's against its traced files (Patch's
+ * comparison), any other's as a conversion compares it. */
+function tileIndex(f: Lz4Facts): Lz4Facts["index"] {
+  return f.runtime === "forge_trace" ? f.trace_index : f.index;
+}
+
 /** The LZ4 (AMPR) tile shows for a game with its own ampr_emu, any LZ4 artifact (packs, a
  * damaged manifest, traces), an ampr_emu.index a conversion rewrites, or an AMPR game a
  * conversion gives the bundled ampr_emu. */
 function lz4Shown(f: Lz4Facts): boolean {
+  const index = tileIndex(f);
   return (
     f.runtime !== "none" ||
     !!f.packed ||
     f.manifest_error !== null ||
     f.journal_bytes !== null ||
-    (!!f.index && f.index !== "ok") ||
+    (!!index && index !== "ok") ||
     (f.imports_ampr && f.runtime_action === "install")
   );
 }
@@ -1177,10 +1185,13 @@ export function ViewSwitch<T extends string>(props: {
   options: { id: T; icon?: IconName; label: ReactNode }[];
   /** More classes on the group (File Transfer's device switches: `devices`). */
   className?: string;
+  /** Off (aria-disabled, so it keeps focus): no click or key changes the choice. */
+  disabled?: boolean;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const ids = props.options.map((o) => o.id);
   const onKey = (e: KeyboardEvent) => {
+    if (props.disabled) return;
     const i = ids.indexOf(props.value);
     // Right-to-left, the next option is to the left.
     const rtl = document.documentElement.dir === "rtl";
@@ -1193,7 +1204,7 @@ export function ViewSwitch<T extends string>(props: {
     box.current?.querySelectorAll<HTMLElement>("[role=radio]")[n]?.focus();
   };
   return (
-    <div className={`seg view-switch${props.className ? ` ${props.className}` : ""}`} role="radiogroup" aria-label={props.label} ref={box} onKeyDown={onKey}>
+    <div className={`seg view-switch${props.className ? ` ${props.className}` : ""}`} role="radiogroup" aria-label={props.label} aria-disabled={props.disabled || undefined} ref={box} onKeyDown={onKey}>
       {props.options.map((o, i) => {
         const on = o.id === props.value;
         return (
@@ -1202,10 +1213,11 @@ export function ViewSwitch<T extends string>(props: {
             type="button"
             role="radio"
             aria-checked={on}
+            aria-disabled={props.disabled || undefined}
             // With no option chosen (File Transfer: a side's device offline) the first is the Tab stop.
             tabIndex={on || (i === 0 && !ids.includes(props.value)) ? 0 : -1}
             className={`seg-opt view-${o.id}${on ? " on" : ""}`}
-            onClick={() => props.onChange(o.id)}
+            onClick={() => !props.disabled && props.onChange(o.id)}
           >
             {o.icon && <Icon name={o.icon} />}
             {o.label}

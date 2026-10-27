@@ -47,6 +47,7 @@ const fr: Messages = {
     startAgain: (ps5) => (ps5 ? "Pour continuer, rouvrez la vignette Dump Forge sur la PS5." : "Pour continuer, relancez la même commande ps5-dump-forge serve."),
     confirmStop: (web: boolean) => (web ? "Arrêter Dump Forge ?" : "Quitter PS5 Dump Forge ?"),
     stopNote: (web, ps5) => (!web ? "Aucune tâche en cours." : ps5 ? "Pour le relancer, ouvrez la vignette Dump Forge sur la PS5." : "Pour le relancer, exécutez de nouveau la même commande ps5-dump-forge serve."),
+    peerBusy: "Un appareil associé lit ou écrit des fichiers sur cet ordinateur. Quitter interrompt son transfert.",
     quit: "Quitter",
     github: (name) => `${name} sur GitHub`,
     queued: "en attente",
@@ -149,6 +150,9 @@ const fr: Messages = {
       "Les archives .rar sont lues avec la bibliothèque UnRAR fournie, d’Alexander Roshal (extraction seule, sous la licence UnRAR).",
     language: "Langue",
     system: "Système",
+    notifications: "Notifier à la fin d'une tâche",
+    notificationsHint: "S'affiche sur la console pour les tâches de conversion, LZ4 et de transfert.",
+    notificationsFailed: "Impossible de modifier les notifications.",
   },
   // Edit.tsx
   edit: {
@@ -376,9 +380,13 @@ const fr: Messages = {
     cancelling: "Annulation…",
     queued: "En attente",
     dismiss: "Masquer",
+    retry: "Réessayer",
+    retrying: "Démarrage",
     stopJob: "Arrêter ?",
     cancel: "Annuler",
     stopHint: "Appuyez de nouveau sur « Arrêter ? » dans les 4 secondes pour arrêter la tâche.",
+    remoteLabel: (name, device) => `${name}, une tâche sur ${device}`,
+    remoteTitle: (device) => `S’exécute sur ${device} et utilise les fichiers de cet appareil : ici, vous pouvez seulement l’annuler`,
     from: "depuis ",
     left: (d) => `il reste ${d}`,
     inStep: (time) => `${time} dans cette étape`,
@@ -773,6 +781,16 @@ const fr: Messages = {
     fileTitle: "Supprimer ce fichier ?",
     fileText: "Le fichier sera supprimé définitivement : pas de corbeille, pas d’annulation.",
   },
+  // replace.tsx
+  replace: {
+    title: (n) =>
+      plural(n, { one: `${num(n)} élément existe déjà à cet endroit`, other: `${num(n)} éléments existent déjà à cet endroit` }),
+    inFolder: (folder) => <>Dans {folder} :</>,
+    more: (n) => `et ${num(n)} de plus`,
+    text: "« Remplacer » met les nouveaux à leur place : les anciens fichiers sont perdus pour de bon, sans corbeille ni annulation. Un dossier posé sur un dossier du même nom est fusionné : ses fichiers de même nom sont remplacés, tout le reste est conservé.",
+    cancel: "Annuler",
+    replace: "Remplacer",
+  },
   // password.tsx
   password: {
     title: "Cette archive demande un mot de passe",
@@ -1009,6 +1027,7 @@ const fr: Messages = {
     uploadPick: "Choisir les fichiers à envoyer",
     uploading: (name, i, n) => `Envoi de ${name} (${num(i)} sur ${num(n)})`,
     uploaded: "Envoi terminé",
+    uploadSkipped: (names) => `Non envoyé, un dossier ou un lien de ce nom existe à cet endroit : ${names}.`,
     uploadedBefore: (done, n) =>
       plural(done, {
         one: `${num(done)} fichier sur ${num(n)} a été envoyé et reste sur cet appareil.`,
@@ -1036,7 +1055,7 @@ const fr: Messages = {
       "Connexion relie Dump Forge sur votre PS5 et vos ordinateurs d’un même réseau.",
       "Pour associer, lancez la « Détection automatique » et choisissez « Associer » dans « À proximité », ou saisissez une adresse dans « Ajouter un appareil », puis autorisez-le sur l’autre appareil. Autorisez-le seulement si les deux écrans affichent le même numéro de contrôle.",
       "Un NAS (SMB, FTP, NFS) s’ajoute de la même façon. Les appareils associés et les NAS servent de sources de jeux et de destinations ; leurs jeux n’y sont pas modifiés.",
-      "« Transfert de fichiers » copie des fichiers et des dossiers entre eux. Un nom qui existe déjà à destination est refusé.",
+      "« Transfert de fichiers » copie des fichiers et des dossiers entre eux. Un nom qui existe déjà à destination n’est remplacé qu’après votre confirmation.",
     ],
     helpSecurity: "Rien de ce qui est envoyé entre les appareils n’est chiffré : n’importe qui sur votre réseau peut le lire. Le mot de passe enregistré d’un NAS reste sur cet appareil, non chiffré. Utilisez Connexion uniquement sur votre réseau domestique.",
     installTitle: "Dump Forge sur la PS5",

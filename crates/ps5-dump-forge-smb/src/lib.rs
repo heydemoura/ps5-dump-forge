@@ -151,10 +151,20 @@ impl Session {
 
     /// Renames a file or folder within the share, never replacing `to` (`AlreadyExists`).
     pub fn rename(&self, share: &str, from: &str, to: &str) -> io::Result<()> {
+        self.rename_as(share, from, to, false)
+    }
+
+    /// Renames the file `from` within the share over the file `to` (or to a free name); the
+    /// server refuses to replace a folder.
+    pub fn rename_replace(&self, share: &str, from: &str, to: &str) -> io::Result<()> {
+        self.rename_as(share, from, to, true)
+    }
+
+    fn rename_as(&self, share: &str, from: &str, to: &str, replace: bool) -> io::Result<()> {
         let tree = self.tree(share)?;
         let (id, _) = self.create(tree, from, Open::Rename)?;
         let to = to.trim_matches('/').replace('/', "\\");
-        let r = self.conn().rename(tree, &id, &to);
+        let r = self.conn().rename(tree, &id, &to, replace);
         self.close(tree, &id);
         r
     }

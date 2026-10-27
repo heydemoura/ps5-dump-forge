@@ -107,6 +107,9 @@ export interface ConvertRequest {
    * folders on this device, a peer (`flink://`) or a NAS (`smb://`, `ftp://`, `nfs://`), each
    * copied into `output` (an existing folder here, on a peer or on a NAS) under its own name. `source` and `format` unused. */
   transfer?: string[];
+  /** An extract or a transfer the user confirmed (`existingTargets` found names there): a file
+   * replaces a file, a folder merges into a folder; any other clash still fails preflight. */
+  replace?: boolean;
 }
 
 /** How the output was verified. `samples` and `seed` are 0 for full. */
@@ -212,6 +215,9 @@ export interface Lz4Facts {
    * kept as it is; a non-AMPR title; an archive's index too large to read); missing from an
    * older backend. */
   index?: "ok" | "stale" | "damaged" | "missing" | null;
+  /** ampr_emu.index against the files Patch writes with the trace runtime installed; the same
+   * states and null cases as index. Missing from an older backend. */
+  trace_index?: "ok" | "stale" | "damaged" | "missing" | null;
   /** Size of the trace journal (ampr_commands.bin), when present. */
   journal_bytes: number | null;
   /** With the journal and its ampr_emu.index both present: the name Get traces' zip takes. */
@@ -503,6 +509,22 @@ export interface ConnectState {
   discovery: Discovered;
   pending: PairRequest[];
   outgoing: PairOutgoing | null;
+  /** Jobs on paired peers that use this device's files (`connect_jobs.rs`); missing from an
+   * older backend. */
+  remote_jobs?: RemoteJob[];
+}
+
+/** A job running on a paired peer that uses this device's files: shown here read only, only
+ * cancellable. Paths on this device are local; the peer's are `flink://<its key_id>/...`. */
+export interface RemoteJob {
+  key_id: string;
+  /** The peer's saved name. */
+  name: string;
+  /** This device's user asked the peer to cancel it. */
+  cancelling: boolean;
+  /** The peer's run: its job ids start again at 1 when it restarts. */
+  instance?: string;
+  job: Omit<SnapshotJob, "log_total"> & { log_total?: number };
 }
 
 const cc = <T,>(cmd: string, args?: Record<string, unknown>) => transport.connect<T>(cmd, args);
@@ -531,6 +553,9 @@ export const connect = {
   nasSave: (nas: { id?: string; name: string; host: string; port?: number; protocol?: NasProtocol; user?: string; password?: string }) =>
     cc<string>("nas_save", nas),
   nasForget: (id: string) => cc<boolean>("nas_forget", { id }),
+  /** Asks the paired peer `keyId` to cancel its job `job` shown here (`state.remote_jobs`);
+   * false when it is no longer listed. */
+  cancelJob: (keyId: string, job: JobId) => cc<boolean>("cancel_job", { key_id: keyId, job }),
   /** Desktop app: elfldr at `address` (host[:port], port 9021 by default) downloads release
    * `version`'s PS5 ELF from GitHub and starts it (within a minute). */
   payloadInstall: (address: string, version: string) => cc<null>("payload_install", { address, version }),
@@ -544,6 +569,12 @@ export const connect = {
 
 /** Where the backend runs (the server's own answer in the http build); rejects when unknown. */
 export const runtimePlatform: () => Promise<RuntimePlatform> = transport.platform;
+
+/** PS5 only: the About tab's saved job-end notification choice. */
+export const jobNotifications = {
+  get: transport.notifications,
+  set: transport.setNotifications,
+};
 
 export const api = {
   /** `password`: for an archive that needs one (else core answers `ARCHIVE_PASSWORD_REQUIRED`). */
@@ -565,6 +596,9 @@ export const api = {
   hostTree: (path: string) => transport.hostTree(path),
   /** Whether `request`'s edits can go in place and/or be rebuilt, before Apply (reads only). */
   editCheck: (request: ConvertRequest) => invoke<EditCheck>("edit_check", { request }),
+  /** An extract's or transfer's targets that exist already (top level; on a peer or NAS too),
+   * so the page asks before it sends `replace` (reads only). */
+  existingTargets: (request: ConvertRequest) => invoke<string[]>("existing_targets", { request }),
   /** http build: upload a dropped file for `gamePath` of `source`; resolves with the staged path
    * an `add` takes as `from`. The app rejects (its drops are host paths). */
   stage: (
@@ -586,9 +620,11 @@ export const api = {
   /** Delete a file or folder for good (the page asks first). Refused for a link, a drive or
    * browse root or a folder holding one, and anything an unfinished job reads or writes. */
   deletePath: (path: string) => invoke<null>("delete_path", { path }).then(() => undefined),
-  /** Move or rename a file or folder on its drive: `to` (the new path) is never replaced;
+  /** Move or rename a file or folder on its drive: `to` (the new path) is replaced only with
+   * `replace` (the user confirmed it: a file over a file, a folder merged into a folder);
    * refused as `deletePath` refuses `from`, and between drives. */
-  movePath: (from: string, to: string) => invoke<null>("move_path", { from, to }).then(() => undefined),
+  movePath: (from: string, to: string, replace = false) =>
+    invoke<null>("move_path", { from, to, replace }).then(() => undefined),
   /** One folder's entries; null (http build only): the server's browse roots. */
   listDir: (path: string | null) => invoke<DirListing>("list_dir", { path, explorer: true }),
   /** http build on the PS5: its internal storage (`/data`) in bytes; null when unknown. */
@@ -628,8 +664,10 @@ export const events = {
     listen<LogEvent>("job://log", f),
   done: (f: (e: DoneEvent) => void): Promise<UnlistenFn> =>
     listen<DoneEvent>("job://done", f),
-  /** A close/quit was held back because jobs are running. Never in the http build. */
-  closeRequested: (f: () => void): Promise<UnlistenFn> => listen("close-requested", () => f()),
+  /** A close/quit was held back because jobs are running or (`peer`) a paired device is reading
+   * or writing files here. Never in the http build. */
+  closeRequested: (f: (peer: boolean) => void): Promise<UnlistenFn> =>
+    listen<{ peer?: boolean } | null>("close-requested", (e) => f(e?.peer === true)),
   /** http build: jobs from the server's list (after loading, a payload restart, or another
    * browser's Build). Never in the app. */
   restore: (f: (e: JobsRestore) => void): Promise<UnlistenFn> =>

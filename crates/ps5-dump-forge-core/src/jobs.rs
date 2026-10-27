@@ -18,6 +18,9 @@ use crate::{ConvertRequest, Event, JobId};
 
 type Emit = Box<dyn Fn(Event) + Send + Sync>;
 type Busy = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+type Protected = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
+/// [`Ctx::replace_refusal`]'s check against the job table: (path, a folder merged into).
+type ReplaceGuard<'a> = &'a dyn Fn(&Path, bool) -> Result<(), crate::DeleteError>;
 
 pub(crate) struct Inner {
     emit: Emit,
@@ -27,6 +30,8 @@ pub(crate) struct Inner {
     turn: Condvar,
     /// Whether another device is writing a path here ([`crate::Jobs::set_external_busy`]).
     busy: Mutex<Option<Busy>>,
+    /// What replacing never touches ([`crate::Jobs::set_protected`]).
+    protected: Mutex<Option<Protected>>,
 }
 
 #[derive(Default)]
@@ -49,11 +54,69 @@ impl Inner {
             state: Mutex::new(State::default()),
             turn: Condvar::new(),
             busy: Mutex::new(None),
+            protected: Mutex::new(None),
         })
     }
 
     pub(crate) fn set_external_busy(&self, busy: Busy) {
         *self.busy.lock().unwrap_or_else(|e| e.into_inner()) = Some(busy);
+    }
+
+    pub(crate) fn set_protected(&self, protected: Protected) {
+        *self.protected.lock().unwrap_or_else(|e| e.into_inner()) = Some(protected);
+    }
+
+    /// Why `job` must not replace `path` (`dir`: a folder it merges into), as
+    /// [`Inner::delete_path`] would refuse it: against what `job` itself reads (`reads`), what
+    /// another device is writing and every other unfinished job's paths (its other own paths
+    /// are its targets).
+    fn replace_refusal(
+        &self,
+        job: JobId,
+        reads: &[PathBuf],
+        path: &Path,
+        dir: bool,
+    ) -> Result<(), crate::DeleteError> {
+        if reads.iter().any(|r| at_or_in(path, r)) {
+            return Err(crate::DeleteError::Refused(format!(
+                "{} is what this job copies from: it is not replaced",
+                path.display()
+            )));
+        }
+        self.refuse_external_write(path)?;
+        let protected = self
+            .protected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let protected = protected.map(|p| p()).unwrap_or_default();
+        let state = self.state();
+        let others = (state.paths.iter())
+            .filter(|(j, _)| **j != job)
+            .flat_map(|(_, p)| p);
+        crate::delete::replace_refusal(path, dir, &protected, others)
+    }
+
+    /// [`crate::Jobs::replace_check`]: `path` as a file put in its place, against what another
+    /// device is writing, the protected paths and every unfinished job; nothing there passes.
+    pub(crate) fn replace_check(&self, path: &Path) -> Result<(), crate::DeleteError> {
+        self.refuse_external_write(path)?;
+        let protected = self
+            .protected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let protected = protected.map(|p| p()).unwrap_or_default();
+        let state = self.state();
+        match crate::delete::replace_refusal(
+            path,
+            false,
+            &protected,
+            state.paths.values().flatten(),
+        ) {
+            Err(crate::DeleteError::Missing(_)) => Ok(()),
+            done => done,
+        }
     }
 
     /// Asked without the job table locked: Connect's hook takes locks of its own.
@@ -103,12 +166,13 @@ impl Inner {
         &self,
         from: &Path,
         to: &Path,
+        replace: bool,
         protected: &[PathBuf],
     ) -> Result<(), crate::DeleteError> {
         self.refuse_external_write(from)?;
         self.refuse_external_write(to)?;
         let state = self.state();
-        crate::delete::move_(from, to, protected, state.paths.values().flatten())
+        crate::delete::move_(from, to, replace, protected, state.paths.values().flatten())
     }
 
     /// Whether an unfinished job reads or writes `path`, or something inside or around it.
@@ -237,6 +301,46 @@ fn conflict(state: &State, transfer: bool, paths: &[PathBuf]) -> Option<String> 
 /// (`finalize::part_path`, and `Part::replace`'s `.orig.part`), an archive's later parts,
 /// profile and traces (with a lone journal's index); in place, the undo journal; for an edit,
 /// every file or folder it adds.
+/// An archive's later parts, found by name beside it (`source` is the first part).
+fn later_parts(source: &Path) -> Vec<PathBuf> {
+    if !crate::archive::is_archive(source) {
+        return Vec::new();
+    }
+    let folder = source.parent().filter(|p| !p.as_os_str().is_empty());
+    let Ok(items) = std::fs::read_dir(folder.unwrap_or(Path::new("."))) else {
+        return Vec::new();
+    };
+    (items.flatten().map(|i| i.path()))
+        .filter(|p| ps5_dump_forge_archive::later_part_of(p, source))
+        .collect()
+}
+
+/// What an Extract or a transfer reads (a transfer's sources, else the source and an
+/// archive's later parts): never what it replaces.
+fn read_paths(req: &ConvertRequest) -> Vec<PathBuf> {
+    if !req.transfer.is_empty() {
+        return req.transfer.clone();
+    }
+    let mut paths = vec![req.source.clone()];
+    paths.extend(later_parts(&req.source));
+    paths
+}
+
+/// Whether `path` is `read` or inside it (resolved on this device; on another one as
+/// [`crate::remote::FlinkPath::within`] compares them). A folder above `read` is not: what it
+/// holds is checked name by name.
+fn at_or_in(path: &Path, read: &Path) -> bool {
+    use crate::remote::{FlinkPath, is_remote};
+    if is_remote(path) || is_remote(read) {
+        return matches!(
+            (FlinkPath::parse(path), FlinkPath::parse(read)),
+            (Ok(p), Ok(r)) if p.within(&r)
+        );
+    }
+    let real = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    real(path).starts_with(real(read))
+}
+
 fn used_paths(job: JobId, req: &ConvertRequest) -> Vec<PathBuf> {
     // A transfer: its sources and where each lands (its temporary files are inside those).
     if !req.transfer.is_empty() {
@@ -260,16 +364,7 @@ fn used_paths(job: JobId, req: &ConvertRequest) -> Vec<PathBuf> {
         let name = |p: &String| p.rsplit('/').next().unwrap_or(p).to_string();
         paths.extend(req.extract.iter().map(|p| req.output.join(name(p))));
     }
-    // An archive's later parts, found by name beside it (the source is the first part).
-    if crate::archive::is_archive(&req.source) {
-        let folder = req.source.parent().filter(|p| !p.as_os_str().is_empty());
-        if let Ok(items) = std::fs::read_dir(folder.unwrap_or(Path::new("."))) {
-            paths.extend(
-                (items.flatten().map(|i| i.path()))
-                    .filter(|p| ps5_dump_forge_archive::later_part_of(p, &req.source)),
-            );
-        }
-    }
+    paths.extend(later_parts(&req.source));
     paths.extend(req.lz4_profile.iter().chain(&req.lz4_traces).cloned());
     // An in-place job's undo journal (an edit's own; one an LZ4 in-place job refuses).
     if req.lz4_in_place || !req.edits.is_empty() {
@@ -310,10 +405,13 @@ impl Inner {
             None => self.wait_turn(job, transfer, cancel),
         };
         let result = admitted.and_then(|()| {
-            #[cfg(target_env = "ps5")]
-            let _awake = PowerTick::start();
+            // U8: auto rest mode waits while the job runs.
+            let _awake = crate::awake();
+            let reads = read_paths(request);
+            let guard = |path: &Path, dir: bool| self.replace_refusal(job, &reads, path, dir);
             let mut ctx = Ctx::new(job, &self.emit, cancel);
             ctx.shared_cancel = Some(shared.clone());
+            ctx.replace_guard = Some(&guard);
             match catch_unwind(AssertUnwindSafe(|| crate::convert::run(request, &ctx))) {
                 Ok(result) => result,
                 Err(panic) => {
@@ -387,51 +485,6 @@ impl Drop for Leave<'_> {
     }
 }
 
-/// U8: holds off the console's auto rest mode while a job runs, by calling
-/// `sceSystemServicePowerTick` now and every [`PowerTick::EVERY`] on a thread of its own.
-/// Dropping it (the job ended, or unwound) stops and joins the thread at once. Rest mode
-/// entered by hand is not held off.
-#[cfg(target_env = "ps5")]
-struct PowerTick(Option<(std::sync::mpsc::Sender<()>, JoinHandle<()>)>);
-
-#[cfg(target_env = "ps5")]
-impl PowerTick {
-    const EVERY: Duration = Duration::from_secs(30);
-
-    fn start() -> Self {
-        unsafe extern "C" {
-            /// libSceSystemService: resets the idle timer auto rest mode counts.
-            fn sceSystemServicePowerTick() -> i32;
-        }
-        let (stop, stopped) = std::sync::mpsc::channel::<()>();
-        // ponytail: a thread that fails to start, or a failing tick, goes unreported: the job
-        // still runs, and auto rest mode may cut it short.
-        let thread = std::thread::Builder::new()
-            .name("forge-power-tick".into())
-            .spawn(move || {
-                use std::sync::mpsc::RecvTimeoutError;
-                loop {
-                    // SAFETY: no arguments, no memory handed over.
-                    let _ = unsafe { sceSystemServicePowerTick() };
-                    if stopped.recv_timeout(Self::EVERY) != Err(RecvTimeoutError::Timeout) {
-                        return;
-                    }
-                }
-            });
-        Self(thread.ok().map(|t| (stop, t)))
-    }
-}
-
-#[cfg(target_env = "ps5")]
-impl Drop for PowerTick {
-    fn drop(&mut self) {
-        if let Some((stop, thread)) = self.0.take() {
-            drop(stop); // wakes the ticker's wait as disconnected
-            let _ = thread.join();
-        }
-    }
-}
-
 /// How often progress for the same stage is passed on. Writers report per chunk and per
 /// file; a quarter of a million events would only flood the UI.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
@@ -456,6 +509,8 @@ pub(crate) struct Ctx<'a> {
     /// U7: the source's and destination's mount points, with their `st_dev` at job start.
     #[cfg(target_os = "freebsd")]
     pub mounts: RefCell<Vec<crate::durable::Watched>>,
+    /// The job table's [`Ctx::replace_refusal`]; unset outside [`crate::Jobs`] (a test's).
+    pub(crate) replace_guard: Option<ReplaceGuard<'a>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -473,6 +528,17 @@ impl<'a> Ctx<'a> {
             later: Cell::new(0),
             #[cfg(target_os = "freebsd")]
             mounts: RefCell::new(Vec::new()),
+            replace_guard: None,
+        }
+    }
+
+    /// Why this job must not replace `path` (`dir`: a folder it merges into), as Delete would
+    /// refuse it ([`crate::delete::replace_refusal`]): against every other unfinished job and
+    /// what another device is writing; outside [`crate::Jobs`], against no job.
+    pub(crate) fn replace_refusal(&self, path: &Path, dir: bool) -> Result<(), crate::DeleteError> {
+        match self.replace_guard {
+            Some(guard) => guard(path, dir),
+            None => crate::delete::replace_refusal(path, dir, &[], std::iter::empty()),
         }
     }
 

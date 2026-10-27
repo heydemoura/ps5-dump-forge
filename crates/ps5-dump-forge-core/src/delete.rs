@@ -246,13 +246,65 @@ fn net_refusal(path: &Path) -> Result<(), DeleteError> {
     Ok(())
 }
 
+/// Why a job must not replace `path` with a file of its own (an extract's or transfer's
+/// [`crate::ConvertRequest::replace`]; `dir`: a folder it merges into, which stays). A file is
+/// deleted in effect, so it is refused as [`delete`] refuses it, and so is an image with an
+/// interrupted edit's undo journal beside it (the journal would be replayed into the new
+/// one). A folder is refused only at, in or above a path of `guarded`. On a peer or a NAS
+/// only that is checked here, for a file too: the device judges the rest (a peer refuses, at
+/// the rename, a link, a folder, a path its own jobs use and on the PS5 `/mnt/shadowmnt`).
+// ponytail: checked at preflight; what changes between the check and the rename isn't seen.
+pub(crate) fn replace_refusal<'a>(
+    path: &Path,
+    dir: bool,
+    protected: &[PathBuf],
+    guarded: impl IntoIterator<Item = &'a PathBuf>,
+) -> Result<(), DeleteError> {
+    if dir || crate::remote::is_remote(path) {
+        // A folder merged into takes new files: never ShadowMount+'s mount folder.
+        #[cfg(any(target_os = "freebsd", test))]
+        if dir && !crate::remote::is_remote(path) {
+            let real = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if let Some(why) = smp_folder(path, &real) {
+                return Err(why);
+            }
+        }
+        if in_use(path, guarded) {
+            return Err(DeleteError::Busy(format!(
+                "{} is in use by an unfinished job; wait for it or stop it first",
+                path.display()
+            )));
+        }
+        return Ok(());
+    }
+    let checked = check(path, "replace", protected, guarded)?;
+    let shown = checked.path.display();
+    if checked.kind.is_dir() {
+        return Err(DeleteError::Refused(format!(
+            "{shown} is a folder: a file is not put in its place"
+        )));
+    }
+    if ps5_dump_forge_patch::journal_path(&checked.real)
+        .symlink_metadata()
+        .is_ok()
+    {
+        return Err(DeleteError::Refused(format!(
+            "an interrupted edit is pending on {shown}; open it in Edit first"
+        )));
+    }
+    Ok(())
+}
+
 /// Moves or renames `from` to `to` (a new name in an existing folder, never replacing
-/// anything), refused as [`delete`] refuses `from`, and for a `to` inside `from`, on another
-/// volume or at, in or above a path of `guarded`. An image with an interrupted edit's undo
-/// journal beside it stays where its journal is.
+/// anything unless `replace`), refused as [`delete`] refuses `from`, and for a `to` inside
+/// `from`, on another volume or at, in or above a path of `guarded`. An image with an
+/// interrupted edit's undo journal beside it stays where its journal is. With `replace` and
+/// `to` there, a file goes over a file (refused as [`replace_refusal`] refuses it) and a
+/// folder merges into a folder ([`plan_merge`]): every check first, then the moves.
 pub(crate) fn move_<'a>(
     from: &Path,
     to: &Path,
+    replace: bool,
     protected: &[PathBuf],
     guarded: impl IntoIterator<Item = &'a PathBuf>,
 ) -> Result<(), DeleteError> {
@@ -343,7 +395,8 @@ pub(crate) fn move_<'a>(
         && std::fs::read_dir(&real_parent)
             .map_err(|e| DeleteError::Failed(format!("reading {}: {e}", real_parent.display())))?
             .all(|e| e.is_ok_and(|e| e.file_name() != name));
-    if !recased && target.symlink_metadata().is_ok() {
+    let replacing = !recased && target.symlink_metadata().is_ok();
+    if replacing && !replace {
         return refused(format!("{shown_to} already exists; nothing is replaced"));
     }
     for used in &guarded {
@@ -376,6 +429,11 @@ pub(crate) fn move_<'a>(
             journal_to.display()
         ));
     }
+    let merge = if replacing {
+        Some(plan_merge(&real, kind, id, &target, protected, &guarded)?)
+    } else {
+        None
+    };
     // The checks above looked at what `from` named then; it must still be that.
     if !path_id(&real).is_ok_and(|(now, k)| now == id && k.is_dir() == kind.is_dir()) {
         return Err(DeleteError::Failed(format!(
@@ -389,7 +447,13 @@ pub(crate) fn move_<'a>(
         &mut crate::edit_job::smp_is_mount,
         "moved",
     )?;
-    let moved = if recased {
+    let merged = match &merge {
+        Some(merge) => run_merge(merge, &shown, &shown_to),
+        None => Ok(()),
+    };
+    let moved = if merge.is_some() {
+        Ok(())
+    } else if recased {
         std::fs::rename(&real, &target)
     } else {
         crate::finalize::rename_no_replace(&real, &target)
@@ -411,10 +475,255 @@ pub(crate) fn move_<'a>(
     }
     let mut dirs = vec![real_parent.as_path()];
     dirs.extend(real.parent().filter(|p| *p != real_parent));
+    dirs.extend(
+        merge
+            .iter()
+            .flat_map(|m| m.into.iter().map(PathBuf::as_path)),
+    );
+    // A merge that failed part way: what moved before it is synced all the same (best
+    // effort; the failure is the error).
+    if let Err(e) = merged {
+        // The source folders steps moved entries out of are still there: synced too.
+        let left = merge
+            .iter()
+            .flat_map(|m| m.emptied.iter().map(PathBuf::as_path));
+        for dir in dirs.into_iter().chain(left) {
+            let _ = fsync_dir(dir);
+        }
+        return Err(e);
+    }
     for dir in dirs {
         fsync_dir(dir).map_err(|e| {
             DeleteError::Failed(format!(
                 "moved {shown} to {shown_to}, but syncing {} failed: {e}",
+                dir.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// One rename of a move with replace: over a file at `to` when `over`, else to a new name.
+struct Step {
+    from: PathBuf,
+    to: PathBuf,
+    over: bool,
+}
+
+/// What a move with replace does, all decided before the first rename.
+#[derive(Default)]
+struct Merge {
+    steps: Vec<Step>,
+    /// Source folders emptied by the steps, deepest first: removed after.
+    emptied: Vec<PathBuf>,
+    /// Target folders the steps add to: synced after.
+    into: Vec<PathBuf>,
+}
+
+/// Plans moving `from` (canonical, `kind`, `id`) onto `to`, which exists: a file over a file,
+/// a folder merged into a folder. Every kind mismatch, replaced file [`replace_refusal`]
+/// refuses and undo journal clash refuses before anything moves. `to`'s own use by a job is
+/// [`move_`]'s check.
+fn plan_merge(
+    from: &Path,
+    kind: std::fs::FileType,
+    id: FileId,
+    to: &Path,
+    protected: &[PathBuf],
+    guarded: &[&PathBuf],
+) -> Result<Merge, DeleteError> {
+    let failed =
+        |p: &Path, e: io::Error| DeleteError::Failed(format!("reading {}: {e}", p.display()));
+    let (to_id, to_kind) = path_id(to).map_err(|e| failed(to, e))?;
+    if to_id == id {
+        return Err(DeleteError::Refused(format!(
+            "{} is {} itself; nothing to replace",
+            to.display(),
+            from.display()
+        )));
+    }
+    if let Some(why) = clash(from, kind, to, to_kind) {
+        return Err(why);
+    }
+    let mut merge = Merge::default();
+    if kind.is_file() {
+        replace_refusal(to, false, protected, guarded.iter().copied())?;
+        let (from, to) = (from.to_path_buf(), to.to_path_buf());
+        merge.steps.push(Step {
+            from,
+            to,
+            over: true,
+        });
+        return Ok(merge);
+    }
+    if ids_up(from).map_err(|e| failed(from, e))?.contains(&to_id) {
+        return Err(DeleteError::Refused(format!(
+            "{} holds {}; it can't be merged into it",
+            to.display(),
+            from.display()
+        )));
+    }
+    merge_dirs(from, to, id.0, protected, guarded, &mut merge)?;
+    Ok(merge)
+}
+
+/// Why `from` (`kind`) can't go over `to` (`to_kind`): only a file over a file and a folder
+/// into a folder, never a link or special file on either side.
+fn clash(
+    from: &Path,
+    kind: std::fs::FileType,
+    to: &Path,
+    to_kind: std::fs::FileType,
+) -> Option<DeleteError> {
+    let (shown, shown_to) = (from.display(), to.display());
+    let why = if to_kind.is_symlink() {
+        format!("{shown_to} is a link: nothing is put in its place")
+    } else if !to_kind.is_file() && !to_kind.is_dir() {
+        format!("{shown_to} is not a file or folder: nothing is put in its place")
+    } else if kind.is_symlink() || (!kind.is_file() && !kind.is_dir()) {
+        format!("{shown} is not a file or folder: it doesn't replace {shown_to}")
+    } else if kind.is_file() && to_kind.is_dir() {
+        format!("{shown_to} is a folder: a file is not put in its place")
+    } else if kind.is_dir() && to_kind.is_file() {
+        format!("{shown_to} is a file: a folder is not put in its place")
+    } else {
+        return None;
+    };
+    Some(DeleteError::Refused(why))
+}
+
+/// [`plan_merge`] for folder `from` into folder `to` (both on volume `dev`), recursing into
+/// folders both hold. Links are moved as they are, never followed.
+fn merge_dirs(
+    from: &Path,
+    to: &Path,
+    dev: u64,
+    protected: &[PathBuf],
+    guarded: &[&PathBuf],
+    merge: &mut Merge,
+) -> Result<(), DeleteError> {
+    let failed =
+        |p: &Path, e: io::Error| DeleteError::Failed(format!("reading {}: {e}", p.display()));
+    let refused = |m: String| Err(DeleteError::Refused(m));
+    if path_id(to).map_err(|e| failed(to, e))?.0.0 != dev {
+        return refused(format!(
+            "can't move between drives; {} is on another drive or volume than {}",
+            to.display(),
+            from.display()
+        ));
+    }
+    // Each folder merged into, nested ones too, as a replace refuses it (on the PS5 never
+    // ShadowMount+'s mount folder found further down).
+    replace_refusal(to, true, protected, guarded.iter().copied())?;
+    merge.into.push(to.to_path_buf());
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(from).map_err(|e| failed(from, e))? {
+        let entry = entry.map_err(|e| failed(from, e))?;
+        let kind = entry.file_type().map_err(|e| failed(&entry.path(), e))?;
+        entries.push((entry.file_name(), kind));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, kind) in entries {
+        let (s, t) = (from.join(&name), to.join(&name));
+        if let Some(why) = journal_clash(&s, kind, &t) {
+            return refused(why);
+        }
+        let to_kind = match t.symlink_metadata() {
+            Ok(meta) => meta.file_type(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                merge.steps.push(Step {
+                    from: s,
+                    to: t,
+                    over: false,
+                });
+                continue;
+            }
+            Err(e) => return Err(failed(&t, e)),
+        };
+        if let Some(why) = clash(&s, kind, &t, to_kind) {
+            return Err(why);
+        }
+        if kind.is_dir() {
+            merge_dirs(&s, &t, dev, protected, guarded, merge)?;
+            continue;
+        }
+        // Renaming a file over another name of itself changes nothing, and `s` would stay.
+        if path_id(&s).is_ok_and(|(a, _)| path_id(&t).is_ok_and(|(b, _)| a == b)) {
+            return refused(format!(
+                "{} is {} itself; nothing to replace",
+                t.display(),
+                s.display()
+            ));
+        }
+        replace_refusal(&t, false, protected, guarded.iter().copied())?;
+        merge.steps.push(Step {
+            from: s,
+            to: t,
+            over: true,
+        });
+    }
+    merge.emptied.push(from.to_path_buf());
+    Ok(())
+}
+
+/// An undo journal a merge would move away from its image or next to another one.
+fn journal_clash(from: &Path, kind: std::fs::FileType, to: &Path) -> Option<String> {
+    if !kind.is_file() {
+        return None;
+    }
+    if ps5_dump_forge_patch::journal_path(from)
+        .symlink_metadata()
+        .is_ok()
+    {
+        let shown = from.display();
+        return Some(format!(
+            "an interrupted edit is pending on {shown}; open it in Edit first"
+        ));
+    }
+    if let Some(image) = journal_image(to).filter(|i| i.symlink_metadata().is_ok()) {
+        return Some(format!(
+            "{} would be taken for the undo journal of {}; choose another name",
+            to.display(),
+            image.display()
+        ));
+    }
+    let journal_to = ps5_dump_forge_patch::journal_path(to);
+    journal_to.symlink_metadata().is_ok().then(|| {
+        let shown = journal_to.display();
+        format!("{shown} is left at the new name; delete or move it first")
+    })
+}
+
+/// Runs a [`plan_merge`] plan; a failure part way says how much moved and stays.
+// ponytail: what changes at a target between the plan and its rename isn't seen.
+fn run_merge(
+    merge: &Merge,
+    shown: &dyn std::fmt::Display,
+    shown_to: &dyn std::fmt::Display,
+) -> Result<(), DeleteError> {
+    let total = merge.steps.len();
+    for (n, step) in merge.steps.iter().enumerate() {
+        let done = if step.over {
+            std::fs::rename(&step.from, &step.to)
+        } else {
+            crate::finalize::rename_no_replace(&step.from, &step.to)
+        };
+        if let Err(e) = done {
+            let stays = match n {
+                0 => "nothing was moved".to_string(),
+                n => format!("{n} of {total} entries were moved before it and stay"),
+            };
+            return Err(DeleteError::Failed(format!(
+                "moving {} to {}: {e}; {stays}",
+                step.from.display(),
+                step.to.display()
+            )));
+        }
+    }
+    for dir in &merge.emptied {
+        std::fs::remove_dir(dir).map_err(|e| {
+            DeleteError::Failed(format!(
+                "moved everything in {shown} to {shown_to}, but removing {} failed: {e}",
                 dir.display()
             ))
         })?;
@@ -709,7 +1018,7 @@ mod tests {
 
     /// What `move_` refused, or "ok".
     fn moved(from: &Path, to: &Path, protected: &[PathBuf], guarded: &[PathBuf]) -> &'static str {
-        match move_(from, to, protected, guarded) {
+        match move_(from, to, false, protected, guarded) {
             Ok(()) => "ok",
             Err(DeleteError::Refused(_)) => "refused",
             Err(DeleteError::Missing(_)) => "missing",
@@ -809,6 +1118,158 @@ mod tests {
             );
         }
         assert!(x.is_file() && game.join("data").is_dir() && dir.join("games/a").is_dir());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What `move_` with replace refused, or "ok".
+    fn replaced(from: &Path, to: &Path, guarded: &[PathBuf]) -> &'static str {
+        match move_(from, to, true, &[], guarded) {
+            Ok(()) => "ok",
+            Err(DeleteError::Refused(_)) => "refused",
+            Err(DeleteError::Missing(_)) => "missing",
+            Err(DeleteError::Busy(_)) => "busy",
+            Err(DeleteError::Failed(e)) => panic!("{} -> {}: {e}", from.display(), to.display()),
+        }
+    }
+
+    #[test]
+    fn move_with_replace_puts_a_file_over_a_file() {
+        let dir = crate::test_dir("move-replace-file");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("x.bin"), b"new").unwrap();
+        std::fs::write(dir.join("sub/x.bin"), b"old").unwrap();
+        // Without replace: refused, with today's message, nothing changed.
+        match move_(&dir.join("x.bin"), &dir.join("sub/x.bin"), false, &[], &[]) {
+            Err(DeleteError::Refused(m)) => {
+                assert!(m.ends_with("already exists; nothing is replaced"), "{m}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(std::fs::read(dir.join("sub/x.bin")).unwrap(), b"old");
+        assert_eq!(
+            replaced(&dir.join("x.bin"), &dir.join("sub/x.bin"), &[]),
+            "ok"
+        );
+        assert!(!dir.join("x.bin").exists());
+        assert_eq!(std::fs::read(dir.join("sub/x.bin")).unwrap(), b"new");
+        // A rename over a file beside it; over itself refused.
+        std::fs::write(dir.join("sub/y.bin"), b"y").unwrap();
+        assert_eq!(
+            replaced(&dir.join("sub/y.bin"), &dir.join("sub/x.bin"), &[]),
+            "ok"
+        );
+        assert_eq!(std::fs::read(dir.join("sub/x.bin")).unwrap(), b"y");
+        let x = dir.join("sub/x.bin");
+        assert_eq!(replaced(&x, &x, &[]), "refused");
+        // A case-only rename still renames in place.
+        assert_eq!(replaced(&x, &dir.join("sub/X.bin"), &[]), "ok");
+        let names: Vec<_> = (std::fs::read_dir(dir.join("sub")).unwrap().flatten())
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["X.bin"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn move_with_replace_merges_a_folder_into_a_folder() {
+        let dir = crate::test_dir("move-replace-merge");
+        for (path, data) in [
+            ("src/same.bin", "new"),
+            ("src/only-new.bin", "n"),
+            ("src/data/deep/same.bin", "new deep"),
+            ("src/data/fresh/f.bin", "f"),
+            ("dst/same.bin", "old"),
+            ("dst/only-old.bin", "o"),
+            ("dst/data/keep.bin", "k"),
+            ("dst/data/deep/same.bin", "old deep"),
+        ] {
+            let p = dir.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, data).unwrap();
+        }
+        let (src, dst) = (dir.join("src"), dir.join("dst"));
+        assert_eq!(moved(&src, &dst, &[], &[]), "refused");
+        assert_eq!(replaced(&src, &dst, &[]), "ok");
+        assert!(!src.exists());
+        let read = |p: &str| std::fs::read_to_string(dst.join(p)).unwrap();
+        assert_eq!(read("same.bin"), "new");
+        assert_eq!(read("only-new.bin"), "n");
+        assert_eq!(read("only-old.bin"), "o");
+        assert_eq!(read("data/keep.bin"), "k");
+        assert_eq!(read("data/deep/same.bin"), "new deep");
+        assert_eq!(read("data/fresh/f.bin"), "f");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A kind mismatch at any level, or a replaced file a job uses, refuses before anything
+    /// moves.
+    #[test]
+    fn move_with_replace_checks_everything_first() {
+        let dir = crate::test_dir("move-replace-refused");
+        for path in [
+            "src/a.bin",
+            "src/sub/b.bin",
+            "src/sub/clash",
+            "dst/a.bin",
+            "dst/sub/b.bin",
+        ] {
+            let p = dir.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        // A file in src where dst has a folder, deep down.
+        std::fs::create_dir_all(dir.join("dst/sub/clash")).unwrap();
+        let (src, dst) = (dir.join("src"), dir.join("dst"));
+        match move_(&src, &dst, true, &[], &[]) {
+            Err(DeleteError::Refused(m)) => {
+                assert!(
+                    m.ends_with("is a folder: a file is not put in its place"),
+                    "{m}"
+                )
+            }
+            other => panic!("{other:?}"),
+        }
+        let untouched = || {
+            [
+                "src/a.bin",
+                "src/sub/b.bin",
+                "src/sub/clash",
+                "dst/a.bin",
+                "dst/sub/b.bin",
+            ]
+            .iter()
+            .all(|p| dir.join(p).is_file())
+        };
+        assert!(untouched());
+        // A folder over a file, a file over a folder.
+        assert_eq!(
+            replaced(&dir.join("src/sub"), &dir.join("dst/a.bin"), &[]),
+            "refused"
+        );
+        assert_eq!(
+            replaced(&dir.join("src/a.bin"), &dir.join("dst/sub"), &[]),
+            "refused"
+        );
+        std::fs::remove_dir(dir.join("dst/sub/clash")).unwrap();
+        // A replaced file a job uses, at the top or deep in a merge.
+        let used = [dir.join("dst/sub/b.bin")];
+        assert_eq!(replaced(&src, &dst, &used), "busy");
+        let used = [dir.join("dst/a.bin")];
+        assert_eq!(
+            replaced(&dir.join("src/a.bin"), &dir.join("dst/a.bin"), &used),
+            "busy"
+        );
+        assert!(untouched());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("src"), dir.join("dst/link")).unwrap();
+            std::fs::create_dir_all(dir.join("src/sub/link")).unwrap();
+            let link = dir.join("dst/link");
+            assert_eq!(replaced(&dir.join("src/sub/link"), &link, &[]), "refused");
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        }
+        assert_eq!(replaced(&src, &dst, &[]), "ok");
+        assert!(!src.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

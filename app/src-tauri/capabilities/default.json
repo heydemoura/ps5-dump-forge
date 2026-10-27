@@ -12,6 +12,7 @@
     "allow-library-cover",
     "allow-host-tree",
     "allow-edit-check",
+    "allow-existing-targets",
     "allow-default-output",
     "allow-generated-output",
     "allow-start-job",
@@ -42,6 +43,7 @@
     "allow-connect-remote-list",
     "allow-connect-nas-save",
     "allow-connect-nas-forget",
+    "allow-connect-cancel-job",
     "allow-connect-payload-install",
     "allow-connect-payload-send"
   ]

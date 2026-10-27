@@ -130,5 +130,16 @@ await tick();
 reply(all[0], 409, { error: "/data/In/x.bin: already exists" });
 await assert.rejects(p, (e) => e === "/data/In/x.bin: already exists");
 assert.ok(all.some((x) => serverQuery(x.url, "cancel") === "1"));
+assert.ok(all.every((x) => serverQuery(x.url, "replace") === null));
+
+// replace (the user confirmed it): every chunk carries replace=1.
+all.length = 0;
+p = c.connectUpload("/data/In", "x.bin", big, undefined, undefined, true);
+await tick();
+assert.ok(all.length === 3 && all.every((x) => serverQuery(x.url, "replace") === "1"));
+reply(all[0], 200, { done: false });
+reply(all[1], 200, { done: false });
+reply(all[2], 200, { path: "/data/In/x.bin", done: true });
+assert.equal(await p, "/data/In/x.bin");
 
 console.log("upload: ok");

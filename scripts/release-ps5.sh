@@ -7,7 +7,7 @@
 # The checks run on the copy in dist/ (B) and on ps5/build.sh's stage 1 (A, which B embeds and
 # saves on the console): llvm-readelf from the ps5-dump-forge-ps5 Docker image (built here if
 # missing) for the payload's shape (ELF64 little-endian x86-64, a PIE DYN, NEEDED exactly the
-# SDK's five modules, no PT_INTERP or TLS, the entry point in an executable PT_LOAD), then
+# SDK's six modules, no PT_INTERP or TLS, the entry point in an executable PT_LOAD), then
 # python3 on the host: every file of app/dist-http is in it byte for byte (not the placeholder
 # page), no debug routes, and its version marker (VERSION_MARKER in the server) is the workspace
 # version. Then the self copy (crates/ps5-dump-forge-server/src/self_copy.rs): A carries none,
@@ -30,7 +30,7 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
 dist=${DIST_DIR:-$root/dist}
 [[ $dist == /* ]] || dist=$root/$dist
 image=ps5-dump-forge-ps5
-want_needed="libSceAppInstUtil.sprx libSceLibcInternal.sprx libSceNet.sprx libSceSystemService.sprx libkernel_web.sprx"
+want_needed="libSceAppInstUtil.sprx libSceLibcInternal.sprx libSceNet.sprx libSceNotification.sprx libSceSystemService.sprx libkernel_web.sprx"
 
 # The debug routes (crates/ps5-dump-forge-server/src/debug.rs) are for bring-up only; any value
 # of FORGE_DEBUG_API compiles them in, and the check below rejects an ELF that has them.

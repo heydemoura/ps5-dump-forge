@@ -88,6 +88,7 @@ fn request(source: &Path, format: Format, output: &Path, inner: Option<Format>) 
         edits: Vec::new(),
         extract: Vec::new(),
         transfer: Vec::new(),
+        replace: false,
         edit_rebuild: false,
         archive_password: None,
     }

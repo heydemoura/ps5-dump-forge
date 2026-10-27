@@ -99,8 +99,9 @@ usage: ps5-dump-forge inspect <path> [--json] [--password-stdin]
             fakelib/libSceAmpr.sprx (replacing any runtime there; no backup exists), delete the
             journal and logs, and write a fresh ampr_emu.index. Folders only; not a packed one
   serve     the web UI on http://<this computer>:<port> (default 8095); the file browser
-            starts at the --root folders (on the PS5: /data, /mnt/shadowmnt, /mnt/usb0..7,
-            /mnt/ext0..1, no --root). No protections: anyone on the network can use it
+            starts at the --root folders (on the PS5: /data and /mnt/usb0..7, /mnt/ext0..1
+            while mounted, no --root; nothing else is listed). No protections: anyone on the
+            network can use it
   -h, --help";
 
 // One value per run: Convert's size (over clippy's limit on Windows, whose PathBuf is larger) costs nothing.
@@ -356,6 +357,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
                     edits: Vec::new(),
                     extract: Vec::new(),
                     transfer: Vec::new(),
+                    replace: false,
                     edit_rebuild: false,
                     archive_password: None,
                 },
@@ -561,6 +563,9 @@ fn serve(port: u16, roots: Vec<PathBuf>) -> ExitCode {
     };
     let mut opts = Options::new(port, roots, platform, notify);
     opts.connect_dir = ps5_dump_forge_server::connect::default_dir();
+    if platform == Platform::Ps5 {
+        opts.settings_dir = Some(PathBuf::from(ps5_dump_forge_server::FORGE_DIR));
+    }
     on_ctrl_c();
     opts.interrupt = Some(&INTERRUPTED);
     match ps5_dump_forge_server::serve(opts) {

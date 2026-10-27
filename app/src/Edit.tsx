@@ -34,6 +34,7 @@ import {
   SourceCard,
 } from "./common";
 import { confirmDelete } from "./delete";
+import { askReplace } from "./replace";
 import {
   chosenMode,
   confirmApply,
@@ -300,7 +301,9 @@ export function Edit(props: {
     const path = source;
     const output = await pickPath({ directory: true, title: t.pickExtract, devices: true });
     if (output === null || picked.current !== path) return;
-    const request = extractRequest(path, output, paths, pw.current);
+    // Names already in that folder: asked once; Replace sends `replace`, Cancel starts nothing.
+    const request = await askReplace(extractRequest(path, output, paths, pw.current), () => picked.current === path);
+    if (!request) return;
     const id = await api.startJob(request);
     props.dispatch({ type: "started", id, request });
   };

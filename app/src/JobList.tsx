@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 import {
   api,
+  connect,
   errorText,
   web,
   prettyBytes,
@@ -19,7 +20,8 @@ import type { Messages } from "./locales/en";
 import { Icon, type IconName } from "./icons";
 import { jobType, lz4Job, type Action, type Job } from "./jobs";
 import { readable } from "./peers";
-import { useConnectState } from "./useConnectState";
+import { askReplace } from "./replace";
+import { refreshConnect, useConnectState } from "./useConnectState";
 
 type T = Messages["jobs"];
 
@@ -38,7 +40,8 @@ export function JobsCard(props: { jobs: Job[]; dispatch: (a: Action) => void; id
       <div className="job-list">
         {[...props.jobs].reverse().map((j) => (
           <JobCard
-            key={j.id}
+            // A peer's job ids are its own: keyed apart from this device's.
+            key={j.remote ? `${j.remote.keyId}:${j.remote.instance ?? ""}:${j.id}` : j.id}
             job={j}
             fresh={!!j.fresh}
             dispatch={props.dispatch}
@@ -93,9 +96,20 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
   const { job, fresh, dispatch } = props;
   const t = useMessages().jobs;
   const [cancelling, setCancelling] = useState(false);
+  /** Retry is starting the job again (asking about names already there first). */
+  const [retrying, setRetrying] = useState(false);
+  /** The row is still listed (a Dismiss unmounts it). */
+  const mounted = useRef(true);
+  useEffect(() => {
+    // Set here too: Strict Mode's development check unmounts and mounts once.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   // A running job's Cancel asks once ("Stop job?") for a few seconds; a second click stops it.
   const [confirming, setConfirming] = useState(false);
-  /** Show in Finder's or Cancel's failure. */
+  /** Show in Finder's, Cancel's or Retry's failure. */
   const [actionError, setActionError] = useState<string | null>(null);
   /** http build: the output path, shown and selected (no clipboard API over plain HTTP). */
   const [pathShown, setPathShown] = useState(false);
@@ -109,8 +123,11 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
   }, [pathShown]);
   const name = jobName(job, shown, t.job);
   const result = job.result;
+  // A paired peer's job using this device's files: read only, only Cancel (asks that peer).
+  const remote = job.remote;
+  const stopping = cancelling || !!remote?.cancelling;
   const cancel = async () => {
-    if (cancelling) return;
+    if (stopping) return;
     if (job.stage !== undefined && !confirming) {
       setConfirming(true);
       return;
@@ -119,7 +136,11 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
     setCancelling(true);
     setActionError(null);
     try {
-      await api.cancelJob(job.id);
+      if (remote) {
+        // False: the peer's list is gone (it ended or went silent); the row goes on the next poll.
+        if (!(await connect.cancelJob(remote.keyId, job.id))) setCancelling(false);
+        await refreshConnect();
+      } else await api.cancelJob(job.id);
     } catch (e) {
       setCancelling(false);
       setActionError(errorText(e));
@@ -148,14 +169,38 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
     }
   };
 
+  // An edit's "cancelled; …" says what stays changed.
+  const cancelled = !!result && "Err" in result && (result.Err === "cancelled" || result.Err.startsWith("cancelled; "));
+  // A failure here (not a cancel, not a peer's job) can start again; an edit's retry is the Edit
+  // tab's Apply, which keeps the changes after a failure.
+  const request = job.request;
+  const canRetry = !remote && !!request && !request.edits?.length && !!result && "Err" in result && !cancelled;
+  const retry = async () => {
+    if (retrying || !request) return;
+    setRetrying(true);
+    setActionError(null);
+    try {
+      // A failed copy leaves files behind: an extract or a transfer asks about them again. A row
+      // dismissed while that check runs starts nothing.
+      const still = () => mounted.current;
+      const next = request.transfer?.length || request.extract?.length ? await askReplace(request, still) : request;
+      if (next && still()) {
+        const id = await api.startJob(next);
+        dispatch({ type: "started", id, request: next });
+      }
+    } catch (e) {
+      setActionError(errorText(e));
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   let status: string;
   let tone: string;
   if (result) {
-    // An edit's "cancelled; …" says what stays changed.
-    const cancelled = "Err" in result && (result.Err === "cancelled" || result.Err.startsWith("cancelled; "));
     status = "Ok" in result ? t.done : cancelled ? t.cancelled : t.failed;
     tone = "Ok" in result ? "green" : cancelled ? "" : "red";
-  } else if (cancelling) [status, tone] = [t.cancelling, ""];
+  } else if (stopping) [status, tone] = [t.cancelling, ""];
   else if (job.stage === undefined) [status, tone] = [t.queued, ""];
   else [status, tone] = [(t.stages as Record<string, string | undefined>)[job.stage] ?? job.stage, "blue"];
   const running = !result && job.stage !== undefined;
@@ -169,7 +214,7 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
   // A sheen crosses the bar while the job runs (the whole track while the fill is too thin to
   // see it): many stages move it little or in steps (checking, planning, a large file), and a
   // sheen that came and went with each step flickered.
-  const alive = running && !cancelling;
+  const alive = running && !stopping;
   const stepMs = Math.max(0, now - job.stageAt);
   const step = running && stepMs >= STEP_MS ? clock(stepMs) : null;
   const lz4 = lz4Job(job.request);
@@ -199,33 +244,56 @@ function JobCard(props: { job: Job; fresh: boolean; dispatch: (a: Action) => voi
   };
 
   return (
-    <article className={`job ${jobType(job.request)}`} aria-label={name} ref={ref}>
+    <article
+      className={`job ${jobType(job.request)}${remote ? " remote" : ""}`}
+      aria-label={remote ? t.remoteLabel(name, remote.name) : name}
+      ref={ref}
+    >
       <header className="job-head">
         {job.request && !transfer && <FormatPill kind={targetKind(job.request)} />}
         {lz4 && <span className={lz4.tab ? "tag lz4" : "tag"}>{t.lz4[lz4.id]}</span>}
         {edit && <span className="tag edit">{edit}</span>}
         {transfer && <span className="tag transfer">{t.transfer}</span>}
+        {remote && (
+          <span className="tag green" title={t.remoteTitle(remote.name)}>
+            {remote.name}
+          </span>
+        )}
         <div className="job-name">
           <strong title={job.request && shown(job.request.output)}>{name}</strong>
           {job.request && <PathLine path={transfer ? transfer[0] : job.request.source} prefix={t.from} />}
         </div>
         {/* An output on a peer (`flink://`) or a NAS has no local folder for the file manager to show. */}
-        {result && "Ok" in result && (web || !isNetwork(job.request?.output)) && (
+        {!remote && result && "Ok" in result && (web || !isNetwork(job.request?.output)) && (
           <button className="small" onClick={reveal}>
             <Icon name={REVEAL_ICON} />
             {revealLabel(t)}
           </button>
         )}
-        {result ? (
-          <button className="small" onClick={dismiss}>
-            {t.dismiss}
+        {canRetry && (
+          <button
+            className="small"
+            onClick={retry}
+            // Not `disabled`: a focused button that turns disabled drops focus to the page.
+            aria-disabled={retrying || undefined}
+            aria-busy={retrying || undefined}
+          >
+            <Icon name="refresh" />
+            {retrying ? t.retrying : t.retry}
           </button>
+        )}
+        {result ? (
+          !remote && (
+            <button className="small" onClick={dismiss}>
+              {t.dismiss}
+            </button>
+          )
         ) : (
           <button
             className={confirming ? "small danger" : "small"}
             onClick={cancel}
             // Not `disabled`: a focused button that turns disabled drops focus to the page.
-            aria-disabled={cancelling}
+            aria-disabled={stopping}
           >
             {confirming ? t.stopJob : t.cancel}
           </button>

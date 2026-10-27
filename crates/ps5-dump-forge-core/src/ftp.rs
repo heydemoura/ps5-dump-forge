@@ -273,17 +273,13 @@ impl Remote for Ftp {
     }
 
     fn rename_no_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()> {
-        if from.key_id != to.key_id {
-            return Err(io::Error::new(
-                io::ErrorKind::CrossesDevices,
-                format!(
-                    "{} -> {}: can't move between servers",
-                    from.shown(),
-                    to.shown()
-                ),
-            ));
-        }
+        same_server(from, to)?;
         self.with(from, |s| s.rename(&abs(from), &abs(to)))
+    }
+
+    fn rename_replace(&self, from: &FlinkPath, to: &FlinkPath) -> io::Result<()> {
+        same_server(from, to)?;
+        self.with(from, |s| s.rename_replace(&abs(from), &abs(to)))
     }
 
     fn remove(&self, path: &FlinkPath) -> io::Result<()> {
@@ -294,6 +290,20 @@ impl Remote for Ftp {
     fn free_space(&self, _: &FlinkPath) -> io::Result<u64> {
         Ok(u64::MAX)
     }
+}
+
+fn same_server(from: &FlinkPath, to: &FlinkPath) -> io::Result<()> {
+    if from.key_id != to.key_id {
+        return Err(io::Error::new(
+            io::ErrorKind::CrossesDevices,
+            format!(
+                "{} -> {}: can't move between servers",
+                from.shown(),
+                to.shown()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn no_upload(handle: u64) -> io::Error {

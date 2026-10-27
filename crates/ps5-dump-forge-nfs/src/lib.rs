@@ -144,6 +144,12 @@ impl Session {
             .map_err(|e| named(e, &format!("{from} -> {to}")))
     }
 
+    /// Renames the file `from` to `to`, replacing a file there (never a folder).
+    pub fn rename_replace(&self, from: &str, to: &str) -> io::Result<()> {
+        each!(&mut *self.lock(), p => p.rename_replace(from, to))
+            .map_err(|e| named(e, &format!("{from} -> {to}")))
+    }
+
     /// Removes a file.
     pub fn remove(&self, path: &str) -> io::Result<()> {
         each!(&mut *self.lock(), p => p.remove(path)).map_err(|e| named(e, path))

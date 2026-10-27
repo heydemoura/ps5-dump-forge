@@ -136,6 +136,12 @@ which. The source is left as it is.
 
 ## Things to know
 
+- **No journal after playing.** The runtime creates `ampr_commands.bin` only when it records its
+  first AMPR command. No journal means it recorded none: a fakelib updater or ShadowMountPlus's
+  fakelib settings may have loaded another runtime, the mount may not have been writable, or the
+  game made no AMPR reads through it. Check for `ampr_emu.log` / `apr_emu.log` beside it in the
+  File explorer; without them, the trace runtime either never started its logger or couldn't write
+  on `/app0` (a read-only mount).
 - **The trace needs a writable game location.** The journal is written on the title's `/app0`: a plain
   folder, or an `.exfat` / `.ffpkg` the console mounts read-write (`image_rw=`). Forge leaves
   `--lz4-trace-space` MiB (default 256, 64 to 1024 in steps of 64) of free room in such an image. Measured

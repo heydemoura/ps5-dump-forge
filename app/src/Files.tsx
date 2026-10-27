@@ -28,6 +28,7 @@ import {
   type SourceSelection,
 } from "./common";
 import { confirmDelete, type DeletedFile } from "./delete";
+import { confirmReplace } from "./replace";
 import { MAX_ROWS, NameInput } from "./Edit";
 import { FreeSpace } from "./Library";
 import { useMessages } from "./i18n";
@@ -387,11 +388,18 @@ export function Files(props: {
     want.current = { path: e.path, after: 0 };
     if (name === null) return;
     const to = joinPath(dirname(e.path), name);
+    // The input refuses a name of the other kind (or a link); one of the same kind is replaced
+    // once the user confirms (a folder merged).
+    // Case-insensitively (a drive may fold case), never itself (a case-only rename).
+    const taken = all.some((x) => x.path !== e.path && x.name.toLowerCase() === name.toLowerCase());
+    // The question's Cancel gives focus back to what had it: the row, not the input just removed.
+    if (taken) [...(grid.current?.querySelectorAll<HTMLElement>("[role=row][data-path]") ?? [])].find((r) => r.dataset.path === e.path)?.focus();
     void act(
       t.cantRename,
       async () => {
+        if (taken && !(await confirmReplace([name], dirname(e.path)))) return null;
         setBusy({ path: e.path, deleting: false });
-        await api.movePath(e.path, to);
+        await api.movePath(e.path, to, taken);
         focusAfterLoad(to);
         return t.renamed(to);
       },
@@ -406,8 +414,17 @@ export function Files(props: {
         if (dir === null) return null;
         if (dirname(e.path) === dir) throw new Error(t.sameFolder);
         const to = joinPath(dir, e.name);
+        // A file onto a file, a folder onto a folder (merged): asked, then replaced. Any other
+        // clash (another kind, a link) goes without `replace`, so core refuses it as before.
+        // ponytail: `listDir` stops at 10,000 entries; a name past that isn't asked about, so the
+        // move goes without `replace` and the server refuses it ("already exists").
+        // An exact name wins over a case variant (a case-sensitive folder may hold both).
+        const listed = (await api.listDir(dir)).entries;
+        const there = listed.find((x) => x.name === e.name) ?? listed.find((x) => x.name.toLowerCase() === e.name.toLowerCase());
+        const replace = !!there && there.dir === e.dir && !there.link && !there.mounted;
+        if (replace && !(await confirmReplace([e.name], dir))) return null;
         setBusy({ path: e.path, deleting: false });
-        await api.movePath(e.path, to);
+        await api.movePath(e.path, to, replace);
         focusAfterLoad(nextOf(e));
         return t.moved(to);
       },
@@ -729,7 +746,7 @@ export function Files(props: {
                           <NameInput
                             initial={e.name}
                             label={t.rename(e.name)}
-                            taken={(n) => all.some((x) => x.name === n)}
+                            taken={(n) => all.some((x) => x.path !== e.path && x.name.toLowerCase() === n.toLowerCase() && (x.dir !== e.dir || !!x.link || !!x.mounted))}
                             onDone={(n) => renamed(e, n)}
                             dir={e.dir}
                           />

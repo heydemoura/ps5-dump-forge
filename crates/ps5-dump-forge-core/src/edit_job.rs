@@ -3,7 +3,7 @@
 //! the image through its reader, and commit; any failure after the apply rolls it back.
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
 
 use anyhow::{Context, bail};
-use ps5_dump_forge_lz4::{INDEX, JOURNAL, LOGS, reader};
+use ps5_dump_forge_lz4::{CRC_SIDECAR, INDEX, JOURNAL, LOGS, MANIFEST, PROFILE, RUNTIME, reader};
 use ps5_dump_forge_patch::{Applied, Data, Op, Recovery, Syncs, Write};
 use ps5upload_fpkg::source::{SourceFile, SourceTree};
 
@@ -707,11 +707,14 @@ pub(crate) struct Folded {
     pub findings: Vec<String>,
 }
 
-/// Folds `req`'s edits over `tree`, the scanned `image`: a packed game is refused, the edits
-/// must apply ([`Edited`]; the inner `Err` lists every offender), an add of the image itself
-/// is a finding, and an AMPR title whose file set changes gets a fresh `ampr_emu.index`
-/// ([`fresh_index`]; the journal and logs then go with the old one, the runtime is never
-/// swapped). `mtime` stamps a fresh index.
+/// Folds `req`'s edits over `tree`, the scanned `image`: the edits must apply ([`Edited`];
+/// the inner `Err` lists every offender), an add of the image itself is a finding, and an AMPR
+/// title whose file set changes gets a fresh `ampr_emu.index` ([`fresh_index`]; the journal
+/// and logs then go with the old one, the runtime is never swapped). An LZ4-packed game is
+/// edited too, but its pack files and `ampr_emu.index` stay byte for byte and nothing may
+/// appear at or under a packed path ([`Packs`]; the inner `Err` lists each offender); it gets
+/// no fresh index, and a `.pkg` rebuild of it leaves nothing out (the builder keeps a packed
+/// source's own index). `mtime` stamps a fresh index.
 pub(crate) fn fold(
     image: &Path,
     mut tree: Box<dyn SourceTree>,
@@ -720,12 +723,14 @@ pub(crate) fn fold(
     pkg: bool,
     cancel: &AtomicBool,
 ) -> anyhow::Result<Result<Folded, Vec<String>>> {
-    if reader::detect(tree.as_mut()).context("looking for LZ4 packs")? {
-        return Ok(Err(vec![
-            "the game holds LZ4 packs: unpack it first (Unpack in the LZ4 tab), then edit it"
-                .into(),
-        ]));
-    }
+    let packs = if reader::detect(tree.as_mut()).context("looking for LZ4 packs")? {
+        match Packs::of(tree.as_mut())? {
+            Ok(packs) => Some(packs),
+            Err(findings) => return Ok(Err(findings)),
+        }
+    } else {
+        None
+    };
     let had_index = tree.files().iter().any(|f| f.path == INDEX);
     let before = sizes(&crate::lz4::plain_listing(
         tree.files(),
@@ -737,6 +742,12 @@ pub(crate) fn fold(
     };
     let mut findings = Vec::new();
     let mut notes = Vec::new();
+    if let Some(packs) = &packs {
+        let locked = packs.findings(&edited);
+        if !locked.is_empty() {
+            return Ok(Err(locked));
+        }
+    }
     let mut ops = edited.ops().to_vec();
     let hosts = edited.hosts().to_vec();
     // An add of the image itself (or of a folder holding it) would read it while it changes.
@@ -746,14 +757,30 @@ pub(crate) fn fold(
                 .map(|h| format!("{} is the image being edited", h.path.display())),
         );
     }
-    let index = fresh_index(
-        &mut edited,
-        had_index,
-        &before,
-        mtime,
-        &mut notes,
-        &mut findings,
-    )?;
+    let index = if packs.is_some() {
+        // The runtime matches the index's records to the manifest's by file id: both stay.
+        // The runtime, journal and logs aren't looked up through the index.
+        let listing = crate::lz4::plain_listing(edited.files(), RuntimeAction::Keep);
+        let own = |p: &str| p == RUNTIME || p == JOURNAL || LOGS.contains(&p);
+        let after = sizes(&listing);
+        if after.symmetric_difference(&before).any(|(p, _)| !own(p)) {
+            notes.push(format!(
+                "LZ4: the game is packed; its packs and {INDEX} stay as they are, so a file \
+                 added, resized or removed here keeps its old entry there (ampr_emu answers \
+                 /app0 lookups from {INDEX}: a file it doesn't list is missing to the game)"
+            ));
+        }
+        None
+    } else {
+        fresh_index(
+            &mut edited,
+            had_index,
+            &before,
+            mtime,
+            &mut notes,
+            &mut findings,
+        )?
+    };
     let tree: Box<dyn SourceTree> = match index {
         Some(bytes) => {
             // The journal's file ids, and the logs, follow the old index's record order: a
@@ -793,7 +820,8 @@ pub(crate) fn fold(
     };
     // Into a `.pkg` (a rebuild of one), an AMPR title's journal and logs always go, and its
     // old index: the builder writes a fresh one from what it packages, as for a conversion.
-    let tree = if pkg {
+    // A packed game keeps all three: the builder keeps a packed source's own index.
+    let tree = if pkg && packs.is_none() {
         for_pkg(tree, had_index, &mut notes)
     } else {
         tree
@@ -828,6 +856,115 @@ fn for_pkg(
         return tree;
     }
     crate::lz4::overlay(tree, files, HashMap::new())
+}
+
+/// What an edit of an LZ4-packed game must leave as it is. Only the packs themselves are
+/// locked: the runtime, the journal, logs, `eboot.bin` and every loose file may change (the
+/// runtime reads a loose file from the disk as it is).
+struct Packs {
+    /// The manifest, its two sidecars, every volume it names and `ampr_emu.index` (its records
+    /// match the manifest's by file id), each with its size in the source (`None`: absent).
+    locked: Vec<(String, Option<u64>)>,
+    /// Every packed record's path, ASCII lower-cased: the packs' own namespace.
+    packed: HashSet<String>,
+    /// Every folder above a packed path, ASCII lower-cased.
+    dirs: HashSet<String>,
+}
+
+/// The folders above `path`, outermost first.
+fn parents(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices('/').map(move |(i, _)| &path[..i])
+}
+
+impl Packs {
+    /// The packs of `tree`, which [`reader::detect`] found packed; a manifest that can't be
+    /// read is a finding.
+    fn of(tree: &mut dyn SourceTree) -> anyhow::Result<Result<Packs, Vec<String>>> {
+        let size_of = |tree: &dyn SourceTree, path: &str| {
+            (tree.files().iter())
+                .find(|f| f.path == path)
+                .map(|f| f.size)
+        };
+        let size = size_of(tree, MANIFEST).unwrap_or(0);
+        if size > reader::MAX_MANIFEST_BYTES {
+            return Ok(Err(vec![format!(
+                "{MANIFEST} is {size} bytes, over {}",
+                reader::MAX_MANIFEST_BYTES
+            )]));
+        }
+        let bytes = (tree.read_range(MANIFEST, 0, size as usize))
+            .with_context(|| format!("reading {MANIFEST}"))?;
+        let manifest = match reader::open_manifest(&bytes) {
+            Ok(manifest) => manifest,
+            Err(e) => return Ok(Err(vec![format!("{MANIFEST} can't be read: {e}")])),
+        };
+        let names = [MANIFEST, CRC_SIDECAR, PROFILE, INDEX].map(String::from);
+        let locked = (names.into_iter())
+            .chain(manifest.packs.iter().map(|p| p.name.clone()))
+            .map(|path| {
+                let size = size_of(tree, &path);
+                (path, size)
+            })
+            .collect();
+        let packed: HashSet<String> = (manifest.files.iter())
+            .filter(|f| f.packed())
+            .map(|f| f.path.to_ascii_lowercase())
+            .collect();
+        let dirs = (packed.iter())
+            .flat_map(|p| parents(p).map(String::from))
+            .collect();
+        Ok(Ok(Packs {
+            locked,
+            packed,
+            dirs,
+        }))
+    }
+
+    /// What the edits do to the packs, one line per offender: an op naming a locked file, a
+    /// locked file gone or resized (a folder deleted or renamed with it), and a file or empty
+    /// folder at or under a packed path (or a file at a folder of one).
+    fn findings(&self, edited: &Edited) -> Vec<String> {
+        let locked = |p: &str| self.locked.iter().any(|(l, _)| l == p);
+        let mut changed = BTreeSet::new();
+        for op in edited.ops() {
+            let named: &[&String] = match op {
+                Op::Delete { path } | Op::Mkdir { path } | Op::Put { path, .. } => &[path],
+                Op::Rename { from, to } => &[from, to],
+            };
+            changed.extend(named.iter().filter(|p| locked(p)).map(|p| p.to_string()));
+        }
+        let now: HashMap<&str, u64> = (edited.files().iter())
+            .map(|f| (f.path.as_str(), f.size))
+            .collect();
+        changed.extend(
+            (self.locked.iter())
+                .filter(|(path, size)| now.get(path.as_str()).copied() != *size)
+                .map(|(path, _)| path.clone()),
+        );
+        let mut out: Vec<String> = (changed.into_iter())
+            .map(|p| format!("{p} is part of the LZ4 packs: edits can't change it"))
+            .collect();
+        let files = edited.files().iter().map(|f| (&f.path, true));
+        for (path, file) in files.chain(edited.empty_dirs().iter().map(|d| (d, false))) {
+            let key = path.to_ascii_lowercase();
+            if self.packed.contains(&key) {
+                out.push(format!(
+                    "{path} is packed in the LZ4 packs: edits can't add a file there"
+                ));
+            } else if let Some(at) = parents(&key).find(|d| self.packed.contains(*d)) {
+                out.push(format!(
+                    "{path} is under {}, a file packed in the LZ4 packs: edits can't add \
+                     anything there",
+                    &path[..at.len()]
+                ));
+            } else if file && self.dirs.contains(&key) {
+                out.push(format!(
+                    "{path} is a folder in the LZ4 packs: edits can't add a file there"
+                ));
+            }
+        }
+        out
+    }
 }
 
 /// Every (path, size) of a listing.
@@ -1517,6 +1654,137 @@ mod tests {
         };
         findings(&request(&img, vec![missing]));
         assert_eq!(std::fs::read(&img).unwrap(), original);
+    }
+
+    /// An AMPR game packed straight into `dir/packed.ffpkg` by a conversion.
+    fn packed_image(dir: &Path) -> PathBuf {
+        let src = dir.join("src");
+        put(&src, "eboot.bin", AMPR_EBOOT);
+        put(&src, "sce_sys/param.json", PARAM);
+        let text: Vec<u8> = (0..300_000)
+            .map(|i| b"compressible text "[i % 18])
+            .collect();
+        put(&src, "data/assets/level1.bin", &text);
+        put(&src, "data/sub/b.bin", b"bee");
+        let out = dir.join("packed.ffpkg");
+        let req: ConvertRequest = serde_json::from_value(serde_json::json!({
+            "source": src, "format": "ffpkg", "output": out, "lz4": "pack"
+        }))
+        .unwrap();
+        let emit: Box<dyn Fn(crate::Event) + Send + Sync> = Box::new(|_| {});
+        let cancel = AtomicBool::new(false);
+        crate::convert::run(&req, &Ctx::new(1, &emit, &cancel)).unwrap();
+        out
+    }
+
+    /// The pack files and `ampr_emu.index` of an image, with their bytes.
+    fn packs(img: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut tree = open_source(img, Kind::of(img).unwrap(), &AtomicBool::new(false)).unwrap();
+        let names: Vec<String> = (tree.files().iter())
+            .filter(|f| f.path.starts_with("ampr_assets") || f.path == INDEX)
+            .map(|f| f.path.clone())
+            .collect();
+        (names.into_iter())
+            .map(|p| {
+                let bytes = tree.read(&p).unwrap();
+                (p, bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_packed_image_edits_all_but_its_packs() {
+        let dir = crate::test_dir("edit-packed-image");
+        let img = packed_image(&dir);
+        let locked = packs(&img);
+        assert!(locked.len() >= 4, "{locked:?}");
+        put(
+            &dir,
+            "host/eboot.bin",
+            b"\x7fELF a new eboot importing libSceAmpr.sprx",
+        );
+        put(&dir, "host/runtime.sprx", b"another runtime");
+        put(&dir, "host/new.bin", b"a new loose file");
+        let runtime = ps5_dump_forge_lz4::RUNTIME;
+        let add = |from: &str, to: &str| Edit::Add {
+            from: dir.join(from),
+            to: to.into(),
+        };
+        let req = request(
+            &img,
+            vec![
+                add("host/eboot.bin", "eboot.bin"),
+                add("host/runtime.sprx", runtime),
+                add("host/new.bin", "data/new.bin"),
+            ],
+        );
+        let checked = check(&req, None);
+        assert!(
+            checked.in_place.is_empty() && checked.rebuild.is_empty(),
+            "{checked:?}"
+        );
+        let planned = plan(&req).unwrap();
+        assert!(index_put(&planned).is_none());
+        assert!(
+            planned
+                .notes
+                .iter()
+                .any(|n| n.contains("the game is packed")),
+            "{:?}",
+            planned.notes
+        );
+        let emit: Box<dyn Fn(crate::Event) + Send + Sync> = Box::new(|_| {});
+        let cancel = AtomicBool::new(false);
+        run(&req, &Ctx::new(1, &emit, &cancel)).unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(
+            packs(&img),
+            locked,
+            "the packs and index stay byte for byte"
+        );
+        let tree = open_source(&img, Kind::Ffpkg, &AtomicBool::new(false)).unwrap();
+        let mut unpacked = reader::unpack(tree).unwrap();
+        assert_eq!(unpacked.read(runtime).unwrap(), b"another runtime");
+        assert_eq!(unpacked.read("data/new.bin").unwrap(), b"a new loose file");
+        assert_eq!(
+            unpacked.read("data/assets/level1.bin").unwrap().len(),
+            300_000
+        );
+        // Its packs and index are refused, and so is a file at a packed path.
+        let volume = ps5_dump_forge_lz4::volume_name(0);
+        let changed = |p: &str| format!("{p} is part of the LZ4 packs: edits can't change it");
+        let cases = [
+            (
+                Edit::Delete {
+                    path: volume.clone(),
+                },
+                changed(&volume),
+            ),
+            (add("host/new.bin", MANIFEST), changed(MANIFEST)),
+            (add("host/new.bin", INDEX), changed(INDEX)),
+            (
+                Edit::Rename {
+                    from: CRC_SIDECAR.into(),
+                    to: "x.crc".into(),
+                },
+                changed(CRC_SIDECAR),
+            ),
+            (
+                add("host/new.bin", "data/assets/level1.bin"),
+                "data/assets/level1.bin is packed in the LZ4 packs: edits can't add a file there"
+                    .into(),
+            ),
+        ];
+        let before = std::fs::read(&img).unwrap();
+        for (edit, want) in cases {
+            let req = request(&img, vec![edit]);
+            assert_eq!(findings(&req), [want.as_str()]);
+            let checked = check(&req, None);
+            assert!(
+                checked.rebuild.iter().any(|f| f.contains(&want)),
+                "{checked:?}"
+            );
+        }
+        assert!(std::fs::read(&img).unwrap() == before);
     }
 }
 

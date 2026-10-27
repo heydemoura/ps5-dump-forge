@@ -569,11 +569,18 @@ impl Conn {
         }
     }
 
-    /// Renames an open file or folder to `to` (a share path, `\`-separated), never replacing
-    /// (FileRenameInformation, ReplaceIfExists 0).
-    pub(crate) fn rename(&mut self, tree: u32, id: &[u8; 16], to: &str) -> io::Result<()> {
+    /// Renames an open file or folder to `to` (a share path, `\`-separated), replacing a file
+    /// there only when `replace` (FileRenameInformation's ReplaceIfExists).
+    pub(crate) fn rename(
+        &mut self,
+        tree: u32,
+        id: &[u8; 16],
+        to: &str,
+        replace: bool,
+    ) -> io::Result<()> {
         let name = ntlm::utf16(to);
         let mut info = vec![0u8; 16]; // ReplaceIfExists, reserved, RootDirectory
+        info[0] = u8::from(replace);
         info.extend_from_slice(&(name.len() as u32).to_le_bytes());
         info.extend_from_slice(&name);
         info.resize(info.len().max(24), 0); // the record is at least 24 bytes (MS-FSCC)

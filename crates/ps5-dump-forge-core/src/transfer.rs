@@ -1,8 +1,9 @@
 //! Transfer (a request with [`ConvertRequest::transfer`]): files and folders of this device, a
 //! paired one (`flink://`) or a NAS (`smb://`) copied into a folder on this device or a paired
 //! one, each under its own name, as Extract copies (`extract_paths`): every check before the
-//! first byte, nothing replaced, each file through an exclusive temporary name, synced, renamed
-//! without replacing; folders recreated, empty ones too; BLAKE3 while writing, sizes checked
+//! first byte, nothing replaced (unless [`ConvertRequest::replace`], as Extract replaces), each
+//! file through an exclusive temporary name, synced, renamed without replacing; folders
+//! recreated, empty ones too; BLAKE3 while writing, sizes checked
 //! (fast) or every file re-read and re-hashed (full). Peer to peer is relayed through here.
 // ponytail: no rollback, as Extract: a failure part way leaves the files already copied (the
 // error says how many).
@@ -16,7 +17,8 @@ use ps5upload_fpkg::source::{SourceFile, SourceTree};
 
 use crate::convert::{Kind, SourceStamp, open_source};
 use crate::extract_paths::{
-    CHUNK, Selection, made_note, preflight_failed, select, target_findings, verify, write,
+    CHUNK, Selection, Written, log_replaced, made_note, preflight_failed, select, target_findings,
+    verify, write,
 };
 use crate::jobs::Ctx;
 use crate::remote::{FlinkPath, RemoteDir, is_remote};
@@ -331,7 +333,8 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
         }
     }
     // Checked as one: the room for every source and the names beside each other.
-    findings.extend(target_findings("transfer", &root, &selections, ctx));
+    let (found, replacing) = target_findings("transfer", &root, &selections, req.replace, ctx);
+    findings.extend(found);
     ctx.check()?;
     if !findings.is_empty() {
         return Err(preflight_failed(findings));
@@ -355,29 +358,35 @@ pub(crate) fn run(req: &ConvertRequest, ctx: &Ctx) -> anyhow::Result<JobReport> 
     });
     let mut written: Vec<(PathBuf, u64, blake3::Hash)> = Vec::with_capacity(count);
     let mut made = Vec::new();
+    let mut replaced = Vec::new();
     let mut done = 0u64;
-    let outcome = (trees.iter_mut().zip(&selections))
-        .try_for_each(|(tree, s)| {
-            write(
-                tree.as_mut(),
-                &root,
-                peer.as_mut(),
-                std::slice::from_ref(s),
-                total,
-                &mut done,
-                &mut written,
-                &mut made,
-                ctx,
-            )
-        })
-        .and_then(|()| {
-            ctx.progress("write", total, total);
-            ctx.progress("verify", 0, 1);
-            if let Some(changed) = stamps.iter().find(|s| !s.unchanged()) {
-                bail!("{} changed while it was read", changed.path().display());
-            }
-            verify(&written, req.full_verify, ctx)
-        });
+    let mut out = Written {
+        files: &mut written,
+        made: &mut made,
+        replaced: &mut replaced,
+    };
+    let wrote = (trees.iter_mut().zip(&selections)).try_for_each(|(tree, s)| {
+        write(
+            tree.as_mut(),
+            &root,
+            peer.as_mut(),
+            std::slice::from_ref(s),
+            &replacing,
+            total,
+            &mut done,
+            &mut out,
+            ctx,
+        )
+    });
+    log_replaced(&replaced, ctx);
+    let outcome = wrote.and_then(|()| {
+        ctx.progress("write", total, total);
+        ctx.progress("verify", 0, 1);
+        if let Some(changed) = stamps.iter().find(|s| !s.unchanged()) {
+            bail!("{} changed while it was read", changed.path().display());
+        }
+        verify(&written, req.full_verify, ctx)
+    });
     let checked = match (outcome, written.len()) {
         (Ok(checked), _) => checked,
         (Err(e), 0) => return Err(made_note(e, &made, "transfer", ctx)),
@@ -723,6 +732,254 @@ mod tests {
         assert_eq!(job, second);
         result.unwrap();
         assert!(out.join("g/data/big.bin").is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Runs `req` as `run` does, with its log lines.
+    fn run_logged(req: &ConvertRequest) -> (anyhow::Result<JobReport>, Vec<String>) {
+        let cancel = AtomicBool::new(false);
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = lines.clone();
+        let emit: Box<dyn Fn(Event) + Send + Sync> = Box::new(move |e| {
+            if let Event::Log { line, .. } = e {
+                sink.lock().unwrap().push(line);
+            }
+        });
+        let result = crate::convert::run(req, &Ctx::new(1, &emit, &cancel));
+        let lines = lines.lock().unwrap().clone();
+        (result, lines)
+    }
+
+    /// Every path under `root` with a file's bytes, sorted.
+    fn listing(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
+        let mut out = Vec::new();
+        let mut todo = vec![root.to_path_buf()];
+        while let Some(at) = todo.pop() {
+            for entry in std::fs::read_dir(at).unwrap() {
+                let path = entry.unwrap().path();
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                if path.is_dir() {
+                    todo.push(path);
+                    out.push((rel, None));
+                } else {
+                    out.push((rel, Some(std::fs::read(&path).unwrap())));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn replace_puts_files_over_files_and_merges_folders() {
+        let dir = crate::test_dir("transfer-replace");
+        let src = dir.join("src");
+        let big = sources(&src);
+        put(&src, "new.bin", b"new");
+        let all = [src.join("g"), src.join("f.bin"), src.join("new.bin")];
+        let out = dir.join("out");
+        put(&out, "f.bin", b"old");
+        put(&out, "g/old.bin", b"keep");
+        put(&out, "g/zero.bin", b"old zero");
+
+        // Asked first: only the targets there, at the top level.
+        let jobs = Jobs::new(|_| {});
+        let req = request(&all, &out);
+        let canon = |p: &str| out.join(p);
+        assert_eq!(
+            jobs.existing_targets(&req).unwrap(),
+            [canon("g"), canon("f.bin")]
+        );
+        // Without replace: refused as ever, nothing written.
+        let before = listing(&out);
+        let e = run(&req).unwrap_err();
+        has(&e, "f.bin already exists (never replaced)");
+        has(&e, "g already exists (never replaced)");
+        assert_eq!(listing(&out), before);
+
+        // With it: a file over a file, the folder merged (its own file kept), new ones made.
+        let mut req = request(&all, &out);
+        req.replace = true;
+        let (report, log) = run_logged(&req);
+        assert_eq!(report.unwrap().files, 4);
+        assert_eq!(std::fs::read(out.join("f.bin")).unwrap(), b"one file");
+        assert_eq!(std::fs::read(out.join("g/old.bin")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(out.join("g/zero.bin")).unwrap(), b"");
+        assert_eq!(std::fs::read(out.join("g/data/big.bin")).unwrap(), big);
+        assert!(out.join("g/data/empty").is_dir());
+        assert_eq!(std::fs::read(out.join("new.bin")).unwrap(), b"new");
+        let line = log.iter().find(|l| l.starts_with("replace: ")).unwrap();
+        assert!(line.starts_with("replace: 2 files replaced: "), "{line}");
+        assert!(listing(&out).iter().all(|(p, _)| !p.ends_with(".tmp")));
+
+        // A kind mismatch at any level: refused, nothing written.
+        let other = dir.join("other");
+        std::fs::create_dir_all(other.join("f.bin")).unwrap();
+        put(&other, "g/data", b"a file where a folder goes");
+        let before = listing(&other);
+        let mut req = request(&[src.join("g"), src.join("f.bin")], &other);
+        req.replace = true;
+        let e = format!("{:#}", run(&req).unwrap_err());
+        has(&e, "f.bin is a folder: a file is not put in its place");
+        has(&e, "data is a file: a folder is not put in its place");
+        assert_eq!(listing(&other), before);
+
+        // On a peer the same: asked first, then a file over a file (small ones in calls of
+        // their own, a large one streamed), the folder merged.
+        let at_peer = dir.join("a");
+        put(&at_peer, "f.bin", b"old");
+        put(&at_peer, "g/old.bin", b"keep");
+        put(&at_peer, "g/zero.bin", b"old zero");
+        put(&at_peer, "g/data/big.bin", b"old big");
+        let (a, fa) = peer(&at_peer);
+        let mut req = request(&all, &a.url());
+        assert_eq!(
+            jobs.existing_targets(&req).unwrap(),
+            [a.join("g").url(), a.join("f.bin").url()]
+        );
+        has(
+            run(&req).unwrap_err(),
+            "f.bin already exists (never replaced)",
+        );
+        req.replace = true;
+        let (report, log) = run_logged(&req);
+        assert_eq!(report.unwrap().files, 4);
+        assert_eq!(fa.file("f.bin").unwrap(), b"one file");
+        assert_eq!(fa.file("g/old.bin").unwrap(), b"keep");
+        assert_eq!(fa.file("g/zero.bin").unwrap(), b"");
+        assert_eq!(fa.file("g/data/big.bin").unwrap(), big);
+        assert_eq!(fa.file("new.bin").unwrap(), b"new");
+        assert!(fa.paths().contains(&"g/data/empty".to_string()));
+        assert!(
+            fa.paths().iter().all(|p| !p.ends_with(".tmp")),
+            "{:?}",
+            fa.paths()
+        );
+        let line = log.iter().find(|l| l.starts_with("replace: ")).unwrap();
+        assert!(line.starts_with("replace: 3 files replaced: "), "{line}");
+
+        // A kind mismatch there, a link, or a name the device may fold into another: refused,
+        // nothing written.
+        let at_other = dir.join("b");
+        std::fs::create_dir_all(at_other.join("f.bin")).unwrap();
+        put(&at_other, "g/data", b"a file where a folder goes");
+        put(&at_other, "g/zero.bin", b"a link");
+        put(&at_other, "g/Old.bin", b"other case");
+        let (b, fb) = peer(&at_other);
+        fb.links.lock().unwrap().push("g/zero.bin".into());
+        let before = fb.paths();
+        let mut req = request(
+            &[src.join("g"), src.join("f.bin"), src.join("new.bin")],
+            &b.url(),
+        );
+        req.replace = true;
+        put(&src, "g/old.bin", b"new old");
+        let e = format!("{:#}", run(&req).unwrap_err());
+        std::fs::remove_file(src.join("g/old.bin")).unwrap();
+        has(&e, "f.bin is a folder: a file is not put in its place");
+        has(&e, "data is a file: a folder is not put in its place");
+        has(&e, "zero.bin is a link: nothing is put in its place");
+        has(&e, "old.bin is there as Old.bin");
+        assert_eq!(fb.paths(), before);
+        assert_eq!(fb.file("g/Old.bin").unwrap(), b"other case");
+
+        // An extract onto a peer replaces and merges the same way.
+        let at_x = dir.join("x");
+        put(&at_x, "g/zero.bin", b"old zero");
+        put(&at_x, "g/kept.bin", b"kept");
+        let (x, fx) = peer(&at_x);
+        let mut req = convert(&src, &x.url());
+        req.extract = vec!["g".into()];
+        has(run(&req).unwrap_err(), "already exists (never replaced)");
+        req.replace = true;
+        let (report, log) = run_logged(&req);
+        report.unwrap();
+        assert_eq!(fx.file("g/zero.bin").unwrap(), b"");
+        assert_eq!(fx.file("g/kept.bin").unwrap(), b"kept");
+        assert_eq!(fx.file("g/data/big.bin").unwrap(), big);
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("replace: 1 file replaced: "))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A job never replaces what it copies from: a file sent into its own folder, or a folder
+    /// merged into itself, is refused with nothing changed.
+    #[test]
+    fn replace_refuses_the_jobs_own_source() {
+        let dir = crate::test_dir("transfer-replace-own");
+        put(&dir, "f.bin", b"mine");
+        put(&dir, "g/a.bin", b"a");
+        for source in [dir.join("f.bin"), dir.join("g")] {
+            let (jobs, release, done) = held();
+            let mut req = request(std::slice::from_ref(&source), &dir);
+            req.replace = true;
+            assert_eq!(jobs.start(req), 1);
+            release.send(()).unwrap();
+            let (_, result) = next(&done);
+            has(result.unwrap_err(), "is what this job copies from");
+        }
+        assert_eq!(std::fs::read(dir.join("f.bin")).unwrap(), b"mine");
+        assert_eq!(std::fs::read(dir.join("g/a.bin")).unwrap(), b"a");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn replace_refuses_what_another_job_uses_or_is_protected() {
+        let dir = crate::test_dir("transfer-replace-busy");
+        let src = dir.join("src");
+        sources(&src);
+        let out = dir.join("out");
+        put(&out, "g/zero.bin", b"old zero");
+        put(&out, "f.bin", b"old");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+
+        // A queued transfer reads the file job 1 would replace: job 1 is refused.
+        let (jobs, release, done) = held();
+        let mut req = request(&[src.join("g")], &out);
+        req.replace = true;
+        assert_eq!(jobs.start(req), 1);
+        let reader = jobs.start(request(&[out.join("g/zero.bin")], &elsewhere));
+        release.send(()).unwrap();
+        let (job, result) = next(&done);
+        assert_eq!(job, 1);
+        has(result.unwrap_err(), "in use by an unfinished job");
+        assert_eq!(std::fs::read(out.join("g/zero.bin")).unwrap(), b"old zero");
+        assert_eq!(next(&done).0, reader);
+
+        // The same for an extract (a heavy job) behind which another one reads the folder.
+        let (jobs, release, done) = held();
+        let mut req = convert(&src.join("g"), &out);
+        req.extract = vec!["zero.bin".into()];
+        req.replace = true;
+        std::fs::rename(out.join("g/zero.bin"), out.join("zero.bin")).unwrap();
+        assert_eq!(jobs.start(req), 1);
+        let mut reader = convert(&out, &elsewhere);
+        reader.extract = vec!["f.bin".into()];
+        let reader = jobs.start(reader);
+        release.send(()).unwrap();
+        let (job, result) = next(&done);
+        assert_eq!(job, 1);
+        has(result.unwrap_err(), "in use by an unfinished job");
+        assert_eq!(std::fs::read(out.join("zero.bin")).unwrap(), b"old zero");
+        assert_eq!(next(&done).0, reader);
+
+        // A protected file is not replaced either.
+        let (jobs, release, done) = held();
+        let kept = out.join("f.bin");
+        jobs.set_protected(Arc::new(move || vec![kept.clone()]));
+        let mut req = request(&[src.join("f.bin")], &out);
+        req.replace = true;
+        jobs.start(req);
+        release.send(()).unwrap();
+        has(next(&done).1.unwrap_err(), "which is not replaced");
+        assert_eq!(std::fs::read(out.join("f.bin")).unwrap(), b"old");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

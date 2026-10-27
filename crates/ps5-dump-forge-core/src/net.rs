@@ -470,7 +470,7 @@ mod tests {
             );
         };
         refused(jobs.delete_path(&root.join("eboot.bin").url(), &[]));
-        refused(jobs.move_path(&root.join("eboot.bin").url(), &dir.join("e"), &[]));
+        refused(jobs.move_path(&root.join("eboot.bin").url(), &dir.join("e"), false, &[]));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

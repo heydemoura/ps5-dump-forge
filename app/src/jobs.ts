@@ -9,6 +9,7 @@ import type {
   JobsRestore,
   LogEvent,
   ProgressEvent,
+  RemoteJob,
   SnapshotJob,
   StagesEvent,
 } from "./api";
@@ -41,6 +42,9 @@ export interface Job {
   result?: JobResult;
   /** Started from this page (not restored by a reload): its row scrolls into view. */
   fresh?: boolean;
+  /** A job on a paired peer that uses this device's files (Connect's `remote_jobs`): shown read
+   * only, only cancellable. Its `id` is the peer's. */
+  remote?: { keyId: string; name: string; cancelling: boolean; instance?: string };
 }
 
 /** What an LZ4 job does, for its row: its tag, and whether it is an LZ4 tab job (the yellow
@@ -95,7 +99,7 @@ function blank(id: JobId): Job {
 }
 
 /** A job as the server's list has it: request, last progress, log tail and result. */
-function fromSnapshot(j: Job, s: SnapshotJob, at: number): Job {
+function fromSnapshot(j: Job, s: Omit<SnapshotJob, "log_total">, at: number): Job {
   let k: Job = { ...j, request: s.request ?? j.request, log: s.log.slice(-LOG_LINES) };
   if (s.stages?.length) k = { ...k, stages: s.stages };
   const p = s.progress;
@@ -107,6 +111,18 @@ function fromSnapshot(j: Job, s: SnapshotJob, at: number): Job {
   k = { ...k, step: stepOf(k.stages, k.stage, k.step) };
   if (s.done) k = finish(k, s.done.result);
   return k;
+}
+
+/** Connect's `remote_jobs` as rows, each built on its row in `prev` (same peer and id): the bar
+ * never drops and a stage keeps its start while it lasts. */
+export function remoteJobs(list: RemoteJob[], prev: Job[], at: number): Job[] {
+  return list.map((r) => {
+    // Same peer, same run (ids start again at 1 when it restarts), same id.
+    const old = prev.find((j) => j.remote?.keyId === r.key_id && j.remote.instance === r.instance && j.id === r.job.id);
+    let k = fromSnapshot(old ?? blank(r.job.id), r.job, at);
+    if (old && old.stage !== undefined && old.stage === k.stage) k = { ...k, stageAt: old.stageAt, stageDone: old.stageDone };
+    return { ...k, remote: { keyId: r.key_id, name: r.name, cancelling: r.cancelling, instance: r.instance } };
+  });
 }
 
 /** The job's result: full only on success. */
