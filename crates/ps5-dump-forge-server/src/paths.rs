@@ -211,7 +211,7 @@ impl Roots {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Roots {
     /// PS5 roots for tests, `(path, drive)` each, resolved on each use, with a fake `statfs`.
     pub(crate) fn fake(list: &[(PathBuf, bool)], statfs: fn(&Path) -> Option<Mount>) -> Roots {
@@ -233,7 +233,7 @@ impl Roots {
 }
 
 /// A fake `statfs` for tests: a `mounted` file in a folder makes it a mount point.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn fake_statfs(p: &Path) -> Option<Mount> {
     let on = match p.join("mounted").exists() {
         true => p.to_path_buf(),
