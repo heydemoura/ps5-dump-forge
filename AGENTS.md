@@ -1146,3 +1146,7 @@ FORGE_DEBUG_API=1 ps5/build.sh                 # bring-up build with POST /api/d
   the ceiling of a deliberate shortcut).
 - Changes to `vendor/` go into a new numbered patch in `vendor/patches/` and `vendor/README.md`.
   Don't replace `vendor/` with our own code unless asked.
+
+## Downstream console LZ4 policy
+
+This fork supersedes upstream blanket keep-loose and encoder rules with the original console C policy and LZ4 1.10.0. See docs/CONSOLE_LZ4.md and native/console/ORIGIN.md under the LZ4 crate. Preserve bounded ownership, source-change verification and shared-chunk validation. Default HC9; separate --lz4-level from PFSC --level. Run scripts/build-console-linux.sh amd64 for release validation, including original-C differential checks. Do not claim console playback from host tests.

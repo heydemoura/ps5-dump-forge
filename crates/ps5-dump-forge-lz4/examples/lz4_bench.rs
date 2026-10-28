@@ -157,6 +157,7 @@ fn run_pack(mem: &mut Mem, files: &[PackFile], shift: u8, threads: usize) -> (f6
         .iter()
         .map(|f| PackFile {
             spec: Some(PackSpec {
+                encoding: None,
                 block_shift: shift,
                 ..f.spec.unwrap()
             }),
@@ -200,6 +201,7 @@ fn bench(threads: usize, args: &[&str]) -> Result<()> {
             path: f.path.clone(),
             size: f.size,
             spec: Some(PackSpec {
+                encoding: None,
                 block_shift: 16,
                 store: false,
                 hot: false,

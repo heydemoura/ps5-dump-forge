@@ -2167,6 +2167,7 @@ mod tests {
             full_verify: false,
             kraken_level: ps5_dump_forge_core::KrakenLevel::Fast,
             ffpfsc_level: 6,
+            lz4_level: 9,
             lz4: None,
             lz4_profile: None,
             lz4_traces: None,

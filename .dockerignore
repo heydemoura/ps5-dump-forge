@@ -1,0 +1,7 @@
+.git
+target
+dist
+app/node_modules
+app/dist
+app/dist-http
+**/__pycache__

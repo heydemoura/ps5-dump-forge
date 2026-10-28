@@ -1,0 +1,13 @@
+# Native build tools cross-compile the Linux NAS executable; no game data or SDK.
+FROM --platform=$BUILDPLATFORM rust:slim-bookworm AS build
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config ca-certificates python3 liblz4-1 zlib1g-dev gcc-x86-64-linux-gnu g++-x86-64-linux-gnu gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user && rm -rf /var/lib/apt/lists/*
+RUN rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+ENV RUSTUP_TOOLCHAIN=stable
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,id=forge-console-cargo,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=forge-console-target,target=/src/target \
+    scripts/build-console-target.sh "$TARGETARCH"
+FROM scratch AS artifact
+COPY --from=build /out/ps5-dump-forge /

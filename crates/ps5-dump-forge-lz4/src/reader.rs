@@ -442,6 +442,7 @@ pub fn read_profile(b: &[u8], m: &Manifest) -> Result<RuntimeProfile> {
         )));
     }
     let p = RuntimeProfile {
+        auto_budget_index_bytes: None,
         decoded_cache_bytes: u64_at(b, 32)?,
         physical_cache_bytes: u64_at(b, 40)?,
         workers: u32_at(b, 48)?,

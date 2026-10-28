@@ -53,6 +53,7 @@ fn request(source: &Path, format: Format, output: &Path) -> ConvertRequest {
         full_verify: false,
         kraken_level: KrakenLevel::Fast,
         ffpfsc_level: 6,
+        lz4_level: 9,
         lz4: None,
         lz4_profile: None,
         lz4_traces: None,
@@ -328,6 +329,7 @@ fn folder_round_trip_verifies_with_blake3() {
         full_verify: true,
         kraken_level: KrakenLevel::Fast,
         ffpfsc_level: 6,
+        lz4_level: 9,
         ..request(&src, Format::Folder, &out)
     });
     let report = result.unwrap();
@@ -1177,7 +1179,10 @@ fn folder_to_lz4_and_back() {
         ["scan", "preflight", "write", "pack", "verify", "finalize"]
     );
     assert!(logged(&events, ps5_dump_forge_lz4::runtime::WARNING));
-    assert!(logged(&events, "LZ4 rules: a built-in guess"), "{events:?}");
+    assert!(
+        logged(&events, "LZ4 rules: console universal"),
+        "{events:?}"
+    );
     assert!(
         logged(&events, "wrote LZ4 packs: 3 files packed into 1 volumes"),
         "{events:?}"
@@ -1210,7 +1215,7 @@ fn folder_to_lz4_and_back() {
     ] {
         assert!(packed.join(kept).is_file(), "{kept}");
     }
-    assert!(!packed.join("ampr_assets.index.runtime").exists());
+    assert!(packed.join("ampr_assets.index.runtime").exists());
     assert!(packed.join("data/empty").is_dir());
     assert!(std::fs::read(packed.join("fakelib/libSceAmpr.sprx")).unwrap() == RELEASE);
     let mut want: Vec<(String, u64)> = tree_bytes(&src)
@@ -1333,7 +1338,10 @@ fn traces_pick_what_lz4_packs() {
     });
     let report = result.unwrap();
     assert!(
-        logged(&events, "this dump's traces (2 files the game read)"),
+        logged(
+            &events,
+            "console universal narrowed by traces (2 files the game read)"
+        ),
         "{events:?}"
     );
     assert!(
@@ -1867,7 +1875,7 @@ fn lz4_auto_loose_and_the_keep_loose_list() {
     assert!(
         logged(
             &events,
-            "LZ4 profile: 1 files the profile packs stay loose (the keep-loose list"
+            "LZ4 profile: 1 files the profile packs stay loose (the console keep-loose list"
         ) && logged(&events, "AMPR starts): readme.txt"),
         "{events:?}"
     );
@@ -2124,7 +2132,10 @@ fn lz4_patch_leaves_and_ignores_leftover_temp_files() {
     let packed = root.join("packed");
     let (events, result) = run(request(&game, Format::Lz4, &packed));
     result.unwrap();
-    assert!(logged(&events, "this dump's traces (1 files"), "{events:?}");
+    assert!(
+        logged(&events, "console universal narrowed by traces (1 files"),
+        "{events:?}"
+    );
     assert!(!packed.join("data/assets/level1.bin").exists());
     let _ = std::fs::remove_dir_all(root);
 }
@@ -2773,7 +2784,9 @@ fn pack_payload(root: &Path) -> Vec<(String, Vec<u8>)> {
         .into_iter()
         .filter(|(p, _)| p != "ampr_emu.index")
         .map(|(p, b)| {
-            let b = if p.starts_with("ampr_assets-") {
+            let b = if p == "ampr_assets.index.runtime" {
+                b[32..56].to_vec() // Runtime settings; build ID and CRC belong to this job.
+            } else if p.starts_with("ampr_assets-") {
                 b[64..].to_vec()
             } else if p == "ampr_assets.index.crc" {
                 b[48..].to_vec()

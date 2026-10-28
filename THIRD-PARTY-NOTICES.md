@@ -306,3 +306,9 @@ The app is built with [Tauri](https://tauri.app) 2 (`tauri`, `tauri-build`,
 and [React](https://react.dev) (MIT). The remaining Rust crates (`Cargo.lock`) and npm
 packages (`app/package-lock.json`) are under their own permissive licenses (MIT, Apache-2.0,
 BSD, Zlib, Unicode and similar), as stated in each package's metadata.
+
+## Console LZ4 policy and reference engine
+
+`crates/ps5-dump-forge-lz4/native/console/` contains original console policy sources and community profiles from theghostonline/PS5-LZ4-Compression, commit `a2b65ccdf7bc332486ef678e61cba516b169dbdb`, under GPL-3.0-or-later. `tests/console-reference/` contains the original C pack/index engine used only for differential tests. Their ORIGIN.md files preserve provenance; profile authors are credited in profiles/index.json.
+
+The bundled official LZ4 1.10.0 C sources are BSD-2-Clause; the full notice is in `crates/ps5-dump-forge-lz4/native/console/LZ4-LICENSE`. Original notices are retained. The downstream adapter and Rust integration are covered by this repository’s GPL license.

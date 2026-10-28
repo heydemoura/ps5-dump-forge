@@ -1,3 +1,5 @@
+> **Private downstream fork: console LZ4 policy.** The Linux CLI uses the console compressor’s original file-selection policy and bundled LZ4 1.10.0 encoder, defaulting to HC level 9. See [usage, validation and limitations](docs/CONSOLE_LZ4.md). The platform table below describes upstream; this fork’s release is validated for Linux x86-64 only.
+
 <p align="center"><img src="app/src-tauri/icons/128x128@2x.png" width="128" alt="PS5 Dump Forge"></p>
 
 Runs on PS5, Windows, macOS and Linux, and can convert and edit any format: game `folders`, `exfat`, `ffpkg`, `ffpfs`,

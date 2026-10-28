@@ -19,7 +19,7 @@ use ps5_dump_forge_lz4::runtime::{self, RuntimeKind};
 use ps5_dump_forge_lz4::writer::{PackFile, PackOutput};
 use ps5_dump_forge_lz4::{
     AutoLoose, CRC_SIDECAR, INDEX, JOURNAL, LOGS, MANIFEST, PROFILE, Profile, RUNTIME,
-    RuntimeProfile, Selection,
+    RuntimeProfile,
 };
 use ps5upload_fpkg::source::{SourceFile, SourceTree};
 
@@ -260,6 +260,9 @@ pub(crate) struct Prepared {
 /// The findings the request's LZ4 options make on their own (ruling 3 of the design).
 fn combinations(req: &ConvertRequest) -> Vec<String> {
     let mut findings = Vec::new();
+    if packing(req) && !(1..=12).contains(&req.lz4_level) {
+        findings.push("LZ4 level must be 1..12".into());
+    }
     let trace = req.lz4 == Some(Lz4Mode::Trace);
     if trace && !matches!(req.format, Format::Folder | Format::Exfat | Format::Ffpkg) {
         findings.push(format!(
@@ -371,6 +374,13 @@ pub(crate) fn prepare(
         },
         _ => None,
     };
+    if !findings.is_empty() {
+        return Ok(Prepared {
+            tree,
+            findings,
+            pack: None,
+        });
+    }
     let observed = packs.observed.take();
 
     let installed: Option<&'static [u8]> = if trace {
@@ -449,11 +459,13 @@ pub(crate) fn prepare(
         .context("reading back the new ampr_emu.index")?
         .records;
     put(&mut files, INDEX, index.len() as u64);
+    let index_bytes = index.len() as u64;
     generated.insert(INDEX.into(), Cow::Owned(index));
     let pack = if target {
         Some(plan(
             tree.as_mut(),
             &records,
+            index_bytes,
             profile.as_ref(),
             observed.as_ref(),
             req,
@@ -817,54 +829,82 @@ fn read_all(tree: &mut dyn SourceTree, path: &str, size: u64) -> anyhow::Result<
 /// The pack list, in `records` (final index) order: the rules pick from the profile, else the
 /// files the traces saw, else the built-in guess; the keep-loose list applies to all three, then
 /// auto-loose samples the large files left to pack (from `tree`).
+#[allow(clippy::too_many_arguments)]
 fn plan(
     tree: &mut dyn SourceTree,
     records: &[(String, u64)],
-    profile: Option<&Profile>,
+    index_bytes: u64,
+    _profile: Option<&Profile>,
     observed: Option<&BTreeSet<String>>,
     req: &ConvertRequest,
     ctx: &Ctx,
     findings: &mut Vec<String>,
 ) -> anyhow::Result<PackPlan> {
-    let (selection, rules) = match (profile, observed) {
-        (Some(p), _) => {
-            for key in &p.ignored {
-                ctx.log(format!("LZ4 profile: {key} is not used"));
-            }
-            let path = req
-                .lz4_profile
-                .as_deref()
-                .unwrap_or(std::path::Path::new(""));
-            (
-                Selection::Profile(p),
-                format!("the profile {}", path.display()),
-            )
+    let paths: Vec<&str> = records.iter().map(|(p, _)| p.as_str()).collect();
+    let mut bundled_file = None;
+    let mut profile_path = req.lz4_profile.clone();
+    let mut rules = profile_path
+        .as_ref()
+        .map(|p| format!("console profile {}", p.display()))
+        .unwrap_or_else(|| "console universal (HC/fast scale; no traces)".into());
+    if profile_path.is_none() && observed.is_none() {
+        let metadata =
+            if let Some(size) = size_of(tree, "sce_sys/param.json").filter(|n| *n <= 1 << 20) {
+                tree.read_range("sce_sys/param.json", 0, size as usize)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            } else {
+                None
+            };
+        let title = metadata
+            .as_ref()
+            .and_then(|v| v.get("titleId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let name = metadata
+            .as_ref()
+            .and_then(|v| v.pointer("/localizedParameters/en-US/titleName"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if let Some((id, text)) = ps5_dump_forge_lz4::console::bundled_profile(title, name, &paths)
+        {
+            use std::io::Write;
+            let mut file = tempfile::NamedTempFile::new()?;
+            file.write_all(text.as_bytes())?;
+            profile_path = Some(file.path().into());
+            rules = format!("console bundled profile {id}");
+            bundled_file = Some(file);
         }
-        (None, Some(o)) => (
-            Selection::Observed(o),
-            match &req.lz4_traces {
-                Some(path) => format!(
-                    "the traces copied to {} ({} files the game read)",
-                    path.display(),
-                    o.len()
-                ),
-                None => format!("this dump's traces ({} files the game read)", o.len()),
-            },
-        ),
-        (None, None) => (
-            Selection::Fallback,
-            "a built-in guess (no traces; less reliable)".to_string(),
-        ),
-    };
+    }
+    if let Some(observed) = observed {
+        rules = format!(
+            "console universal narrowed by traces ({} files the game read)",
+            observed.len()
+        );
+    }
+    let policy = ps5_dump_forge_lz4::console::Policy::build(
+        records,
+        profile_path.as_deref(),
+        req.lz4_level,
+        req.compression_threads
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from)),
+    )
+    .map_err(anyhow::Error::msg)?;
+    drop(bundled_file);
     let mut files: Vec<PackFile> = records
         .iter()
-        .map(|(path, size)| PackFile {
+        .zip(&policy.specs)
+        .map(|((path, size), spec)| PackFile {
             path: path.clone(),
             size: *size,
-            spec: ps5_dump_forge_lz4::select(path, *size, &selection),
+            spec: if observed.is_some_and(|set| !set.contains(path)) {
+                None
+            } else {
+                *spec
+            },
         })
         .collect();
-    if let Some(p) = profile {
+    if let Some(p) = _profile {
         let kept: Vec<String> = files
             .iter()
             .filter(|f| {
@@ -876,16 +916,16 @@ fn plan(
             .map(|f| f.path.clone())
             .collect();
         if !kept.is_empty() {
-            ctx.log(format!(
-                "LZ4 profile: {} files the profile packs stay loose (the keep-loose list: the \
-                 game may read them before AMPR starts): {}",
-                kept.len(),
-                first_ten(&kept)
-            ));
+            ctx.log(format!("LZ4 profile: {} files the profile packs stay loose (the console keep-loose list; the game may read them before AMPR starts): {}",kept.len(),first_ten(&kept)));
         }
     }
-    let auto = profile.map_or_else(AutoLoose::default, |p| p.auto_loose);
-    auto_loose(tree, &mut files, &auto, ctx)?;
+    ctx.log(format!(
+        "LZ4 console settings: level {}, LZ4 1.10.0 {}, 64 KiB default blocks",
+        req.lz4_level,
+        if req.lz4_level > 4 { "HC" } else { "fast" }
+    ));
+    auto_loose(tree, &mut files, &policy.auto_loose, ctx)?;
+    ps5_dump_forge_lz4::console::assign_lanes(&mut files);
     // Names the runtime cannot take, and names the pack files will take.
     let bad: Vec<String> = files
         .iter()
@@ -910,9 +950,10 @@ fn plan(
         "LZ4 rules: {rules}; {packed} files to pack, {} loose",
         files.len() - packed
     ));
+    let runtime = policy.runtime(0, index_bytes);
     Ok(PackPlan {
         files,
-        runtime: profile.and_then(|p| p.runtime),
+        runtime,
         rules,
     })
 }
@@ -967,12 +1008,12 @@ fn auto_loose(
     for (i, ks) in &picks {
         ctx.check()?;
         let f = &files[*i];
-        let shift = f.spec.map_or(16, |s| s.block_shift);
+        let spec = f.spec.expect("sampled files have a spec");
         let s = ps5_dump_forge_lz4::writer::sample(
             tree,
             &f.path,
             f.size,
-            shift,
+            spec,
             ks,
             &mut |n| ctx.progress("preflight", base + n, total),
             ctx.cancel,
@@ -1399,8 +1440,8 @@ pub(crate) fn largest_file(files: &[PackFile], profile: bool, index: u64) -> u64
         return loose;
     }
     let chunks = packed.iter().fold(0u64, |sum, f| {
-        let shift = f.spec.map_or(16, |s| s.block_shift);
-        sum.saturating_add(f.size.div_ceil(1 << shift))
+        let spec = f.spec.expect("sampled files have a spec");
+        sum.saturating_add(f.size.div_ceil(1 << spec.block_shift))
     });
     // Manifest: header, file, chunk and pack records, then every path (as `/app0/...`, NUL
     // ended) and up to the runtime's 1024 volume names.
@@ -1549,6 +1590,7 @@ mod tests {
     fn packed_files_are_not_the_largest_output_file() {
         const GIB: u64 = 1 << 30;
         let spec = Some(PackSpec {
+            encoding: None,
             block_shift: 16,
             store: false,
             hot: false,

@@ -191,6 +191,9 @@ pub struct ConvertRequest {
     /// Any other target fails preflight.
     #[serde(default)]
     pub lz4_profile: Option<PathBuf>,
+    /// Console scale: 1..4 LZ4 fast, 5..12 HC. Default HC 9.
+    #[serde(default = "default_lz4_level")]
+    pub lz4_level: u8,
     /// When packing: traces copied from the console: the `*-amprtrace.zip` [`lz4_traces`] writes
     /// (STORED entries, each checked against its CRC-32), a folder holding `ampr_commands.bin`
     /// and `ampr_emu.index`, or that journal with its index beside it. Picks the files to pack
@@ -898,4 +901,8 @@ pub(crate) fn supported(made: std::io::Result<()>, what: &str) -> bool {
         }
         Err(e) => panic!("{what}: {e}"),
     }
+}
+
+fn default_lz4_level() -> u8 {
+    9
 }

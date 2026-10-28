@@ -26,34 +26,11 @@ AMPR the **LZ4** tab says "This game doesn't use AMPR, so LZ4 can't be used here
 
 ## How it works
 
-Which files to pack comes from a recording, so it takes two converts:
+This fork uses the original console compressor policy and encoder. See [Console-policy LZ4 CLI](CONSOLE_LZ4.md) for its defaults, provenance and limitations.
 
-1. **Trace.** Patch the dump: **LZ4** → **Trace** → **Patch** (UI) on a folder, `.exfat` or `.ffpkg`, or
-   convert it with `--lz4-trace` (CLI) to a folder or image. Forge installs ampr_emu's trace runtime,
-   which records every file the game reads into `ampr_commands.bin` on the title's own storage. Run it on
-   the console and play one long session through everything that matters (levels, languages, DLC). Only
-   the **last** session is used.
-2. **Pack.** Convert the traced dump (or the folder you copied back) with `--to lz4` / **LZ4** →
-   **Pack/Unpack**. Forge reads the journal, packs the files the game read, except those the engine opens
-   directly (container indexes, configs, media) and files at the game's root, leaves the rest loose, swaps
-   the trace runtime for the release one (and installs it where the game has none, or replaces an older
-   ampr_emu, one that names no version, or one that can't read packs; a build at Forge's version or newer
-   that reads packs stays) and removes the journal and logs. Or pass `--lz4-profile x.toml` to choose the files
-   yourself; without a recording or a profile it falls back to a built-in guess, which is less reliable.
+Without traces or a custom profile, it automatically matches bundled title/engine profiles or uses the console universal policy. Root numbered `.pak` files may be packed; there is no blanket `.pak` exclusion. Original console rules determine boot exclusions, sampling, block settings and deduplication. Traces restrict eligible files; `--lz4-profile` chooses an explicit profile.
 
-   Packed files exist for the game only once it has started AMPR, so anything it reads before that must
-   stay loose. Whatever the rule source (a profile too), Forge's **keep-loose list** wins: container
-   indexes (`.pak`, `.utoc`), configs and text (`.ini`, `.json`, ...), Unreal project files (`.uproject`,
-   `.uplugin`, `.upluginmanifest`), images, video (`.bik`, `.mpg`, `.mpeg`, `.m2v`, ...), audio and the
-   protected folders (`sce_module`, `system`, `save`, ...); the log names what a profile wanted packed.
-   Then **auto-loose** (as upstream's packer): a file of 64 MiB or more left to compress is sampled
-   (32 blocks spread across it, at most 16 MiB) and stays loose when the samples save under 5% or 90% of
-   them stay uncompressed; hot files (a profile's `hot = true`) are exempt unless `auto_loose_hot_files = true`. A profile tunes it with the
-   `[pack] auto_loose_*` keys (`auto_loose_large_files = false` turns it off).
-3. Or pack straight into an image: **LZ4** → **Pack/Unpack** → Target **ffpkg** (or **exfat**, **ffpfs**;
-   the CLI also `.ffpfsc`), CLI `convert <dump> --to ffpkg --lz4-pack [--lz4-traces <zip|folder|journal>]
-   [--lz4-profile x.toml]`. **fpkg** (`.pkg`) is not offered (packing into a package is not supported yet). The
-   image is verified as written and through its packs (the logical files against the source).
+To write directly into an image, use `convert <dump> --to ffpkg --lz4-pack --lz4-level 9 -o <new.ffpkg>`. Other upstream image targets remain available. `--to lz4` writes a folder of asset packs and loose files. The image is verified as written and through its packs against the source.
 
 ## Recommended: a traced `.ffpkg` on the PS5, pack on the computer
 

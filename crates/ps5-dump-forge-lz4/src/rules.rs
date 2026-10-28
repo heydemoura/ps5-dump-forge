@@ -363,6 +363,7 @@ const SHIFT_64K: u8 = 16;
 
 fn plain_spec() -> PackSpec {
     PackSpec {
+        encoding: None,
         block_shift: SHIFT_64K,
         store: false,
         hot: false,
@@ -549,6 +550,7 @@ pub fn profile_spec(path: &str, p: &Profile) -> Option<PackSpec> {
     match action {
         Action::Loose => None,
         a => Some(PackSpec {
+            encoding: None,
             block_shift,
             store: a == Action::Store,
             hot,
@@ -619,6 +621,7 @@ impl AutoLoose {
     pub fn applies(&self, size: u64, spec: &PackSpec) -> bool {
         self.enabled
             && !spec.store
+            && !spec.encoding.is_some_and(|e| e.force_pack)
             && (!spec.hot || self.hot)
             && size > 0
             && size >= self.min_file_size
@@ -1011,6 +1014,7 @@ fn parse_runtime(c: &mut Ctx, v: &Value) -> Option<RuntimeProfile> {
         return None;
     }
     Some(RuntimeProfile {
+        auto_budget_index_bytes: None,
         decoded_cache_bytes: decoded?,
         physical_cache_bytes: physical?,
         workers: workers?,
@@ -1258,6 +1262,7 @@ mod tests {
 
     fn spec(shift: u8, store: bool, hot: bool, random: bool) -> Option<PackSpec> {
         Some(PackSpec {
+            encoding: None,
             block_shift: shift,
             store,
             hot,

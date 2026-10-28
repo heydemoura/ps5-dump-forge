@@ -1457,6 +1457,12 @@ fn pack_checks(
     ctx: &Ctx,
     mode: Mode,
 ) -> anyhow::Result<Vec<String>> {
+    let manifest_size = tree
+        .files()
+        .iter()
+        .find(|f| f.path == ps5_dump_forge_lz4::MANIFEST)
+        .map_or(0, |f| f.size);
+    let runtime = runtime.map(|p| p.resolved(manifest_size));
     let mut tree = ps5_dump_forge_lz4::reader::unpack(tree).map_err(reopen)?;
     // The reader takes packs without the optional sidecars; this job wrote them.
     if !tree.has_crc() {

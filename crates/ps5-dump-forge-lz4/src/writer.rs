@@ -179,12 +179,14 @@ pub(crate) struct Encoded {
     pub(crate) crc: u32,
     pub(crate) codec: Codec,
     pub(crate) data: Vec<u8>,
+    pub(crate) flags: u8,
+    pub(crate) fingerprint: Option<([u8; 16], u32)>,
 }
 
 /// What compresses one block; [`encode`] everywhere but in the tests that inject another.
-pub(crate) type Encoder = fn(Vec<u8>, bool) -> Encoded;
+pub(crate) type Encoder = fn(Vec<u8>, PackSpec) -> Encoded;
 
-type Job = (Vec<u8>, bool, Sender<Encoded>);
+type Job = (Vec<u8>, PackSpec, Sender<Encoded>);
 
 /// The one encoding decision, used by `pack`, `measure` and the regenerating tree alike:
 /// LZ4 unless `store`, kept only when [`keep_lz4`] says so, else RAW.
@@ -194,6 +196,8 @@ pub(crate) fn encode(raw: Vec<u8>, store: bool) -> Encoded {
         let c = lz4_flex::block::compress(&raw);
         if keep_lz4(raw.len(), c.len()) {
             return Encoded {
+                flags: 0,
+                fingerprint: None,
                 raw_len,
                 crc,
                 codec: Codec::Lz4,
@@ -202,10 +206,55 @@ pub(crate) fn encode(raw: Vec<u8>, store: bool) -> Encoded {
         }
     }
     Encoded {
+        flags: 0,
+        fingerprint: None,
         raw_len,
         crc,
         codec: Codec::Raw,
         data: raw,
+    }
+}
+
+pub(crate) fn encode_spec(raw: Vec<u8>, spec: PackSpec) -> Encoded {
+    let Some(settings) = spec.encoding else {
+        return encode(raw, spec.store);
+    };
+    let (raw_len, crc) = (raw.len() as u64, crc32(&raw));
+    let flags = if settings.streaming {
+        CHUNK_STREAMING
+    } else {
+        0
+    };
+    let fingerprint = settings.dedup.then(|| {
+        let hash: [u8; 16] = blake3::hash(&raw).as_bytes()[..16]
+            .try_into()
+            .expect("16 bytes");
+        let lane = if settings.scope_group {
+            0xffff
+        } else {
+            settings.lane
+        };
+        (hash, (settings.group << 16) | lane)
+    });
+    if !spec.store
+        && let Some(data) = crate::console::compress(&raw, settings)
+    {
+        return Encoded {
+            raw_len,
+            crc,
+            codec: Codec::Lz4,
+            data,
+            flags,
+            fingerprint,
+        };
+    }
+    Encoded {
+        raw_len,
+        crc,
+        codec: Codec::Raw,
+        data: raw,
+        flags,
+        fingerprint,
     }
 }
 
@@ -216,12 +265,12 @@ pub fn sample<S: SourceTree + ?Sized>(
     src: &mut S,
     path: &str,
     size: u64,
-    block_shift: u8,
+    spec: PackSpec,
     indices: &[u64],
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
 ) -> Result<crate::Sample> {
-    let b = 1u64 << block_shift;
+    let b = 1u64 << spec.block_shift;
     let mut s = crate::Sample::default();
     for &i in indices {
         check_cancel(cancel)?;
@@ -229,7 +278,7 @@ pub fn sample<S: SourceTree + ?Sized>(
         if off >= size {
             return Err(bad(format!("{path}: sample block {i} is past its end")));
         }
-        let e = encode(read_block(src, path, off, b.min(size - off))?, false);
+        let e = encode_spec(read_block(src, path, off, b.min(size - off))?, spec);
         s.raw_bytes += e.raw_len;
         s.stored_bytes += e.data.len() as u64;
         s.blocks += 1;
@@ -246,7 +295,7 @@ fn worker(queue: &Mutex<Receiver<Job>>) {
             return;
         };
         // The reader may be gone after an error; nothing to do then.
-        let _ = reply.send(encode(raw, store));
+        let _ = reply.send(encode_spec(raw, store));
     }
 }
 
@@ -331,6 +380,74 @@ struct OpenVolume {
     chunks: u64,
 }
 
+#[derive(Clone, Copy, Default)]
+struct Shared {
+    hash: [u8; 16],
+    tag: u32,
+    chunk_plus_one: u32,
+}
+struct Deduper {
+    slots: Vec<Shared>,
+    count: usize,
+    limit: usize,
+}
+impl Deduper {
+    fn new(expected: u64) -> Option<Self> {
+        let want = expected
+            .checked_add(expected / 3)?
+            .checked_add(16)?
+            .max(1024)
+            .checked_next_power_of_two()?;
+        // Keep the existing bounded-memory job contract. As on the console, failure to
+        // reserve the table disables deduplication; chunk compression is unchanged.
+        if want.checked_mul(std::mem::size_of::<Shared>() as u64)? > 128 << 20 {
+            return None;
+        }
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(want as usize).ok()?;
+        slots.resize(want as usize, Shared::default());
+        Some(Self {
+            slots,
+            count: 0,
+            limit: want as usize * 3 / 4,
+        })
+    }
+    fn position(&self, hash: [u8; 16], tag: u32) -> usize {
+        let a = u64::from_le_bytes(hash[..8].try_into().unwrap());
+        let b = u64::from_le_bytes(hash[8..].try_into().unwrap());
+        (a ^ (b >> 7) ^ u64::from(tag).wrapping_mul(0x165667b19e3779f9)) as usize
+            & (self.slots.len() - 1)
+    }
+    fn find(&self, hash: [u8; 16], tag: u32) -> Option<usize> {
+        let mut p = self.position(hash, tag);
+        loop {
+            let e = self.slots[p];
+            if e.chunk_plus_one == 0 {
+                return None;
+            }
+            if e.hash == hash && e.tag == tag {
+                return Some(e.chunk_plus_one as usize - 1);
+            }
+            p = (p + 1) & (self.slots.len() - 1);
+        }
+    }
+    fn insert(&mut self, hash: [u8; 16], tag: u32, chunk: usize) {
+        if self.count >= self.limit {
+            return;
+        }
+        let mut p = self.position(hash, tag);
+        while self.slots[p].chunk_plus_one != 0 {
+            p = (p + 1) & (self.slots.len() - 1);
+        }
+        self.slots[p] = Shared {
+            hash,
+            tag,
+            chunk_plus_one: chunk as u32 + 1,
+        };
+        self.count += 1;
+    }
+}
+
 /// The ordered half on the calling thread: placement, chunk records, CRCs, progress. The one
 /// placement implementation: `pack` writes what it decides, `measure` only records it.
 struct Sink<V: Volumes> {
@@ -343,6 +460,9 @@ struct Sink<V: Volumes> {
     crcs: Vec<u8>,
     stored: u64,
     raw_done: u64,
+    deduper: Option<Deduper>,
+    dedup_attempted: bool,
+    chunk_count: u64,
 }
 
 impl<V: Volumes> Sink<V> {
@@ -356,11 +476,39 @@ impl<V: Volumes> Sink<V> {
             crcs: Vec::with_capacity(chunk_count as usize * 4),
             stored: 0,
             raw_done: 0,
+            deduper: None,
+            dedup_attempted: false,
+            chunk_count,
         }
     }
 
     /// Places `e` after the last chunk, in a new volume if the current one would pass the cap.
     fn put(&mut self, e: Encoded, progress: &mut dyn FnMut(u64)) -> Result<()> {
+        let tag = e.fingerprint.map(|(h, domain)| {
+            (
+                h,
+                (domain << 2)
+                    | ((e.flags & CHUNK_STREAMING != 0) as u32) << 1
+                    | if e.codec == Codec::Lz4 { 1 } else { 0 },
+            )
+        });
+        if tag.is_some() && !self.dedup_attempted {
+            self.deduper = Deduper::new(self.chunk_count);
+            self.dedup_attempted = true;
+        }
+        if let Some((h, t)) = tag
+            && let Some(prior) = self.deduper.as_ref().and_then(|d| d.find(h, t))
+        {
+            let at = prior * CHUNK_RECORD;
+            let loc = u64_at(&self.chunks, at)?;
+            let desc = u32_at(&self.chunks, at + 8)? | (u32::from(CHUNK_SHARED) << 22);
+            self.chunks.extend_from_slice(&loc.to_le_bytes());
+            self.chunks.extend_from_slice(&desc.to_le_bytes());
+            self.crcs.extend_from_slice(&e.crc.to_le_bytes());
+            self.raw_done += e.raw_len;
+            progress(self.raw_done);
+            return Ok(());
+        }
         let s = e.data.len() as u64;
         let (off, flags) = loop {
             if self.open.is_none() {
@@ -392,8 +540,13 @@ impl<V: Volumes> Sink<V> {
         let loc = pack_location(self.done.len() as u16, off)?;
         self.chunks.extend_from_slice(&loc.to_le_bytes());
         self.chunks
-            .extend_from_slice(&pack_descriptor(s as u32, e.codec, flags)?.to_le_bytes());
+            .extend_from_slice(&pack_descriptor(s as u32, e.codec, flags | e.flags)?.to_le_bytes());
         self.crcs.extend_from_slice(&e.crc.to_le_bytes());
+        if let Some((h, t)) = tag
+            && let Some(d) = &mut self.deduper
+        {
+            d.insert(h, t, self.chunks.len() / CHUNK_RECORD - 1);
+        }
         self.stored += s;
         self.raw_done += e.raw_len;
         progress(self.raw_done);
@@ -441,11 +594,15 @@ fn feed<S: SourceTree + ?Sized, V: Volumes>(
             let data = read_block(src, &f.path, off, raw)?;
             off += raw;
             let (reply, result) = mpsc::channel();
-            work.try_send((data, spec.store, reply))
-                .map_err(|e| match e {
-                    TrySendError::Full(_) => bad("internal error: the compression queue is full"),
-                    TrySendError::Disconnected(_) => bad("a compression worker failed"),
-                })?;
+            work.try_send((
+                data,
+                spec.for_block(f.size, (off - raw) >> spec.block_shift),
+                reply,
+            ))
+            .map_err(|e| match e {
+                TrySendError::Full(_) => bad("internal error: the compression queue is full"),
+                TrySendError::Disconnected(_) => bad("a compression worker failed"),
+            })?;
             pending.push_back(result);
         }
     }
@@ -643,7 +800,12 @@ fn metadata<V: Volumes>(
             let flags = FILE_PACKED
                 | if s.store { FILE_STORE_ONLY } else { 0 }
                 | if s.hot { FILE_HOT } else { 0 }
-                | if s.random { FILE_RANDOM } else { 0 };
+                | if s.random { FILE_RANDOM } else { 0 }
+                | if s.encoding.is_some_and(|e| e.streaming) {
+                    FILE_STREAMING
+                } else {
+                    0
+                };
             put_u32(r, 24, first)?;
             put_u32(r, 28, n)?;
             put_u32(r, 40, flags)?;
@@ -730,7 +892,9 @@ fn metadata<V: Volumes>(
     put_u32(&mut c, CRC_PAYLOAD_CRC_AT, crc)?;
     let crc = crc1_header_crc(&c)?;
     put_u32(&mut c, CRC_HEADER_CRC_AT, crc)?;
-    let profile = runtime.map(|p| profile_bytes(p, &build_id)).transpose()?;
+    let profile = runtime
+        .map(|p| profile_bytes(&p.resolved(m.len() as u64), &build_id))
+        .transpose()?;
     let report = PackReport {
         packed,
         loose: files.len() as u64 - packed,
@@ -957,6 +1121,7 @@ pub(crate) mod testkit {
 
     pub(crate) fn spec(block_shift: u8) -> Option<PackSpec> {
         Some(PackSpec {
+            encoding: None,
             block_shift,
             store: false,
             hot: false,
@@ -1105,6 +1270,7 @@ mod tests {
         for shift in MIN_BLOCK_SHIFT..=MAX_BLOCK_SHIFT {
             let b = 1usize << shift;
             let store = Some(PackSpec {
+                encoding: None,
                 block_shift: shift,
                 store: true,
                 hot: true,
@@ -1170,6 +1336,7 @@ mod tests {
                 for profile in [
                     None,
                     Some(RuntimeProfile {
+                        auto_budget_index_bytes: None,
                         decoded_cache_bytes: 0,
                         physical_cache_bytes: 0,
                         workers: 1,
@@ -1253,6 +1420,7 @@ mod tests {
     /// Entries that cover every block shift class, STORE, a loose record and rollover.
     pub(super) fn golden_entries() -> Vec<(&'static str, Vec<u8>, Option<PackSpec>)> {
         let store = Some(PackSpec {
+            encoding: None,
             block_shift: 15,
             store: true,
             hot: true,
@@ -1271,6 +1439,7 @@ mod tests {
 
     pub(super) fn golden_profile() -> RuntimeProfile {
         RuntimeProfile {
+            auto_budget_index_bytes: None,
             decoded_cache_bytes: 1 << 20,
             physical_cache_bytes: 16384,
             workers: 4,
@@ -1327,6 +1496,7 @@ mod tests {
     #[test]
     fn cancel_during_final_metadata_is_not_success() {
         let profile = RuntimeProfile {
+            auto_budget_index_bytes: None,
             decoded_cache_bytes: 0,
             physical_cache_bytes: 0,
             workers: 1,

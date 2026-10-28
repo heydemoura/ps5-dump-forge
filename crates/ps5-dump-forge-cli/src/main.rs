@@ -163,6 +163,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
     let mut full_verify = false;
     let mut kraken_level = None;
     let mut ffpfsc_level = None;
+    let mut lz4_level = None;
     let (mut lz4_profile, mut lz4_trace, mut lz4_unpack, mut lz4_space) =
         (None, false, false, None);
     let mut lz4_traces = None;
@@ -179,6 +180,14 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
             "--full-verify" => full_verify = true,
             "--to" => to = Some(parse_format(&text(value("--to")?)?)?),
             "--inner" => inner = Some(parse_format(&text(value("--inner")?)?)?),
+            "--lz4-level" => {
+                let n = text(value("--lz4-level")?)?
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|n| (1..=12).contains(n))
+                    .ok_or("--lz4-level takes 1 through 12")?;
+                lz4_level = Some(n);
+            }
             "--level" => {
                 ffpfsc_level = Some(
                     text(value("--level")?)?
@@ -289,6 +298,9 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
             if lz4_pack && format == Format::Lz4 {
                 return Err("--lz4-pack is redundant: --to lz4 packs".into());
             }
+            if lz4_level.is_some() && format != Format::Lz4 && !lz4_pack {
+                return Err("--lz4-level only goes with LZ4 packing".into());
+            }
             if lz4_pack && format == Format::Pkg {
                 return Err(
                     "--lz4-pack goes with --to folder, exfat, ffpkg, ffpfs or ffpfsc; \
@@ -338,6 +350,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Cli, String> {
                     full_verify,
                     kraken_level: kraken_level.unwrap_or_default(),
                     ffpfsc_level: ffpfsc_level.unwrap_or(ps5_dump_forge_core::DEFAULT_FFPFSC_LEVEL),
+                    lz4_level: lz4_level.unwrap_or(9),
                     lz4: if lz4_trace {
                         Some(Lz4Mode::Trace)
                     } else if lz4_unpack {
@@ -1058,6 +1071,52 @@ mod tests {
         assert!(
             e.contains("redundant: the LZ4 target always unpacks first"),
             "{e}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod console_cli_tests {
+    use super::*;
+    #[test]
+    fn console_lz4_level_is_independent_of_pfsc_level() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(OsString::from));
+        let Cli::Convert { request, .. } =
+            parse(&["convert", "game.exfat", "--to", "ffpkg", "--lz4-pack"]).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(request.lz4_level, 9);
+        for n in ["1", "4", "5", "9", "12"] {
+            let Cli::Convert { request, .. } = parse(&[
+                "convert",
+                "game.exfat",
+                "--to",
+                "ffpkg",
+                "--lz4-pack",
+                "--lz4-level",
+                n,
+            ])
+            .unwrap() else {
+                panic!()
+            };
+            assert_eq!(request.lz4_level, n.parse::<u8>().unwrap());
+        }
+        for n in ["0", "13", "-1", "x"] {
+            assert!(parse(&["convert", "game.exfat", "--to", "lz4", "--lz4-level", n]).is_err());
+        }
+        assert!(parse(&["convert", "game.exfat", "--to", "ffpkg", "--lz4-level", "9"]).is_err());
+        assert!(
+            parse(&[
+                "convert",
+                "game.exfat",
+                "--to",
+                "ffpkg",
+                "--lz4-pack",
+                "--level",
+                "9"
+            ])
+            .is_err()
         );
     }
 }

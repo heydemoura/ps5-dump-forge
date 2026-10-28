@@ -20,7 +20,7 @@ use ps5upload_fpkg::{Error, Result};
 
 use crate::format::*;
 use crate::writer::{
-    DEPTH_PER_WORKER, Encoder, Measured, PackFile, check_cancel, encode, read_block,
+    DEPTH_PER_WORKER, Encoder, Measured, PackFile, check_cancel, encode_spec as encode, read_block,
 };
 use crate::{CRC_SIDECAR, MANIFEST, PROFILE};
 
@@ -37,10 +37,10 @@ struct Want {
 }
 
 type Reply = std::result::Result<Vec<u8>, String>;
-type Job = (Vec<u8>, bool, Want, Encoder, Sender<Reply>);
+type Job = (Vec<u8>, crate::PackSpec, Want, Encoder, Sender<Reply>);
 
 /// One chunk made again and checked against `want`; the stored bytes.
-fn regenerate(raw: Vec<u8>, store: bool, want: Want, encoder: Encoder) -> Reply {
+fn regenerate(raw: Vec<u8>, store: crate::PackSpec, want: Want, encoder: Encoder) -> Reply {
     let raw_len = raw.len();
     let e = encoder(raw, store);
     if e.codec != want.codec || e.data.len() != want.stored as usize || e.crc != want.crc {
@@ -121,6 +121,7 @@ pub struct PackedTree<'a> {
     firsts: Vec<(u32, u32)>,
     /// First chunk of each volume, then the chunk count.
     vol_first: Vec<usize>,
+    vol_chunks: Vec<Vec<u32>>,
     chunks_at: usize,
     threads: usize,
     cancel: &'a AtomicBool,
@@ -163,6 +164,7 @@ impl<'a> PackedTree<'a> {
             volumes: HashMap::new(),
             firsts,
             vol_first: vec![0; m.volumes.len() + 1],
+            vol_chunks: vec![Vec::new(); m.volumes.len()],
             chunks_at,
             threads: threads.max(1),
             cancel,
@@ -178,9 +180,43 @@ impl<'a> PackedTree<'a> {
                 return Err(bad("internal error: a chunk names no volume"));
             }
             tree.vol_first[pid + 1] += 1;
+            tree.vol_chunks[pid].push(c as u32);
         }
         for i in 1..tree.vol_first.len() {
             tree.vol_first[i] += tree.vol_first[i - 1];
+        }
+        for chunks in &mut tree.vol_chunks {
+            let offset = |c: u32| {
+                u64_at(&m.manifest, chunks_at + c as usize * CHUNK_RECORD).expect("validated chunk")
+                    & OFFSET_MASK
+            };
+            chunks.sort_unstable_by_key(|&c| (offset(c), c));
+            chunks.dedup_by_key(|c| offset(*c));
+        }
+        // A shared physical extent can represent several logical source blocks. Check
+        // every shared source block on the second pass too; otherwise a source changed
+        // only in an elided duplicate could evade the regenerate check.
+        for c in 0..chunk_count {
+            if tree.chunk_rec(c)?.2.flags & CHUNK_SHARED == 0 {
+                continue;
+            }
+            check_cancel(cancel)?;
+            let (fi, b) = tree.block_of(c);
+            let f = &plan[fi];
+            let spec = f.spec.expect("shared chunk belongs to a packed file");
+            let block = 1u64 << spec.block_shift;
+            let raw = read_block(
+                &mut *tree.inner,
+                &f.path,
+                b * block,
+                block.min(f.size - b * block),
+            )?;
+            if crc32(&raw) != u32_at(&m.crc, CRC_HEADER + 4 * c)? {
+                return Err(bad(format!(
+                    "{} block {b}: source changed in a shared LZ4 chunk",
+                    f.path
+                )));
+            }
         }
         let packed: std::collections::HashSet<&str> = plan
             .iter()
@@ -254,7 +290,10 @@ impl<'a> PackedTree<'a> {
         let (fi, b) = self.block_of(c);
         let plan = self.plan;
         let f = &plan[fi];
-        let spec = f.spec.expect("only packed records have chunks");
+        let spec = f
+            .spec
+            .expect("only packed records have chunks")
+            .for_block(f.size, b);
         let block = 1u64 << spec.block_shift;
         let raw = read_block(
             &mut *self.inner,
@@ -274,7 +313,7 @@ impl<'a> PackedTree<'a> {
         let (reply, rx) = mpsc::channel();
         let work = self.workers.as_ref().and_then(|w| w.work.as_ref());
         work.expect("started above")
-            .send((raw, spec.store, want, self.encoder, reply))
+            .send((raw, spec, want, self.encoder, reply))
             .map_err(|_| bad("a compression worker failed"))?;
         self.pending.push_back((c, rx));
         Ok(())
@@ -287,7 +326,15 @@ impl<'a> PackedTree<'a> {
                 self.pending.clear();
                 self.next = c;
             }
-            let end = self.vol_first[self.chunk_rec(c)?.0 as usize + 1];
+            let console = self.plan[self.block_of(c).0]
+                .spec
+                .and_then(|s| s.encoding)
+                .is_some();
+            let end = if console {
+                *self.vol_first.last().unwrap()
+            } else {
+                self.vol_first[self.chunk_rec(c)?.0 as usize + 1]
+            };
             while self.pending.len() < self.threads * DEPTH_PER_WORKER && self.next < end {
                 self.submit(self.next)?;
                 self.next += 1;
@@ -325,18 +372,19 @@ impl<'a> PackedTree<'a> {
             out[..(to - off) as usize].copy_from_slice(&h[off as usize..to as usize]);
         }
         // The first chunk that ends after `off`, then every chunk that starts before `end`.
-        let (mut lo, mut hi) = (self.vol_first[id], self.vol_first[id + 1]);
+        let (mut lo, mut hi) = (0, self.vol_chunks[id].len());
         let last = hi;
         while lo < hi {
             let mid = (lo + hi) / 2;
-            let (_, o, d) = self.chunk_rec(mid)?;
+            let (_, o, d) = self.chunk_rec(self.vol_chunks[id][mid] as usize)?;
             if o + u64::from(d.stored) <= off {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        for c in lo..last {
+        for k in lo..last {
+            let c = self.vol_chunks[id][k] as usize;
             let (_, o, d) = self.chunk_rec(c)?;
             if o >= end {
                 break;
@@ -415,6 +463,7 @@ mod tests {
 
     fn entries() -> Entries {
         let store = Some(PackSpec {
+            encoding: None,
             block_shift: 15,
             store: true,
             hot: true,
@@ -433,6 +482,7 @@ mod tests {
 
     fn profile() -> RuntimeProfile {
         RuntimeProfile {
+            auto_budget_index_bytes: None,
             decoded_cache_bytes: 1 << 20,
             physical_cache_bytes: 16384,
             workers: 4,
@@ -500,14 +550,15 @@ mod tests {
         }
     }
 
-    fn appends_a_byte(raw: Vec<u8>, store: bool) -> crate::writer::Encoded {
+    fn appends_a_byte(raw: Vec<u8>, store: crate::PackSpec) -> crate::writer::Encoded {
         let mut e = encode(raw, store);
         e.data.push(0);
         e
     }
 
-    fn other_codec(raw: Vec<u8>, _: bool) -> crate::writer::Encoded {
-        encode(raw, true)
+    fn other_codec(raw: Vec<u8>, mut spec: crate::PackSpec) -> crate::writer::Encoded {
+        spec.store = true;
+        encode(raw, spec)
     }
 
     #[test]
